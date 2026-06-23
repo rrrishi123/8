@@ -15,11 +15,12 @@ export function mapFrame(ev: FeedEvent): CaptureRow | null {
       (/(127\.0\.0\.1|localhost):(7070|8088)/.test(anyUrl) || /^(data|blob):/.test(anyUrl))) return null;
   const origin: 'BIDI' | 'COLLECTOR' = ev.origin === 'COLLECTOR' ? 'COLLECTOR' : 'BIDI';
 
-  let physics: 'call' | 'channel' = 'channel';
+  // Honor an explicit physics from the collector (it knows the session's wire);
+  // fall back to channel for raw BiDi events.
+  let physics: 'call' | 'channel' = (ev as any).physics === 'call' ? 'call' : 'channel';
   let method = f.method;
   let detail = '';
   if (f.method === 'http_request') {
-    // an echoed curl/HTTP call (the efferent side)
     physics = 'call';
     method = String(p.http_method || 'GET');
     detail = p.error
@@ -29,6 +30,10 @@ export function mapFrame(ev: FeedEvent): CaptureRow | null {
     physics = 'call';
     method = 'run';
     detail = String(p.command || '');
+  } else if (origin === 'COLLECTOR') {
+    // 8's own control call to a session (source / act / …): physics is already
+    // set from ev.physics above; show the route + outcome.
+    detail = `${p.route || method} → ${p.status ?? ''} · ${p.latency_ms ?? '?'}ms`;
   } else {
     // a real BiDi channel event
     detail = String(p.url || p?.request?.url || p?.response?.url || '');

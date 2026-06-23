@@ -507,6 +507,21 @@ func (c *collector) handleSessions(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"sessions": out})
 }
 
+// echoOut publishes one COLLECTOR-origin frame for a CONTROL call 8 itself made
+// to a session, so the cockpit's per-session stream shows 8's own pokes — not
+// just the browser/device side. One frame, after the response, carrying the
+// outcome. Perception polls (/shot) are the stream, not control events, so they
+// are deliberately NOT echoed (they would flood the feed).
+func (c *collector) echoOut(session, physics, method string, params map[string]any, status int, ms int64) {
+	if params == nil {
+		params = map[string]any{}
+	}
+	params["status"] = status
+	params["latency_ms"] = ms
+	p, _ := json.Marshal(params)
+	c.publish(fmt.Sprintf(`{"session":%q,"physics":%q,"origin":"COLLECTOR","frame":{"method":%q,"params":%s}}`, session, physics, method, p))
+}
+
 // handleSource returns a session's UI/DOM tree through the wire — call sessions
 // via WebDriver GET /session/{id}/source (XML/HTML). BiDi DOM tree pending.
 func (c *collector) handleSource(w http.ResponseWriter, r *http.Request) {
@@ -516,6 +531,7 @@ func (c *collector) handleSource(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"source: only call sessions for now (BiDi DOM tree pending)"}`, http.StatusNotImplemented)
 		return
 	}
+	start := time.Now()
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Get(rec.Hub + "/session/" + sid + "/source")
 	if err != nil {
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
@@ -523,6 +539,7 @@ func (c *collector) handleSource(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	c.echoOut(sid, rec.Physics, "source", map[string]any{"route": "GET /session/{id}/source", "bytes": len(rb)}, resp.StatusCode, time.Since(start).Milliseconds())
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(rb) // {"value":"<hierarchy>...</hierarchy>"}
 }
@@ -559,6 +576,7 @@ func (c *collector) handleAct(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"unknown action"}`, http.StatusBadRequest)
 		return
 	}
+	start := time.Now()
 	resp, err := c.client.Post(url, "application/json", strings.NewReader(body))
 	if err != nil {
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
@@ -566,7 +584,7 @@ func (c *collector) handleAct(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	c.publish(fmt.Sprintf(`{"session":%q,"origin":"COLLECTOR","frame":{"method":"act","params":{"action":%q,"session":%q}}}`, sid, in.Action, sid))
+	c.echoOut(sid, rec.Physics, "act", map[string]any{"action": in.Action}, resp.StatusCode, time.Since(start).Milliseconds())
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	w.Write(rb)
