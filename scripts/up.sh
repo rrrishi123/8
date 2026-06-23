@@ -72,8 +72,10 @@ CTX=$(cmd '{"method":"browsingContext.getTree","params":{}}' | jq -r '.result.co
 cmd "{\"method\":\"browsingContext.navigate\",\"params\":{\"context\":\"$CTX\",\"url\":\"http://localhost:8088/\",\"wait\":\"complete\"}}" 30 >/dev/null
 echo "cockpit:    $CTX -> :8088"
 DS=$(cmd '{"method":"browsingContext.create","params":{"type":"tab"}}' | jq -r '.result.context')
-cmd "{\"method\":\"browsingContext.navigate\",\"params\":{\"context\":\"$DS\",\"url\":\"https://chat.deepseek.com/\",\"wait\":\"complete\"}}" 60 >/dev/null
-echo "deepseek:   $DS -> chat.deepseek.com"
+# resume the SAME peer thread (the one with the full discussion), not a fresh chat
+DS_THREAD="https://chat.deepseek.com/a/chat/s/82a7eafd-2ba5-4226-836d-344368e7723b"
+cmd "{\"method\":\"browsingContext.navigate\",\"params\":{\"context\":\"$DS\",\"url\":\"$DS_THREAD\",\"wait\":\"complete\"}}" 60 >/dev/null
+echo "deepseek:   $DS -> peer thread (context preserved)"
 
 # 8. login check: is DeepSeek authenticated? (textarea present = yes)
 LOGGEDIN=$(cmd "{\"method\":\"script.evaluate\",\"params\":{\"expression\":\"!!document.querySelector('textarea')\",\"target\":{\"context\":\"$DS\"},\"awaitPromise\":true}}" 15 | jq -r '.result.result.value // "?"')
