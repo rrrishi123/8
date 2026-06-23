@@ -1,0 +1,14 @@
+# Go
+/collector/collector
+*.test
+*.out
+
+# Node / frontend
+web/node_modules/
+web/dist/
+web/build/
+web/.vite/
+
+# misc
+.DS_Store
+*.log
