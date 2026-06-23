@@ -7,11 +7,12 @@ interface Props {
   filters: { call: boolean; channel: boolean };
   onToggle: (k: 'call' | 'channel') => void;
   onSelect: (s: Session) => void;
+  selectedId?: string;
 }
 
 // Left rail: physics filters (with live counts that actually filter the stream)
 // + the live sessions. Mirrors the design's PHYSICS / SESSIONS rail.
-export function SessionRail({ sessions, rows, filters, onToggle, onSelect }: Props) {
+export function SessionRail({ sessions, rows, filters, onToggle, onSelect, selectedId }: Props) {
   const callN = rows.filter((r) => r.physics === 'call').length;
   const chanN = rows.filter((r) => r.physics === 'channel').length;
   // the one Firefox channel is shared across tabs; each event is tagged with
@@ -38,9 +39,9 @@ export function SessionRail({ sessions, rows, filters, onToggle, onSelect }: Pro
       <ul className="sess-list">
         {sessions.length === 0 && <li className="empty">none</li>}
         {sessions.map((s) => (
-          <li key={s.id} className="sess-card" onClick={() => onSelect(s)} title="open interaction">
+          <li key={s.id} className={`sess-card${s.id === selectedId ? ' sel' : ''}`} onClick={() => onSelect(s)} title="open interaction">
             <span className="dot" /> <span className="sid">{s.id}</span>
-            <span className="sub">{s.kind} · {s.physics} · click to inspect ▸</span>
+            <span className="sub">{s.kind} · {s.physics}{s.id === selectedId ? ' · ◂ open' : ' · click to inspect ▸'}</span>
           </li>
         ))}
       </ul>

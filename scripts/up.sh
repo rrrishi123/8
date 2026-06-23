@@ -50,6 +50,11 @@ wait_up 4445 && echo "broker:     up :4445"
 cmd '{"method":"script.addPreloadScript","params":{"functionDeclaration":"() => { Object.defineProperty(Navigator.prototype, \"webdriver\", { get: () => false }); }"}}' >/dev/null
 echo "preload:    navigator.webdriver hidden"
 
+# 4b. subscribe to BiDi events — WITHOUT this the channel emits nothing and 8's
+# feed shows zero channel rows (the bug: one socket, but silent until subscribed).
+cmd '{"method":"session.subscribe","params":{"events":["network.beforeRequestSent","network.responseCompleted","log.entryAdded","browsingContext.domContentLoaded"]}}' >/dev/null
+echo "subscribe:  channel events flowing (network, log, domContentLoaded)"
+
 # 5. collector.
 if up 7070; then echo "collector:  already up :7070"; else
   nohup "$COLLECTOR" -listen :7070 -brokers fox=http://127.0.0.1:4445 >/tmp/collector-8.log 2>&1 &

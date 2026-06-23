@@ -48,7 +48,7 @@ export default function App() {
   return (
     <div className="app">
       <main className="cols">
-        <SessionRail sessions={sessions} rows={rows} filters={filters} onToggle={toggle} onSelect={setSelSession} />
+        <SessionRail sessions={sessions} rows={rows} filters={filters} onToggle={toggle} onSelect={setSelSession} selectedId={selSession?.id} />
 
         {selSession ? (
           <>

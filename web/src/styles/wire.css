@@ -56,7 +56,10 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .cap-row .method { flex: none; color: var(--fg); }
 .cap-row.phys-call .method { color: var(--blue); }
 .cap-row .detail { color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.rows { overflow-x: hidden; }
+.rows { overflow-x: auto; }
+/* View 1 stream: rows h-scroll to reveal the full route (no ellipsis cage) */
+.stream .cap-row { min-width: max-content; }
+.stream .cap-row .detail { flex: none; overflow: visible; text-overflow: clip; }
 
 .side { display: flex; flex-direction: column; flex: none; width: 320px; min-width: 320px; gap: 1px; background: var(--border); }
 .viewport { flex: none; }
@@ -137,6 +140,8 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 
 .sess-card { cursor: pointer; }
 .sess-card:hover { background: var(--cursorline); }
+.sess-card.sel { background: var(--sel); color: var(--sel-fg); box-shadow: inset 2px 0 0 var(--green); }
+.sess-card.sel .sub { color: var(--sel-fg); }
 
 /* ---- interaction surface: screen+overlay | tree | selected element ---- */
 .interaction-view { flex: 2; min-width: 0; }
