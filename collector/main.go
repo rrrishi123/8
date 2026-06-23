@@ -433,6 +433,7 @@ type sessionRec struct {
 	Kind    string `json:"kind"`    // local | cloud
 	Physics string `json:"physics"` // call | channel
 	Stream  string `json:"stream,omitempty"` // live MJPEG source URL, if any
+	Status  string `json:"status,omitempty"` // live | disconnected (computed at /sessions time, not persisted)
 	Created string `json:"created_at,omitempty"`
 }
 
@@ -488,34 +489,36 @@ func (c *collector) handleSessions(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	// liveness-prune: ping each call session in parallel, drop the dead ones so
-	// 8's rail never shows a terminated session. Channel sessions are alive by
-	// the broker holding their socket.
-	type res struct {
-		rec   sessionRec
-		alive bool
-	}
-	ch := make(chan res, len(byID))
+	// liveness: probe each CALL session with a DEVICE-TOUCHING command
+	// (/window/rect, NOT /timeouts — Appium answers /timeouts from the cached
+	// session object without touching the device, so a disconnected device
+	// passed liveness = ghost). A gone device -> proxy/connection error -> we
+	// TOMBSTONE it (status "disconnected"), keeping it on the rail greyed so the
+	// operator sees it died vs never-existed. Channel sessions are alive by the
+	// broker holding their socket — they skip the probe.
+	ch := make(chan sessionRec, len(byID))
 	for _, rec := range byID {
 		if rec.Physics != "call" {
-			ch <- res{rec, true}
+			rec.Status = "live"
+			ch <- rec
 			continue
 		}
 		go func(rec sessionRec) {
 			cl := &http.Client{Timeout: 1500 * time.Millisecond}
-			resp, err := cl.Get(rec.Hub + "/session/" + rec.ID + "/timeouts")
-			alive := err == nil && resp.StatusCode == 200
-			if resp != nil {
+			resp, err := cl.Get(rec.Hub + "/session/" + rec.ID + "/window/rect")
+			rec.Status = "disconnected" // proxy/connection error => device gone
+			if err == nil {
+				if resp.StatusCode == 200 {
+					rec.Status = "live"
+				}
 				resp.Body.Close()
 			}
-			ch <- res{rec, alive}
+			ch <- rec
 		}(rec)
 	}
 	out := make([]sessionRec, 0, len(byID))
 	for range byID {
-		if r := <-ch; r.alive {
-			out = append(out, r.rec)
-		}
+		out = append(out, <-ch) // keep all — disconnected ones are tombstones, not dropped
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"sessions": out})

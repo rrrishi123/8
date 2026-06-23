@@ -142,6 +142,9 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .sess-card:hover { background: var(--cursorline); }
 .sess-card.sel { background: var(--sel); color: var(--sel-fg); box-shadow: inset 2px 0 0 var(--green); }
 .sess-card.sel .sub { color: var(--sel-fg); }
+.sess-card.dead { opacity: .5; } /* tombstone: disconnected device/socket — kept, greyed */
+.sess-card.dead .dot { background: var(--fg-faint); box-shadow: none; }
+.sess-card.dead .sid { color: var(--fg-dim); }
 
 /* ---- interaction surface: screen+overlay | tree | selected element ---- */
 .interaction-view { flex: 2; min-width: 0; }

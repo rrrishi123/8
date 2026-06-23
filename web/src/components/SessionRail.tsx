@@ -39,9 +39,9 @@ export function SessionRail({ sessions, rows, filters, onToggle, onSelect, selec
       <ul className="sess-list">
         {sessions.length === 0 && <li className="empty">none</li>}
         {sessions.map((s) => (
-          <li key={s.id} className={`sess-card${s.id === selectedId ? ' sel' : ''}`} onClick={() => onSelect(s)} title="open interaction">
+          <li key={s.id} className={`sess-card${s.id === selectedId ? ' sel' : ''}${s.status === 'disconnected' ? ' dead' : ''}`} onClick={() => onSelect(s)} title="open interaction">
             <span className="dot" /> <span className="sid">{s.id}</span>
-            <span className="sub">{s.kind} · {s.physics}{s.id === selectedId ? ' · ◂ open' : ' · click to inspect ▸'}</span>
+            <span className="sub">{s.kind} · {s.physics}{s.status === 'disconnected' ? ' · ✕ disconnected' : s.id === selectedId ? ' · ◂ open' : ' · click to inspect ▸'}</span>
           </li>
         ))}
       </ul>

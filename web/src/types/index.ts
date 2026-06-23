@@ -18,6 +18,7 @@ export interface Session {
   kind: string; // local | cloud
   physics: 'call' | 'channel';
   stream?: string; // live MJPEG source, if the session has one
+  status?: 'live' | 'disconnected'; // disconnected = tombstone (device/socket gone)
 }
 
 export interface CaptureRow {
