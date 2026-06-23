@@ -9,7 +9,7 @@ export function SessionStream({ session, rows }: { session: Session; rows: Captu
   return (
     <section className="panel sess-stream">
       <div className="panel-h">
-        traffic · {session.id.slice(0, 8)} · {session.physics}
+        traffic · {session.id} · {session.physics}
         <span className="ss-count">{rows.length}</span>
       </div>
       <div className="cap-head">

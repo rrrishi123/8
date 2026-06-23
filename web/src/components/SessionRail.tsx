@@ -1,4 +1,5 @@
 import type { CaptureRow, Session } from '../types';
+import { Logo8 } from './Logo';
 
 interface Props {
   sessions: Session[];
@@ -18,6 +19,7 @@ export function SessionRail({ sessions, rows, filters, onToggle, onSelect }: Pro
   const tabs = [...new Set(rows.map((r) => r.tab).filter(Boolean))] as string[];
   return (
     <aside className="rail">
+      <Logo8 />
       <ul className="filters">
         <li className={`filt${filters.call ? ' on' : ''}`} onClick={() => onToggle('call')}>
           <span className="box">[{filters.call ? 'x' : ' '}]</span>
@@ -48,13 +50,11 @@ export function SessionRail({ sessions, rows, filters, onToggle, onSelect }: Pro
         {tabs.length === 0 && <li className="empty">— (waiting for traffic)</li>}
         {tabs.map((t) => (
           <li key={t} className="tab-row">
-            <span className="sid">{t.slice(0, 8)}</span>
+            <span className="sid">{t}</span>
             <span className="cnt">{rows.filter((r) => r.tab === t).length}</span>
           </li>
         ))}
       </ul>
-
-      <div className="rail-foot"><span className="eight">8</span></div>
     </aside>
   );
 }

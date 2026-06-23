@@ -34,7 +34,7 @@ export function Inspector({ row }: { row: CaptureRow | null }) {
             <span className="tag">{row.origin}</span>
             <span className="insp-method">{row.method}</span>
             <span className="insp-sess">{row.session}</span>
-            {row.tab && <span className="insp-tab">tab {row.tab.slice(0, 8)}</span>}
+            {row.tab && <span className="insp-tab">tab {row.tab}</span>}
           </div>
           {row.shot && (
             img

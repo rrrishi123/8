@@ -50,8 +50,8 @@ export function Viewport({ session }: { session: string | null }) {
   }, [session, ctx]);
 
   const label = (t: Tab) => {
-    try { return new URL(t.url).host || t.context.slice(0, 8); }
-    catch { return t.url || t.context.slice(0, 8); }
+    try { return new URL(t.url).host || t.context; }
+    catch { return t.url || t.context; }
   };
 
   return (

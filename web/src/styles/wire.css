@@ -115,9 +115,14 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .tab-row .cnt { margin-left: auto; color: var(--fg); }
 .insp-tab { color: var(--cyan); font-size: 11px; }
 
-/* rail footer: 8's glyph, pinned bottom-left (replaces the "physics" label) */
-.rail-foot { margin-top: auto; padding: 8px 0 6px 12px; }
-.rail-foot .eight { color: var(--blue); font-weight: 700; font-size: 20px; line-height: 1; }
+/* 8's mark, top-left (replaces the "physics" label): two physics-loops tilted
+   45° and cast from an offset ghost — projected from another plane. */
+.logo8-wrap { padding: 10px 2px 8px 12px; }
+.logo8 { display: block; overflow: visible; }
+.logo8 circle { fill: none; stroke-width: 2.4; vector-effect: non-scaling-stroke; }
+.logo8-call { stroke: var(--blue); }
+.logo8-chan { stroke: var(--purple); }
+.logo8-ghost circle { stroke: var(--fg-faint); stroke-width: 1.5; opacity: .4; }
 
 /* ---- View 2 right pane: this session's traffic (incl. 8's own calls) ---- */
 .sess-stream { flex: none; width: 340px; min-width: 300px; background: var(--panel); }
@@ -151,8 +156,11 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .ix-overlay rect:hover { opacity: .9; fill: rgba(106,155,216,.12); }
 .ix-overlay rect.sel { stroke: var(--green); opacity: 1; stroke-width: 2; fill: rgba(143,191,111,.14); }
 .ix-tree { flex: 1; min-width: 0; background: var(--panel); overflow: auto; }
-.ix-tree ul { list-style: none; margin: 0; padding: 2px 0; }
-.ix-node { white-space: nowrap; padding: 1px 8px; cursor: pointer; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; }
+.ix-tree ul { list-style: none; margin: 0; padding: 2px 0; min-width: max-content; } /* grow to the widest row so the tree h-scrolls to reveal the full hierarchy */
+.ix-node { white-space: nowrap; padding: 1px 8px; cursor: pointer; color: var(--fg-dim); }
+.ix-caret { display: inline-block; width: 1.1em; margin-right: 2px; color: var(--fg-faint); cursor: pointer; user-select: none; }
+.ix-caret:hover { color: var(--green); }
+.ix-caret.ix-leaf { cursor: default; opacity: .35; }
 .ix-node:hover { background: var(--cursorline); color: var(--fg); }
 .ix-node.sel { background: var(--sel); color: var(--sel-fg); }
 .ix-sel { flex: none; width: 280px; background: var(--panel); overflow: auto; }

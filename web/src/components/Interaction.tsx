@@ -14,6 +14,7 @@ export function Interaction({ session, onClose }: { session: Session; onClose: (
   const [sel, setSel] = useState<SrcElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
+  const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
 
   async function refresh() {
     setBusy(true); setNote('');
@@ -27,11 +28,22 @@ export function Interaction({ session, onClose }: { session: Session; onClose: (
       else setNote('source not available for this physics yet (BiDi DOM pending)');
     } finally { setBusy(false); }
   }
-  useEffect(() => { setSel(null); refresh(); /* eslint-disable-next-line */ }, [session.id]);
+  useEffect(() => { setSel(null); setCollapsed(new Set()); refresh(); /* eslint-disable-next-line */ }, [session.id]);
 
   const root = els.find((e) => e.bounds);
   const devW = root?.bounds ? root.bounds.x + root.bounds.w : 1080;
   const devH = root?.bounds ? root.bounds.y + root.bounds.h : 2400;
+
+  // Collapse: hide any element nested under a collapsed ancestor (flat list +
+  // depth -> a node hides everything deeper that follows it until depth drops back).
+  const visibleEls: SrcElement[] = [];
+  let hideBelow = Infinity;
+  for (const e of els) {
+    if (e.depth > hideBelow) continue;
+    hideBelow = Infinity;
+    visibleEls.push(e);
+    if (collapsed.has(e.index)) hideBelow = e.depth;
+  }
 
   async function tap(e: SrcElement) {
     if (!e.bounds) return;
@@ -47,7 +59,7 @@ export function Interaction({ session, onClose }: { session: Session; onClose: (
   return (
     <section className="panel interaction-view">
       <div className="panel-h">
-        interaction · {session.id.slice(0, 8)} · {session.kind}·{session.physics}
+        interaction · {session.id} · {session.kind}·{session.physics}
         <button className="ix-btn" onClick={refresh} disabled={busy}>{busy ? '…' : '↻'}</button>
         <button className="ix-btn ix-close" onClick={onClose}>✕ stream</button>
       </div>
@@ -70,12 +82,21 @@ export function Interaction({ session, onClose }: { session: Session; onClose: (
         <div className="ix-tree">
           <div className="ix-sub">source · {els.length} {note && <span className="ix-note">{note}</span>}</div>
           <ul>
-            {els.map((e) => (
-              <li key={e.index} className={`ix-node${sel?.index === e.index ? ' sel' : ''}`}
-                style={{ paddingLeft: 6 + e.depth * 9 }} onClick={() => setSel(e)} onDoubleClick={() => tap(e)}>
-                {elementLabel(e)}
-              </li>
-            ))}
+            {visibleEls.map((e) => {
+              const hasKids = !!els[e.index + 1] && els[e.index + 1].depth > e.depth;
+              const isCol = collapsed.has(e.index);
+              return (
+                <li key={e.index} className={`ix-node${sel?.index === e.index ? ' sel' : ''}`}
+                  style={{ paddingLeft: 6 + e.depth * 11 }} onClick={() => setSel(e)} onDoubleClick={() => tap(e)}>
+                  {hasKids ? (
+                    <span className="ix-caret" onClick={(ev) => { ev.stopPropagation(); setCollapsed((c) => { const n = new Set(c); if (n.has(e.index)) n.delete(e.index); else n.add(e.index); return n; }); }}>
+                      {isCol ? '▸' : '▾'}
+                    </span>
+                  ) : <span className="ix-caret ix-leaf">·</span>}
+                  {elementLabel(e)}
+                </li>
+              );
+            })}
           </ul>
         </div>
 
