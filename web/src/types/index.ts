@@ -4,6 +4,7 @@
 export interface FeedEvent {
   session: string;
   origin?: 'BIDI' | 'COLLECTOR';
+  physics?: 'call' | 'channel';
   frame: {
     method?: string;
     params?: Record<string, unknown>;
@@ -16,6 +17,7 @@ export interface Session {
   hub: string;
   kind: string; // local | cloud
   physics: 'call' | 'channel';
+  stream?: string; // live MJPEG source, if the session has one
 }
 
 export interface CaptureRow {

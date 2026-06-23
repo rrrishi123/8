@@ -152,11 +152,12 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 /* phone (has bounds): fill the full column HEIGHT, width derived from the inline
    device aspect-ratio — as large as the cockpit is tall, so it's tappable.
    The overlay SVG (device-coord viewBox) maps 1:1 onto the fill'd image. */
-.ix-screen-wrap { position: relative; height: 100%; }
+.ix-screen-wrap { position: relative; height: 100%; cursor: crosshair; }
 .ix-screen-wrap.natural { height: auto; width: 100%; max-width: 360px; } /* channel/desktop: natural ratio (no bounds to align an overlay to) */
 .ix-screen-wrap img { display: block; width: 100%; height: 100%; object-fit: fill; background: #000; border: 1px solid var(--border); }
 .ix-screen-wrap.natural img { height: auto; object-fit: contain; }
-.ix-overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+.ix-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; } /* visual only — the screen is a free tap/drag canvas */
+.ix-live { position: absolute; top: 5px; left: 5px; z-index: 2; color: var(--green); font-size: 10px; font-weight: 700; background: rgba(0,0,0,.5); padding: 1px 6px; letter-spacing: .05em; }
 .ix-overlay rect { fill: transparent; stroke: var(--blue); stroke-width: 1; opacity: .28; cursor: pointer; vector-effect: non-scaling-stroke; }
 .ix-overlay rect:hover { opacity: .9; fill: rgba(106,155,216,.12); }
 .ix-overlay rect.sel { stroke: var(--green); opacity: 1; stroke-width: 2; fill: rgba(143,191,111,.14); }

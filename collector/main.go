@@ -259,7 +259,20 @@ func (c *collector) handleFetch(w http.ResponseWriter, r *http.Request) {
 			if strings.Contains(in.URL, "browserstack") || strings.Contains(in.URL, "lambdatest") || strings.Contains(in.URL, "saucelabs") {
 				kind = "cloud"
 			}
-			registerSession(sessionRec{ID: sv.Value.SessionID, Hub: strings.TrimSuffix(bare, "/session"), Kind: kind, Physics: "call"})
+			// if the caps asked for an MJPEG server, the device streams MJPEG on
+			// that localhost port — record it as the session's live stream source.
+			stream := ""
+			var cb struct {
+				Capabilities struct {
+					AlwaysMatch map[string]any `json:"alwaysMatch"`
+				} `json:"capabilities"`
+			}
+			if json.Unmarshal([]byte(in.Body), &cb) == nil {
+				if p, ok := cb.Capabilities.AlwaysMatch["appium:mjpegServerPort"]; ok {
+					stream = fmt.Sprintf("http://127.0.0.1:%v", p)
+				}
+			}
+			registerSession(sessionRec{ID: sv.Value.SessionID, Hub: strings.TrimSuffix(bare, "/session"), Kind: kind, Physics: "call", Stream: stream})
 		}
 	}
 
@@ -419,6 +432,7 @@ type sessionRec struct {
 	Hub     string `json:"hub"`
 	Kind    string `json:"kind"`    // local | cloud
 	Physics string `json:"physics"` // call | channel
+	Stream  string `json:"stream,omitempty"` // live MJPEG source URL, if any
 	Created string `json:"created_at,omitempty"`
 }
 
@@ -610,6 +624,47 @@ func (c *collector) handleAct(w http.ResponseWriter, r *http.Request) {
 	w.Write(rb)
 }
 
+// handleStream proxies a session's live MJPEG straight through — no decode or
+// re-encode (the peer's lean pass-through). The browser renders the
+// multipart/x-mixed-replace body live in an <img>. This is the afferent media
+// transport: live, where /shot is the polled fallback.
+func (c *collector) handleStream(w http.ResponseWriter, r *http.Request) {
+	rec := lookupSession(r.URL.Query().Get("session"))
+	if rec == nil || rec.Stream == "" {
+		http.Error(w, `{"error":"no live stream for this session"}`, http.StatusNotFound)
+		return
+	}
+	up, err := http.Get(rec.Stream)
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
+		return
+	}
+	defer up.Body.Close()
+	w.Header().Set("Content-Type", up.Header.Get("Content-Type")) // multipart/x-mixed-replace; boundary=...
+	w.Header().Set("Cache-Control", "no-cache")
+	flusher, _ := w.(http.Flusher)
+	buf := make([]byte, 64<<10)
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		default:
+		}
+		n, rerr := up.Body.Read(buf)
+		if n > 0 {
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if rerr != nil {
+			return
+		}
+	}
+}
+
 func (c *collector) handleHealth(w http.ResponseWriter, r *http.Request) {
 	ids := make([]string, len(c.brokers))
 	for i, b := range c.brokers {
@@ -669,6 +724,7 @@ func main() {
 	mux.HandleFunc("/sessions", c.handleSessions)
 	mux.HandleFunc("/source", c.handleSource)
 	mux.HandleFunc("/act", c.handleAct)
+	mux.HandleFunc("/stream", c.handleStream)
 	mux.HandleFunc("/health", c.handleHealth)
 
 	log.Printf("collector: %d session(s), serving on %s (GET /feed, POST /run, /fetch, /broadcast)", len(brokers), *listen)

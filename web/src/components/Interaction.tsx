@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { shot } from '../lib/api';
 import { parseSource, locators, elementLabel, type SrcElement } from '../lib/source';
 import type { Session } from '../types';
@@ -45,15 +45,36 @@ export function Interaction({ session, onClose }: { session: Session; onClose: (
     if (collapsed.has(e.index)) hideBelow = e.depth;
   }
 
-  async function tap(e: SrcElement) {
-    if (!e.bounds) return;
-    const x = e.bounds.x + Math.floor(e.bounds.w / 2);
-    const y = e.bounds.y + Math.floor(e.bounds.h / 2);
+  // Live stream when the session exposes one (MJPEG renders live in <img>);
+  // otherwise the polled /shot frame.
+  const streamUrl = session.stream ? `${BASE}/stream?session=${encodeURIComponent(session.id)}` : '';
+  const screenSrc = streamUrl || img;
+
+  async function act(body: Record<string, unknown>) {
     await fetch(`${BASE}/act?session=${encodeURIComponent(session.id)}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'tap', x, y }),
+      body: JSON.stringify(body),
     }).catch(() => {});
-    setTimeout(refresh, 700); // see the result
+    if (!streamUrl) setTimeout(refresh, 700); // poll mode re-shots; a live stream already shows it
+  }
+  function tap(e: SrcElement) {
+    if (e.bounds) act({ action: 'tap', x: e.bounds.x + Math.floor(e.bounds.w / 2), y: e.bounds.y + Math.floor(e.bounds.h / 2) });
+  }
+
+  // Free interaction on the screen itself: click = tap, drag = swipe — mapped
+  // from the rendered frame back to device coordinates ("any coordinate, live").
+  const drag = useRef<{ x: number; y: number } | null>(null);
+  function devXY(e: React.MouseEvent<HTMLElement>) {
+    const r = e.currentTarget.getBoundingClientRect();
+    return { x: Math.round(((e.clientX - r.left) / r.width) * devW), y: Math.round(((e.clientY - r.top) / r.height) * devH) };
+  }
+  function onDown(e: React.MouseEvent<HTMLElement>) { drag.current = devXY(e); }
+  function onUp(e: React.MouseEvent<HTMLElement>) {
+    const s = drag.current; drag.current = null;
+    if (!s) return;
+    const p = devXY(e);
+    if (Math.hypot(p.x - s.x, p.y - s.y) > 24) act({ action: 'swipe', x: s.x, y: s.y, x2: p.x, y2: p.y, ms: 350 });
+    else act({ action: 'tap', x: p.x, y: p.y });
   }
 
   return (
@@ -65,14 +86,16 @@ export function Interaction({ session, onClose }: { session: Session; onClose: (
       </div>
       <div className="ix-cols">
         <div className="ix-screen">
-          {img ? (
-            <div className={`ix-screen-wrap${root?.bounds ? '' : ' natural'}`} style={root?.bounds ? { aspectRatio: `${devW} / ${devH}` } : undefined}>
-              <img src={img} alt="device" />
+          {screenSrc ? (
+            <div className={`ix-screen-wrap${root?.bounds ? '' : ' natural'}`} style={root?.bounds ? { aspectRatio: `${devW} / ${devH}` } : undefined}
+              onMouseDown={onDown} onMouseUp={onUp} title="click = tap · drag = swipe">
+              {streamUrl && <span className="ix-live">● LIVE</span>}
+              <img src={screenSrc} alt="device" draggable={false} />
+              {/* overlay is visual only (pointer-events:none) — the screen is a free tap/drag canvas */}
               <svg className="ix-overlay" viewBox={`0 0 ${devW} ${devH}`} preserveAspectRatio="none">
                 {els.filter((e) => e.bounds).map((e) => (
                   <rect key={e.index} x={e.bounds!.x} y={e.bounds!.y} width={e.bounds!.w} height={e.bounds!.h}
-                    className={sel?.index === e.index ? 'sel' : ''}
-                    onClick={() => setSel(e)} onDoubleClick={() => tap(e)} />
+                    className={sel?.index === e.index ? 'sel' : ''} />
                 ))}
               </svg>
             </div>
@@ -102,7 +125,7 @@ export function Interaction({ session, onClose }: { session: Session; onClose: (
 
         <div className="ix-sel">
           <div className="ix-sub">selected element</div>
-          {!sel && <div className="empty">click an element — on the screen or the tree</div>}
+          {!sel && <div className="empty">click a node in the tree to inspect · the screen is a live tap/swipe canvas</div>}
           {sel && (
             <div className="ix-detail">
               {locators(sel).map((l, i) => (
