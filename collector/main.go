@@ -557,6 +557,9 @@ func (c *collector) handleAct(w http.ResponseWriter, r *http.Request) {
 		Action string `json:"action"`
 		X      int    `json:"x"`
 		Y      int    `json:"y"`
+		X2     int    `json:"x2"` // swipe/drag end point
+		Y2     int    `json:"y2"`
+		Ms     int    `json:"ms"` // gesture duration
 		El     string `json:"element"`
 		Text   string `json:"text"`
 	}
@@ -567,6 +570,23 @@ func (c *collector) handleAct(w http.ResponseWriter, r *http.Request) {
 	case "tap":
 		url = base + "/actions"
 		body = fmt.Sprintf(`{"actions":[{"type":"pointer","id":"finger","parameters":{"pointerType":"touch"},"actions":[{"type":"pointerMove","duration":0,"x":%d,"y":%d},{"type":"pointerDown","button":0},{"type":"pause","duration":60},{"type":"pointerUp","button":0}]}]}`, in.X, in.Y)
+	case "swipe", "drag":
+		// a real-world gesture: press at (x,y), drag to (x2,y2) over ms, release.
+		// the pause after down makes it a drag, not a flick. A system swipe (iOS
+		// notification pull, Android shade) is just this starting from y≈0.
+		ms := in.Ms
+		if ms == 0 {
+			ms = 400
+		}
+		url = base + "/actions"
+		body = fmt.Sprintf(`{"actions":[{"type":"pointer","id":"finger","parameters":{"pointerType":"touch"},"actions":[{"type":"pointerMove","duration":0,"x":%d,"y":%d},{"type":"pointerDown","button":0},{"type":"pause","duration":120},{"type":"pointerMove","duration":%d,"x":%d,"y":%d},{"type":"pointerUp","button":0}]}]}`, in.X, in.Y, ms, in.X2, in.Y2)
+	case "longpress":
+		ms := in.Ms
+		if ms == 0 {
+			ms = 800
+		}
+		url = base + "/actions"
+		body = fmt.Sprintf(`{"actions":[{"type":"pointer","id":"finger","parameters":{"pointerType":"touch"},"actions":[{"type":"pointerMove","duration":0,"x":%d,"y":%d},{"type":"pointerDown","button":0},{"type":"pause","duration":%d},{"type":"pointerUp","button":0}]}]}`, in.X, in.Y, ms)
 	case "click":
 		url, body = base+"/element/"+in.El+"/click", `{}`
 	case "sendkeys":
@@ -584,7 +604,7 @@ func (c *collector) handleAct(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	c.echoOut(sid, rec.Physics, "act", map[string]any{"action": in.Action}, resp.StatusCode, time.Since(start).Milliseconds())
+	c.echoOut(sid, rec.Physics, "act", map[string]any{"action": in.Action, "from": fmt.Sprintf("%d,%d", in.X, in.Y), "to": fmt.Sprintf("%d,%d", in.X2, in.Y2)}, resp.StatusCode, time.Since(start).Milliseconds())
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	w.Write(rb)
