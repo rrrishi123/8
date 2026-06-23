@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>feed-probe</title>
+<style>
+  :root { color-scheme: dark light; }
+  body { background:#1e1e1e; color:#c0c0c0; font:13px/1.5 ui-monospace,Menlo,monospace; margin:0; padding:12px; }
+  h1 { font-size:13px; color:#888; font-weight:600; margin:0 0 8px; }
+  #status.live { color:#6a9955; }
+  #status.err  { color:#f48771; }
+  .row { padding:2px 6px; border-bottom:1px solid #2a2a2a; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ws   { color:#c586c0; }   /* channel */
+  .http { color:#569cd6; }   /* call */
+  .sess { color:#6a9955; }
+  .url  { color:#777; }
+</style>
+</head>
+<body>
+  <h1>feed-probe &mdash; real <code>/feed</code> from collector
+      <span id="status" class="err">connecting&hellip;</span>
+      &middot; <span id="count">0</span> frames</h1>
+  <div id="rows"></div>
+<script>
+  // The lean, honest consumer: a raw EventSource onto the collector's afferent
+  // feed. No framework. Each message is {session, frame:<BiDi/CDP event>}.
+  var rows = document.getElementById('rows');
+  var statusEl = document.getElementById('status');
+  var countEl = document.getElementById('count');
+  var n = 0;
+
+  var es = new EventSource('http://127.0.0.1:7070/feed');
+  es.onopen  = function () { statusEl.textContent = '● live'; statusEl.className = 'live'; };
+  es.onerror = function () { statusEl.textContent = '✗ error'; statusEl.className = 'err'; };
+  es.onmessage = function (e) {
+    var d; try { d = JSON.parse(e.data); } catch (_) { return; }
+    var f = d.frame || {};
+    var method = f.method || '?';
+    var p = f.params || {};
+    var url = p.url || (p.request && p.request.url) || (p.response && p.response.url) || '';
+    var isChannel = /(bidi|cdp|script|browsingContext|network|log|input|session)/.test(method);
+    n++; countEl.textContent = n;
+    var div = document.createElement('div');
+    div.className = 'row';
+    div.innerHTML =
+      '<span class="sess">' + (d.session || '?') + '</span> ' +
+      '<span class="' + (isChannel ? 'ws' : 'http') + '">' + method + '</span> ' +
+      '<span class="url">' + String(url).slice(0, 100) + '</span>';
+    rows.prepend(div);
+    while (rows.children.length > 200) rows.removeChild(rows.lastChild);
+  };
+</script>
+</body>
+</html>

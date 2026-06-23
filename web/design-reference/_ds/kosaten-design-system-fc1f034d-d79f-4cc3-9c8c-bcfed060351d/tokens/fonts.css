@@ -1,0 +1,10 @@
+/* ============================================================
+   Kosaten — Webfonts
+   The native app uses SF Mono / system monospaced. SF Mono is not
+   web-distributable, so we load JetBrains Mono (a close geometric
+   monospace) as the cross-platform stand-in for the brand voice.
+   System sans handles body copy with no webfont needed.
+   NOTE: substitution — see README "Caveats".
+   ============================================================ */
+
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap");

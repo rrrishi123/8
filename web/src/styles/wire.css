@@ -1,0 +1,149 @@
+/* Wire — 8's OWN design tokens, lifted verbatim from the original design
+   (.dc.html). It's an nvim color scheme: bottom
+   statusline, line-number gutter, cursorline selection. NOT Kosaten — Kosaten
+   is its own universe; this palette is this cockpit's own. Dark-first, with a
+   light variant via prefers-color-scheme. */
+:root {
+  --bg: #1e1e1e; --bg2: #181818; --panel: #1e1e1e;
+  --border: #333333; --cursorline: #2b2b2b;
+  --fg: #c0c0c0; --fg-dim: #7d7d7d; --fg-faint: #565656; --gutter: #5a6066;
+  --blue: #6a9bd8; --purple: #b48ead; --green: #8fbf6f;
+  --red: #d96c6c; --cyan: #6fb3b3; --yellow: #d8b46a;
+  --sel: #2d4f67; --sel-fg: #e8e8e8;
+  --sl-bg: #3c3c3c; --sl-fg: #d6d6d6;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f8f8f8; --bg2: #eeeeee; --panel: #f8f8f8;
+    --border: #d6d6d6; --cursorline: #ececec;
+    --fg: #333333; --fg-dim: #777777; --fg-faint: #a8a8a8; --gutter: #a0a0a0;
+    --blue: #2257c7; --purple: #8a3fa0; --green: #2e8b3d;
+    --red: #c0392b; --cyan: #1f8a8a; --yellow: #9a7a16;
+    --sel: #bcd6f5; --sel-fg: #10243a;
+    --sl-bg: #cccccc; --sl-fg: #222222;
+  }
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--mono); }
+.app { display: flex; flex-direction: column; height: 100vh; }
+
+/* bottom statusline (vim) — CSS order pins it under the panels */
+.statusline { order: 2; display: flex; gap: 14px; align-items: center; background: var(--sl-bg); color: var(--sl-fg); padding: 3px 10px; font-size: 12px; letter-spacing: .04em; }
+.statusline .mode { background: var(--green); color: var(--bg); padding: 0 8px; font-weight: 700; }
+.brand { color: var(--blue); font-weight: 700; }
+.live { color: var(--green); }
+.dead { color: var(--fg-dim); }
+
+.cols { order: 1; display: flex; gap: 1px; flex: 1; min-height: 0; background: var(--border); }
+.panel { background: var(--panel); display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.panel-h { padding: 4px 10px; color: var(--fg-faint); border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; display: flex; align-items: center; gap: 8px; }
+.stream { flex: 2; min-width: 0; }
+.empty { padding: 14px; color: var(--fg-faint); }
+.rows { list-style: none; margin: 0; padding: 0; overflow: auto; }
+
+/* capture row + line-number gutter */
+.cap-row { display: flex; gap: 10px; padding: 1px 10px 1px 0; white-space: nowrap; cursor: pointer; }
+.cap-row:hover { background: var(--cursorline); }
+.cap-row.sel { background: var(--sel); color: var(--sel-fg); }
+.cap-row .ln { width: 4ch; flex: none; text-align: right; color: var(--gutter); background: var(--bg2); padding: 0 6px 0 4px; }
+.cap-row .origin { width: 70px; flex: none; font-size: 10px; color: var(--fg-faint); }
+.cap-row .phys { width: 56px; flex: none; }
+.cap-row.phys-call .phys { color: var(--blue); }
+.cap-row.phys-channel .phys { color: var(--purple); }
+.cap-row .sess { width: 52px; flex: none; color: var(--green); }
+.cap-row .method { flex: none; color: var(--fg); }
+.cap-row.phys-call .method { color: var(--blue); }
+.cap-row .detail { color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.rows { overflow-x: hidden; }
+
+.side { display: flex; flex-direction: column; flex: none; width: 320px; min-width: 320px; gap: 1px; background: var(--border); }
+.viewport { flex: none; }
+.vp-img { display: block; max-width: 100%; max-height: 240px; object-fit: contain; margin: 6px auto; border: 1px solid var(--border); background: #000; }
+.tab-pick { margin-left: 8px; background: var(--bg); color: var(--fg); border: 1px solid var(--border); font: inherit; font-size: 11px; max-width: 150px; }
+
+.inspector { flex: 1; }
+.insp { padding: 8px 10px; overflow: auto; }
+.insp-head { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.tag { font-size: 10px; padding: 1px 6px; border: 1px solid var(--border); color: var(--fg-faint); }
+.tag.phys-call { color: var(--blue); }
+.tag.phys-channel { color: var(--purple); }
+.insp-method { color: var(--fg); }
+.insp-sess { color: var(--green); }
+.insp-detail { color: var(--fg-dim); margin-bottom: 8px; word-break: break-all; }
+.insp-raw { background: var(--bg2); padding: 6px; margin: 0; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--fg); }
+.insp-shot { display: block; max-width: 100%; max-height: 220px; object-fit: contain; border: 1px solid var(--border); background: #000; margin-bottom: 8px; }
+.insp-shot-wait { color: var(--fg-faint); font-size: 11px; margin-bottom: 8px; }
+
+.curl-in { margin: 8px; background: var(--bg2); color: var(--fg); border: 1px solid var(--border); font: inherit; padding: 6px; min-height: 60px; resize: vertical; }
+.beautified { margin: 0 8px; padding: 6px; background: var(--bg2); overflow: auto; max-height: 110px; color: var(--fg); }
+.row-actions { display: flex; gap: 10px; align-items: center; padding: 8px; }
+.fire { background: var(--blue); color: var(--bg); border: 0; padding: 4px 12px; font: inherit; cursor: pointer; font-weight: 700; }
+.fire:disabled { opacity: .4; cursor: default; }
+.hint { color: var(--fg-faint); }
+.result { margin: 8px; padding: 6px; background: var(--bg2); overflow: auto; max-height: 220px; color: var(--fg); }
+.err { margin: 8px; padding: 6px; color: var(--red); }
+
+/* ---- shared capture columns (header + rows align on fixed widths) ---- */
+.cap-head { display: flex; gap: 10px; padding: 3px 10px 3px 0; border-bottom: 1px solid var(--border); color: var(--fg-faint); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+.cap-row .ln, .cap-head .ln { width: 5ch; flex: none; text-align: right; padding: 0 8px 0 4px; }
+.cap-head .ln { background: transparent; }
+.cap-row .phys, .cap-head .phys { width: 64px; flex: none; }
+.cap-row .method, .cap-head .method { width: 210px; flex: none; }
+.cap-row .sess, .cap-head .sess { width: 64px; flex: none; color: var(--green); }
+.cap-row .detail, .cap-head .detail { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- left rail: physics filters + sessions ---- */
+.rail { width: 210px; flex: none; background: var(--panel); display: flex; flex-direction: column; overflow: auto; }
+.filters, .sess-list { list-style: none; margin: 0; padding: 4px 0; }
+.filt { display: flex; align-items: center; gap: 6px; padding: 4px 10px; cursor: pointer; }
+.filt:hover { background: var(--cursorline); }
+.filt .box { color: var(--fg-dim); }
+.filt.on .box { color: var(--green); }
+.filt .call { color: var(--blue); font-weight: 700; }
+.filt .chan { color: var(--purple); font-weight: 700; }
+.filt .sub { color: var(--fg-faint); font-size: 10px; }
+.filt .cnt { margin-left: auto; color: var(--fg); }
+.sess-card { display: block; padding: 4px 10px; color: var(--fg); line-height: 1.4; }
+.sess-card .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px var(--green); margin-right: 6px; vertical-align: middle; }
+.sess-card .sid { word-break: break-all; }
+.sess-card .sub { display: block; margin-left: 13px; color: var(--fg-faint); font-size: 10px; }
+.statusline .keys { margin-left: auto; color: var(--fg-dim); }
+.tab-row { display: flex; align-items: center; padding: 3px 10px; color: var(--fg-dim); }
+.tab-row .sid { color: var(--cyan); }
+.tab-row .cnt { margin-left: auto; color: var(--fg); }
+.insp-tab { color: var(--cyan); font-size: 11px; }
+.sess-card { cursor: pointer; }
+.sess-card:hover { background: var(--cursorline); }
+
+/* ---- interaction surface: screen+overlay | tree | selected element ---- */
+.interaction-view { flex: 2; min-width: 0; }
+.interaction-view .panel-h .ix-btn { margin-left: auto; background: var(--bg2); color: var(--fg); border: 1px solid var(--border); font: inherit; font-size: 11px; padding: 1px 8px; cursor: pointer; }
+.interaction-view .panel-h .ix-close { margin-left: 6px; }
+.ix-cols { display: flex; flex: 1; min-height: 0; gap: 1px; background: var(--border); }
+.ix-screen { flex: none; min-width: 300px; max-width: 46%; background: var(--panel); display: flex; align-items: flex-start; justify-content: center; padding: 8px; overflow: auto; }
+/* phone (has bounds): fill the full column HEIGHT, width derived from the inline
+   device aspect-ratio — as large as the cockpit is tall, so it's tappable.
+   The overlay SVG (device-coord viewBox) maps 1:1 onto the fill'd image. */
+.ix-screen-wrap { position: relative; height: 100%; }
+.ix-screen-wrap.natural { height: auto; width: 100%; max-width: 360px; } /* channel/desktop: natural ratio (no bounds to align an overlay to) */
+.ix-screen-wrap img { display: block; width: 100%; height: 100%; object-fit: fill; background: #000; border: 1px solid var(--border); }
+.ix-screen-wrap.natural img { height: auto; object-fit: contain; }
+.ix-overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+.ix-overlay rect { fill: transparent; stroke: var(--blue); stroke-width: 1; opacity: .28; cursor: pointer; vector-effect: non-scaling-stroke; }
+.ix-overlay rect:hover { opacity: .9; fill: rgba(106,155,216,.12); }
+.ix-overlay rect.sel { stroke: var(--green); opacity: 1; stroke-width: 2; fill: rgba(143,191,111,.14); }
+.ix-tree { flex: 1; min-width: 0; background: var(--panel); overflow: auto; }
+.ix-tree ul { list-style: none; margin: 0; padding: 2px 0; }
+.ix-node { white-space: nowrap; padding: 1px 8px; cursor: pointer; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; }
+.ix-node:hover { background: var(--cursorline); color: var(--fg); }
+.ix-node.sel { background: var(--sel); color: var(--sel-fg); }
+.ix-sel { flex: none; width: 280px; background: var(--panel); overflow: auto; }
+.ix-sub { padding: 4px 10px; color: var(--fg-faint); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); }
+.ix-note { text-transform: none; letter-spacing: 0; color: var(--yellow); margin-left: 6px; }
+.ix-detail { padding: 8px 10px; }
+.ix-loc-row { display: flex; gap: 8px; padding: 2px 0; border-bottom: 1px solid var(--border); }
+.ix-loc-row .by { width: 90px; flex: none; color: var(--cyan); font-size: 11px; }
+.ix-loc-row .val { color: var(--fg); word-break: break-all; font-size: 11px; }
+.ix-detail .fire { margin-top: 10px; }

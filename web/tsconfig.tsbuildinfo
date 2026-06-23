@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/pastecurl.tsx","./src/lib/api.ts","./src/lib/curl.ts","./src/lib/feed.ts","./src/types/index.ts"],"version":"5.9.3"}

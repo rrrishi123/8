@@ -1,0 +1,1348 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="_ds/kosaten-design-system-fc1f034d-d79f-4cc3-9c8c-bcfed060351d/tokens/fonts.css">
+  <style>
+    :root {
+      --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+      --bg:#1e1e1e; --bg2:#181818; --panel:#1e1e1e; --fg:#c0c0c0; --fg-dim:#7d7d7d; --fg-faint:#565656;
+      --border:#333333; --sl-bg:#3c3c3c; --sl-fg:#d6d6d6; --cursorline:#2b2b2b; --sel:#2d4f67; --sel-fg:#e8e8e8;
+      --blue:#6a9bd8; --purple:#b48ead; --green:#8fbf6f; --red:#d96c6c; --yellow:#d8b46a; --cyan:#6fb3b3; --gutter:#5a6066;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg:#f8f8f8; --bg2:#eeeeee; --panel:#f8f8f8; --fg:#333333; --fg-dim:#777777; --fg-faint:#a8a8a8;
+        --border:#d6d6d6; --sl-bg:#cccccc; --sl-fg:#222222; --cursorline:#ececec; --sel:#bcd6f5; --sel-fg:#10243a;
+        --blue:#2257c7; --purple:#8a3fa0; --green:#2e8b3d; --red:#c0392b; --yellow:#9a7a16; --cyan:#1f8a8a; --gutter:#a0a0a0;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin:0; height:100%; }
+    body { background: var(--bg); color: var(--fg); font-family: var(--mono); }
+    ::selection { background: var(--sel); color: var(--sel-fg); }
+    input, textarea { font-family: var(--mono); }
+    ::-webkit-scrollbar { width:10px; height:10px; }
+    ::-webkit-scrollbar-thumb { background: var(--border); }
+    ::-webkit-scrollbar-track { background: transparent; }
+    @keyframes wblink { 50% { opacity:.25; } }
+  </style>
+</helmet>
+
+<div data-screen-label="Command Explorer" style="{{rootStyle}}">
+
+  <div style="display:flex; align-items:center; justify-content:space-between; height:36px; padding:0 12px; background:var(--bg2); border-bottom:1px solid var(--border);">
+    <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+      <svg width="18" height="18" viewBox="0 0 26 26" fill="none" style="flex:none;">
+        <line x1="4" y1="5" x2="22" y2="21" stroke="var(--blue)" stroke-width="2.4"></line>
+        <line x1="22" y1="5" x2="4" y2="21" stroke="var(--purple)" stroke-width="2.4"></line>
+      </svg>
+      <span style="font-size:12px; font-weight:700; color:var(--fg); letter-spacing:.02em; white-space:nowrap;">command-explorer</span>
+      <span style="font-size:11px; color:var(--fg-faint); white-space:nowrap;">wire://capture</span>
+    </div>
+    <div style="display:flex; align-items:center; gap:4px;">
+      <div onClick="{{onToggleGrid}}" style="{{toolBtn}}" style-hover="background:var(--cursorline)">{{gridLabel}}</div>
+      <div onClick="{{onToggleCompose}}" style="{{toolBtn}}" style-hover="background:var(--cursorline)">i&nbsp;compose</div>
+      <div onClick="{{togglePause}}" style="{{toolBtn}}" style-hover="background:var(--cursorline)">{{pauseLabel}}</div>
+      <div onClick="{{onClear}}" style="{{toolBtn}}" style-hover="background:var(--cursorline)">⌫&nbsp;clear</div>
+      <div onClick="{{onSave}}" style="{{toolBtn}}" style-hover="background:var(--cursorline)">⇩&nbsp;save</div>
+    </div>
+  </div>
+
+  <div style="display:grid; grid-template-columns:236px 1fr 452px; min-height:0; overflow:hidden;">
+
+    <aside style="display:flex; flex-direction:column; min-width:0; min-height:0; background:var(--bg2); border-right:1px solid var(--border); overflow-y:auto;">
+      <div style="padding:9px 12px 4px; font-size:9.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--fg-faint);">physics</div>
+      <div style="padding:0 8px 8px;">
+        <div onClick="{{toggleCall}}" style="{{callRow}}" style-hover="background:var(--cursorline)">
+          <span style="color:var(--blue); flex:none;">{{callMark}}</span>
+          <span style="color:var(--blue); flex:none; width:52px; font-weight:700;">CALL</span>
+          <span style="flex:1; color:var(--fg-dim); font-size:11px;">http · rest</span>
+          <span style="color:var(--fg); font-variant-numeric:tabular-nums;">{{callCount}}</span>
+        </div>
+        <div onClick="{{toggleChannel}}" style="{{chanRow}}" style-hover="background:var(--cursorline)">
+          <span style="color:var(--purple); flex:none;">{{chanMark}}</span>
+          <span style="color:var(--purple); flex:none; width:52px; font-weight:700;">CHAN</span>
+          <span style="flex:1; color:var(--fg-dim); font-size:11px;">ws · cdp/bidi</span>
+          <span style="color:var(--fg); font-variant-numeric:tabular-nums;">{{channelCount}}</span>
+        </div>
+      </div>
+      <div style="padding:9px 12px 4px; font-size:9.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--fg-faint); display:flex; justify-content:space-between;">
+        <span>sessions</span><span style="color:var(--fg-faint);">{{sessionCount}}</span>
+      </div>
+      <div style="padding:0 8px 12px;">
+        <sc-for list="{{sessions}}" as="sess" hint-placeholder-count="4">
+          <div onClick="{{sess.onClick}}" style="{{sess.rowStyle}}" style-hover="background:var(--cursorline)">
+            <div style="display:flex; align-items:center; gap:7px;">
+              <span style="{{sess.dotStyle}}">{{sess.dot}}</span>
+              <span style="font-size:12px; color:var(--fg); font-weight:700;">{{sess.short}}</span>
+              <span style="{{sess.locStyle}}">{{sess.loc}}</span>
+              <span style="{{sess.physStyle}}">{{sess.phys}}</span>
+            </div>
+            <div style="font-size:10px; color:var(--fg-dim); margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{sess.hub}}</div>
+            <div style="font-size:9.5px; color:var(--fg-faint); margin-top:1px;">{{sess.browser}}</div>
+          </div>
+        </sc-for>
+      </div>
+    </aside>
+
+    <section style="display:flex; flex-direction:column; min-width:0; min-height:0; background:var(--bg);">
+      <sc-if value="{{showStream}}" hint-placeholder-val="{{true}}">
+      <div style="display:flex; flex-direction:column; flex:1; min-height:0;">
+      <div style="flex:none; display:flex; align-items:center; height:22px; padding:0 8px; background:var(--bg2); border-bottom:1px solid var(--border); font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:var(--fg-faint);">
+        <span style="flex:none; width:18px;"></span>
+        <span style="flex:none; width:46px; text-align:right; padding-right:8px;">ln</span>
+        <span style="flex:none; width:46px;">phys</span>
+        <span style="flex:none; width:78px;">method</span>
+        <span style="flex:1;">route</span>
+        <span style="flex:none; width:44px;">eff</span>
+        <span style="flex:none; width:44px; text-align:right;">stat</span>
+        <span style="flex:none; width:58px; text-align:right;">lat</span>
+        <span style="flex:none; width:66px; padding-left:8px;">sess</span>
+      </div>
+      <div style="display:flex; flex-direction:column; flex:1; min-height:0;">
+        <sc-if value="{{showAbove}}" hint-placeholder-val="{{false}}">
+          <div onClick="{{onPageUp}}" style="flex:none; height:20px; display:flex; align-items:center; justify-content:center; gap:8px; background:var(--bg2); border-bottom:1px solid var(--border); color:var(--fg-dim); font-size:10.5px; cursor:pointer;" style-hover="color:var(--blue)">
+            <span style="font-size:13px; line-height:1;">⋮</span><span>{{aboveText}}</span>
+          </div>
+        </sc-if>
+        <div ref="{{viewRef}}" onWheel="{{onWheel}}" style="flex:1; min-height:0; overflow:hidden;">
+          <sc-for list="{{winRows}}" as="r" hint-placeholder-count="22">
+            <div onClick="{{r.onClick}}" style="{{r.rowStyle}}">
+              <span style="{{r.signStyle}}">{{r.sign}}</span>
+              <span style="{{r.numStyle}}">{{r.num}}</span>
+              <span style="{{r.physStyle}}">{{r.phys}}</span>
+              <span style="{{r.methodStyle}}">{{r.method}}</span>
+              <span style="{{r.routeStyle}}">{{r.route}}</span>
+              <span style="{{r.effStyle}}">{{r.eff}}</span>
+              <span style="{{r.statStyle}}">{{r.stat}}</span>
+              <span style="{{r.latStyle}}">{{r.lat}}</span>
+              <span style="{{r.sessStyle}}">{{r.sess}}</span>
+            </div>
+          </sc-for>
+        </div>
+        <sc-if value="{{showBelow}}" hint-placeholder-val="{{false}}">
+          <div onClick="{{onPageDown}}" style="flex:none; height:20px; display:flex; align-items:center; justify-content:center; gap:8px; background:var(--bg2); border-top:1px solid var(--border); color:var(--fg-dim); font-size:10.5px; cursor:pointer;" style-hover="color:var(--blue)">
+            <span style="font-size:13px; line-height:1;">⋮</span><span>{{belowText}}</span>
+          </div>
+        </sc-if>
+      </div>
+      </div>
+      </sc-if>
+      <sc-if value="{{showGrid}}" hint-placeholder-val="{{false}}">
+      <div style="display:flex; flex-direction:column; flex:1; min-height:0;">
+        <div style="flex:none; display:flex; align-items:center; gap:10px; height:22px; padding:0 10px; background:var(--bg2); border-bottom:1px solid var(--border); font-size:9.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--fg-faint);">
+          <span style="color:var(--fg-dim);">live grid</span><span>{{sessionCount}} sessions</span><span style="flex:1;"></span><span>click a tile to focus</span>
+        </div>
+        <div style="flex:1; min-height:0; overflow-y:auto; padding:10px; display:grid; grid-template-columns:1fr 1fr; gap:10px; align-content:start;">
+          <sc-for list="{{mirrors}}" as="g" hint-placeholder-count="4">
+            <div onClick="{{g.onClick}}" style="cursor:pointer; display:flex; flex-direction:column;">
+              <div style="display:flex; align-items:center; gap:7px; margin-bottom:4px;">
+                <span style="{{g.liveDotStyle}}">●</span>
+                <span style="font-size:11px; font-weight:700; color:var(--fg);">{{g.sidShort}}</span>
+                <span style="font-size:9px; font-weight:700; padding:1px 5px; border:1px solid var(--border); color:{{g.physColor}};">{{g.physLabel}}</span>
+                <span style="flex:1;"></span>
+                <span style="font-size:8.5px; color:var(--fg-faint);">{{g.dimLabel}}</span>
+              </div>
+              <div style="{{g.frameWrapStyle}}">
+                <canvas width="{{g.cw}}" height="{{g.chh}}" ref="{{g.canvasRef}}" style="{{g.canvasStyle}}"></canvas>
+              </div>
+              <div style="display:flex; align-items:center; justify-content:space-between; margin-top:3px;">
+                <span style="font-size:8px; color:var(--fg-faint); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{g.url}}</span>
+                <span style="font-size:8px; color:var(--fg-faint); flex:none;">f{{g.frame}}</span>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      </sc-if>
+    </section>
+
+    <aside style="display:flex; flex-direction:column; min-width:0; min-height:0; background:var(--bg2); border-left:1px solid var(--border);">
+      <div style="flex:none; border-bottom:1px solid var(--border);">
+        <div style="display:flex; align-items:center; justify-content:space-between; padding:6px 10px; background:var(--bg2);">
+          <div style="display:flex; align-items:center; gap:7px; min-width:0;">
+            <span style="{{focusMirror.liveDotStyle}}">●</span>
+            <span style="font-size:11.5px; font-weight:700; color:var(--fg);">{{focusMirror.sidShort}}</span>
+            <span style="{{focusPhysTag}}">{{focusMirror.physLabel}}</span>
+          </div>
+          <span style="font-size:8.5px; color:var(--fg-faint); letter-spacing:.12em; text-transform:uppercase;">viewport · live</span>
+        </div>
+        <div style="padding:2px 10px 9px;">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+            <span style="font-size:9.5px; color:var(--fg-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;">{{focusMirror.url}}</span>
+            <span style="font-size:9px; font-weight:700; color:var(--fg); padding:1px 6px; border:1px solid var(--border); flex:none;">{{focusMirror.dimLabel}}</span>
+          </div>
+          <div style="{{focusMirror.frameWrapStyle}}">
+            <canvas width="{{focusMirror.cw}}" height="{{focusMirror.chh}}" ref="{{focusMirror.canvasRef}}" style="{{focusMirror.canvasStyle}}"></canvas>
+          </div>
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-top:5px;">
+            <span style="font-size:8px; color:var(--fg-faint);">{{focusMirror.device}} · {{focusMirror.dimLabel}}</span>
+            <span style="font-size:8px; color:var(--fg-faint);">screencast / mjpeg · ~10fps · f{{focusMirror.frame}}</span>
+          </div>
+        </div>
+      </div>
+      <div style="flex:none; display:flex; height:28px; border-bottom:1px solid var(--border);">
+        <div onClick="{{tabInspect.onClick}}" style="{{tabInspect.style}}">INSPECT</div>
+        <div onClick="{{tabBatch.onClick}}" style="{{tabBatch.style}}">{{tabBatch.label}}</div>
+        <div onClick="{{tabDiff.onClick}}" style="{{tabDiff.style}}">DIFF</div>
+        <div onClick="{{tabCast.onClick}}" style="{{tabCast.style}}">CAST</div>
+      </div>
+      <div style="flex:1; overflow-y:auto; min-height:0;">
+
+        <sc-if value="{{showInspect}}" hint-placeholder-val="{{true}}">
+          <div style="padding:13px 14px;">
+            <div style="display:flex; align-items:baseline; gap:9px; margin-bottom:6px;">
+              <span style="{{inspector.titleStyle}}">{{inspector.titleMethod}}</span>
+              <span style="font-size:10px; color:var(--fg-faint); letter-spacing:.05em;">{{inspector.kindText}}</span>
+            </div>
+            <div style="font-size:11.5px; color:var(--fg-dim); word-break:break-all; line-height:1.45; margin-bottom:9px;">{{inspector.route}}</div>
+            <div style="display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin-bottom:11px;">
+              <span style="{{inspector.statStyle}}">{{inspector.statText}}</span>
+              <span style="{{chipStyle}}">{{inspector.latText}}</span>
+              <span style="{{inspector.effStyle}}">{{inspector.effText}}</span>
+              <span style="{{chipStyle}}">{{inspector.sessText}}</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:6px; margin-bottom:5px;">
+              <span style="font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--fg-faint);">replay →</span>
+              <sc-for list="{{replayTargets}}" as="rt" hint-placeholder-count="4">
+                <div onClick="{{rt.onClick}}" style="{{rt.style}}" style-hover="color:var(--fg)">{{rt.label}}</div>
+              </sc-for>
+            </div>
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:13px;">
+              <div onClick="{{onReplay}}" style="{{runBtnSm}}" style-hover="filter:brightness(1.12)">↻ Replay</div>
+              <span style="font-size:9.5px; color:var(--fg-faint); line-height:1.4;">0-credit · deterministic<br>r · enter</span>
+            </div>
+            <sc-for list="{{inspector.blocks}}" as="b" hint-placeholder-count="5">
+              <div style="margin-bottom:12px;">
+                <div style="font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:var(--fg-faint); margin-bottom:4px;">{{b.label}}</div>
+                <pre style="{{preStyle}}">{{b.value}}</pre>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{showInspectEmpty}}" hint-placeholder-val="{{false}}">
+          <div style="padding:24px 14px; color:var(--fg-faint); font-size:11.5px; line-height:1.7;">no row selected.<br>j / k to move · enter to inspect.</div>
+        </sc-if>
+
+        <sc-if value="{{showBatch}}" hint-placeholder-val="{{false}}">
+          <div style="padding:13px 14px;">
+            <div style="font-size:12px; font-weight:700; color:var(--fg); margin-bottom:3px;">batch run · {{selCount}} calls</div>
+            <div style="font-size:10px; color:var(--fg-faint); margin-bottom:10px;">V visual · m mark · shift/ctrl-click · esc clears</div>
+
+            <div style="border:1px solid var(--border); margin-bottom:13px; max-height:128px; overflow-y:auto;">
+              <sc-for list="{{selectedList}}" as="si" hint-placeholder-count="3">
+                <div style="display:flex; align-items:center; gap:8px; padding:3px 8px; font-size:11px; border-bottom:1px solid var(--border);">
+                  <span style="flex:none; width:34px; text-align:right; color:var(--gutter);">{{si.num}}</span>
+                  <span style="{{si.methodStyle}}">{{si.method}}</span>
+                  <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--fg-dim);">{{si.route}}</span>
+                  <span style="flex:none; color:var(--fg-faint);">{{si.lat}}</span>
+                </div>
+              </sc-for>
+              <sc-if value="{{hasMore}}" hint-placeholder-val="{{false}}">
+                <div style="padding:3px 8px; font-size:10.5px; color:var(--fg-faint);">{{moreText}}</div>
+              </sc-if>
+            </div>
+
+            <div style="font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:var(--fg-faint); margin-bottom:5px;">run target</div>
+            <sc-for list="{{targetChoices}}" as="t" hint-placeholder-count="4">
+              <div onClick="{{t.onClick}}" style="{{t.rowStyle}}" style-hover="background:var(--cursorline)">
+                <span style="{{t.markStyle}}">{{t.mark}}</span>
+                <span style="flex:1;">{{t.label}}</span>
+                <span style="color:var(--fg-faint); font-size:10px;">{{t.sub}}</span>
+              </div>
+            </sc-for>
+
+            <sc-if value="{{showCaps}}" hint-placeholder-val="{{false}}">
+              <div style="margin:8px 0 4px;">
+                <div style="font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:var(--fg-faint); margin-bottom:4px;">capabilities · json</div>
+                <textarea value="{{capsValue}}" onChange="{{onCaps}}" spellcheck="false" style="{{capsStyle}}"></textarea>
+              </div>
+            </sc-if>
+
+            <div style="display:flex; gap:18px; margin-top:11px;">
+              <div style="flex:1;">
+                <div style="font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:var(--fg-faint); margin-bottom:5px;">order</div>
+                <sc-for list="{{orderChoices}}" as="o" hint-placeholder-count="2">
+                  <div onClick="{{o.onClick}}" style="{{o.rowStyle}}" style-hover="background:var(--cursorline)">
+                    <span style="{{o.markStyle}}">{{o.mark}}</span><span>{{o.label}}</span>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="flex:1;">
+                <div style="font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:var(--fg-faint); margin-bottom:5px;">on error</div>
+                <sc-for list="{{errChoices}}" as="er" hint-placeholder-count="2">
+                  <div onClick="{{er.onClick}}" style="{{er.rowStyle}}" style-hover="background:var(--cursorline)">
+                    <span style="{{er.markStyle}}">{{er.mark}}</span><span>{{er.label}}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="font-size:9.5px; color:var(--fg-faint); margin:6px 2px 11px; line-height:1.5;">{{orderNote}}</div>
+
+            <div onClick="{{onTogglePreflight}}" style="display:flex; align-items:center; gap:8px; padding:4px 6px; cursor:pointer; margin-bottom:12px;" style-hover="background:var(--cursorline)">
+              <span style="{{preflightMarkStyle}}">{{preflightMark}}</span>
+              <span style="flex:1;">preflight — validate before run</span>
+            </div>
+
+            <sc-if value="{{hasPreflight}}" hint-placeholder-val="{{false}}">
+              <div style="border:1px solid var(--border); padding:8px; margin-bottom:12px;">
+                <div style="font-size:10px; color:var(--fg-dim); margin-bottom:6px;">{{preflightSummary}}</div>
+                <sc-for list="{{preflightItems}}" as="p" hint-placeholder-count="2">
+                  <div style="display:flex; gap:8px; font-size:10.5px; padding:2px 0;">
+                    <span style="{{p.markStyle}}">{{p.mark}}</span>
+                    <span style="flex:1; color:var(--fg-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{p.label}}</span>
+                    <span style="{{p.noteStyle}}">{{p.note}}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-if>
+
+            <div onClick="{{onRun}}" style="{{runBtnLg}}" style-hover="filter:brightness(1.12)">▷&nbsp;&nbsp;{{runLabel}}</div>
+
+            <sc-if value="{{hasRunResult}}" hint-placeholder-val="{{false}}">
+              <div style="border:1px solid var(--border); margin-top:13px;">
+                <div style="{{runSummaryStyle}}">{{runSummary}}</div>
+                <sc-for list="{{runItems}}" as="ri" hint-placeholder-count="3">
+                  <div style="display:flex; align-items:center; gap:8px; padding:3px 8px; font-size:10.5px; border-top:1px solid var(--border);">
+                    <span style="{{ri.markStyle}}">{{ri.mark}}</span>
+                    <span style="flex:1; color:var(--fg-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ri.label}}</span>
+                    <span style="{{ri.noteStyle}}">{{ri.note}}</span>
+                    <span style="flex:none; width:52px; text-align:right; color:var(--fg-faint);">{{ri.lat}}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-if>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{showDiff}}" hint-placeholder-val="{{false}}">
+          <div style="padding:13px 14px;">
+            <div style="font-size:12px; font-weight:700; color:var(--fg); margin-bottom:3px;">diff · {{diff.rowLabel}}</div>
+            <div style="display:flex; gap:10px; font-size:10.5px; margin-bottom:10px;">
+              <span style="color:var(--red);">− {{diff.leftLabel}}</span>
+              <span style="color:var(--green);">+ {{diff.rightLabel}}</span>
+            </div>
+            <sc-if value="{{diff.identical}}" hint-placeholder-val="{{false}}">
+              <div style="padding:10px; border:1px solid var(--border); color:var(--fg-dim); font-size:11.5px;">responses identical — deterministic replay, no drift.</div>
+            </sc-if>
+            <sc-if value="{{diffHasLines}}" hint-placeholder-val="{{false}}">
+              <div style="border:1px solid var(--border); overflow-x:auto;">
+                <sc-for list="{{diff.lines}}" as="dl" hint-placeholder-count="6">
+                  <div style="{{dl.style}}">{{dl.gutter}}{{dl.text}}</div>
+                </sc-for>
+              </div>
+            </sc-if>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{showDiffEmpty}}" hint-placeholder-val="{{false}}">
+          <div style="padding:24px 14px; color:var(--fg-faint); font-size:11.5px; line-height:1.7;">no diff yet.<br>replay a row (r / enter) to compare.</div>
+        </sc-if>
+
+        <sc-if value="{{showCast}}" hint-placeholder-val="{{false}}">
+          <div style="padding:13px 14px;">
+            <div style="font-size:12px; font-weight:700; color:var(--fg); margin-bottom:3px;">broadcast · run on every session</div>
+            <div style="font-size:10px; color:var(--fg-faint); margin-bottom:11px;">one command → all live sessions at once · b to broadcast cursor row</div>
+
+            <div style="font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:var(--fg-faint); margin-bottom:5px;">source</div>
+            <div style="display:flex; gap:5px; margin-bottom:8px;">
+              <div onClick="{{castSourceCursor.onClick}}" style="{{castSourceCursor.style}}" style-hover="filter:brightness(1.1)">cursor row</div>
+              <div onClick="{{castSourceCompose.onClick}}" style="{{castSourceCompose.style}}" style-hover="filter:brightness(1.1)">compose atom</div>
+            </div>
+            <div style="border:1px solid var(--border); padding:7px 9px; margin-bottom:12px; font-size:11px; color:var(--fg); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{castCmdLabel}}</div>
+
+            <div style="font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:var(--fg-faint); margin-bottom:5px;">targets · sessions</div>
+            <div style="border:1px solid var(--border); margin-bottom:12px;">
+              <sc-for list="{{castTargetsList}}" as="ct" hint-placeholder-count="4">
+                <div onClick="{{ct.onClick}}" style="{{ct.rowStyle}}" style-hover="background:var(--cursorline)">
+                  <span style="{{ct.markStyle}}">{{ct.mark}}</span>
+                  <span style="flex:none; width:38px; font-weight:700; font-size:10px; color:{{ct.physColor}};">{{ct.physLabel}}</span>
+                  <span style="flex:1;">{{ct.sidShort}}</span>
+                  <span style="{{ct.stateStyle}}">{{ct.state}}</span>
+                </div>
+              </sc-for>
+            </div>
+
+            <div style="font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:var(--fg-faint); margin-bottom:5px;">order</div>
+            <sc-for list="{{orderChoices}}" as="o" hint-placeholder-count="2">
+              <div onClick="{{o.onClick}}" style="{{o.rowStyle}}" style-hover="background:var(--cursorline)">
+                <span style="{{o.markStyle}}">{{o.mark}}</span><span>{{o.label}}</span>
+              </div>
+            </sc-for>
+            <div style="font-size:9.5px; color:var(--fg-faint); margin:5px 2px 12px; line-height:1.5;">{{orderNote}}</div>
+
+            <div onClick="{{onBroadcast}}" style="{{runBtnLg}}" style-hover="filter:brightness(1.12)">{{castRunLabel}}</div>
+
+            <sc-if value="{{hasCastResult}}" hint-placeholder-val="{{false}}">
+              <div style="border:1px solid var(--border); margin-top:13px;">
+                <div style="{{runSummaryStyle}}">{{castSummary}}</div>
+                <sc-for list="{{castItems}}" as="ci" hint-placeholder-count="4">
+                  <div style="display:flex; align-items:center; gap:8px; padding:3px 8px; font-size:10.5px; border-top:1px solid var(--border);">
+                    <span style="{{ci.markStyle}}">{{ci.mark}}</span>
+                    <span style="{{ci.physStyle}}">{{ci.physLabel}}</span>
+                    <span style="flex:1; color:var(--fg-dim);">{{ci.sid}}</span>
+                    <span style="{{ci.noteStyle}}">{{ci.note}}</span>
+                    <span style="{{ci.statusStyle}}">{{ci.status}}</span>
+                    <span style="flex:none; width:48px; text-align:right; color:var(--fg-faint);">{{ci.lat}}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-if>
+          </div>
+        </sc-if>
+
+      </div>
+    </aside>
+
+  </div>
+
+  <sc-if value="{{composeOpen}}" hint-placeholder-val="{{false}}">
+    <div style="background:var(--bg2); border-top:1px solid var(--border); padding:9px 12px;">
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+        <span style="font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--fg-faint);">compose</span>
+        <div style="display:flex; gap:5px;">
+          <sc-for list="{{composeKinds}}" as="ck" hint-placeholder-count="2">
+            <div onClick="{{ck.onClick}}" style="{{ck.style}}" style-hover="filter:brightness(1.1)">{{ck.label}}</div>
+          </sc-for>
+        </div>
+        <span style="flex:1; font-size:10px; color:var(--fg-faint);">raw editable atom — fire onto the wire</span>
+        <div onClick="{{onFire}}" style="{{runBtnSm}}" style-hover="filter:brightness(1.12)">▷ Fire</div>
+        <div onClick="{{onComposeBroadcast}}" style="{{toolBtn}}" style-hover="background:var(--cursorline)">⇉ all sessions</div>
+        <div onClick="{{onToggleCompose}}" style="{{toolBtn}}" style-hover="background:var(--cursorline)">esc</div>
+      </div>
+      <sc-if value="{{isHttp}}" hint-placeholder-val="{{true}}">
+        <div style="display:flex; gap:8px;">
+          <div style="display:flex; gap:4px;">
+            <sc-for list="{{methodChoices}}" as="mc" hint-placeholder-count="3">
+              <div onClick="{{mc.onClick}}" style="{{mc.style}}" style-hover="filter:brightness(1.1)">{{mc.m}}</div>
+            </sc-for>
+          </div>
+          <input value="{{c.url}}" onChange="{{onUrl}}" spellcheck="false" placeholder="http://127.0.0.1:4444/wd/hub/session/{id}/url" style="{{inpStyle}}">
+          <input value="{{c.headers}}" onChange="{{onHeaders}}" spellcheck="false" placeholder="headers" style="{{inpStyle}}">
+          <input value="{{c.body}}" onChange="{{onBody}}" spellcheck="false" placeholder="body" style="{{inpStyle}}">
+        </div>
+      </sc-if>
+      <sc-if value="{{isBidi}}" hint-placeholder-val="{{false}}">
+        <div style="display:flex; gap:8px;">
+          <input value="{{c.wsUrl}}" onChange="{{onWsUrl}}" spellcheck="false" placeholder="ws://localhost:9222/devtools/page/…" style="{{inpStyle}}">
+          <input value="{{c.bidiMethod}}" onChange="{{onBidiMethod}}" spellcheck="false" placeholder="Runtime.evaluate" style="{{inpStyleSm}}">
+          <input value="{{c.params}}" onChange="{{onParams}}" spellcheck="false" placeholder="params" style="{{inpStyle}}">
+        </div>
+      </sc-if>
+    </div>
+  </sc-if>
+
+  <div style="display:flex; align-items:stretch; height:24px; background:var(--sl-bg); color:var(--sl-fg); font-size:11px; overflow:hidden;">
+    <span style="{{slModeStyle}}">{{slMode}}</span>
+    <span style="display:flex; align-items:center; padding:0 11px; border-right:1px solid rgba(128,128,128,.3);">SESSION&nbsp;<span style="color:var(--blue); font-weight:700;">&nbsp;{{slSession}}</span></span>
+    <span style="display:flex; align-items:center; padding:0 11px; border-right:1px solid rgba(128,128,128,.3);">{{slConnText}}</span>
+    <span style="display:flex; align-items:center; padding:0 11px; border-right:1px solid rgba(128,128,128,.3);">LATENCY&nbsp;<span style="font-weight:700;">&nbsp;{{slLat}}</span></span>
+    <span style="display:flex; align-items:center; padding:0 11px; border-right:1px solid rgba(128,128,128,.3);">CAPTURE&nbsp;<span style="font-weight:700;">&nbsp;{{slCapture}}</span></span>
+    <span style="display:flex; align-items:center; padding:0 11px; color:{{slCaptureColor}};">{{slCaptureState}}</span>
+    <span style="flex:1;"></span>
+    <span style="display:flex; align-items:center; padding:0 11px; color:var(--sl-fg); opacity:.85;">{{slSel}}</span>
+    <span style="display:flex; align-items:center; padding:0 11px; border-left:1px solid rgba(128,128,128,.3); font-variant-numeric:tabular-nums;">{{slPos}}</span>
+  </div>
+
+  <div style="height:22px; background:var(--bg); border-top:1px solid var(--border); display:flex; align-items:center; padding:0 10px; font-size:11.5px;">
+    <sc-if value="{{cmdMode}}" hint-placeholder-val="{{false}}">
+      <input ref="{{cmdRef}}" value="{{cmdText}}" onInput="{{onCmdInput}}" onKeyDown="{{onCmdKey}}" spellcheck="false" style="flex:1; background:transparent; border:none; outline:none; color:var(--fg); font-family:var(--mono); font-size:11.5px;">
+    </sc-if>
+    <sc-if value="{{hasConfirm}}" hint-placeholder-val="{{false}}">
+      <span style="color:var(--yellow);">{{confirmText}}</span>
+    </sc-if>
+    <sc-if value="{{showHints}}" hint-placeholder-val="{{true}}">
+      <span style="flex:1; color:{{messageColor}};">{{messageText}}</span>
+      <span style="color:var(--fg-faint);">j/k · enter · V visual · m mark · r replay · b cast · z grid · : cmd · q</span>
+    </sc-if>
+  </div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;$preview&quot;: { &quot;width&quot;: 1366, &quot;height&quot;: 900 },
+  &quot;theme&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;system&quot;, &quot;dark&quot;, &quot;light&quot;], &quot;default&quot;: &quot;system&quot;, &quot;tsType&quot;: &quot;string&quot; },
+  &quot;liveCapture&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot; },
+  &quot;showProbes&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot; },
+  &quot;relativeNumbers&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot; }
+}">
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.ROWH = 22;
+    this.viewRef = React.createRef();
+    this.cmdRef = React.createRef();
+    this.follow = true;
+    this._lastLen = 0;
+    this._cmdFocused = false;
+    this._gPending = false;
+    this.idSeq = 1;
+    this.wsIdSeq = 60;
+    this.sessionCounter = 1;
+    const sessions = this.buildSessions();
+    const stream = this.buildAll();
+    const idx = stream.findIndex(r => r.id === this._createId);
+    this.state = {
+      capturing: this.props.liveCapture !== false,
+      filters: { call: true, channel: true },
+      filterSession: null,
+      sessions, stream,
+      cursor: idx < 0 ? stream.length - 1 : idx,
+      anchor: idx < 0 ? stream.length - 1 : idx,
+      selected: this._createId ? [this._createId] : [],
+      inspectId: this._createId || null,
+      vimMode: 'NORMAL',
+      rightTab: 'inspect',
+      diff: null,
+      cmdMode: false, cmdText: ':',
+      confirm: null,
+      message: 'ready · ' + stream.length + ' on the wire',
+      messageColor: 'var(--fg-dim)',
+      top: 0, vis: 18,
+      runTarget: 'current', order: 'serial', onError: 'stop', preflight: false,
+      caps: {
+        'new-local': '{\n  "browserName": "chrome",\n  "goog:chromeOptions": { "args": ["--headless=new"] }\n}',
+        'new-cloud': '{\n  "browserName": "safari",\n  "bstack:options": { "os": "ios", "deviceName": "iPhone 15" }\n}',
+        'new-appium': '{\n  "platformName": "Android",\n  "appium:automationName": "UiAutomator2",\n  "appium:deviceName": "Pixel 8"\n}'
+      },
+      preflightResult: null, runResult: null,
+      replayTarget: 'current',
+      composeOpen: false, composeKind: 'http',
+      compose: {
+        method: 'POST',
+        url: 'http://127.0.0.1:4444/wd/hub/session/a1f3c8b2/url',
+        headers: '{"Content-Type":"application/json"}',
+        body: '{"url":"https://demo.app/dashboard"}',
+        wsUrl: 'ws://localhost:9222/devtools/page/3A7F2C',
+        bidiMethod: 'Runtime.evaluate',
+        params: '{"expression":"document.title","returnByValue":true}'
+      },
+      focusSession: 's1', gridView: false, tick: 0,
+      castSource: 'cursor', castExclude: {}, castResult: null
+    };
+  }
+
+  componentDidMount() {
+    this._key = this.handleKey.bind(this);
+    window.addEventListener('keydown', this._key, true);
+    this._resize = () => this.measureVis();
+    window.addEventListener('resize', this._resize);
+    setTimeout(() => { this.measureVis(); this.setTop(this.maxTop()); this.ensureVisible(this.state.cursor); }, 0);
+    this.connectFeed(); // was: setInterval synthetic rows — now real frames from the collector /feed
+    this.tickTimer = setInterval(() => this.setState(st => ({ tick: (st.tick + 1) % 1000000 })), 100);
+  }
+  componentWillUnmount() {
+    clearInterval(this.timer);
+    clearInterval(this.tickTimer);
+    if (this.feed) this.feed.close();
+    window.removeEventListener('keydown', this._key, true);
+    window.removeEventListener('resize', this._resize);
+    clearTimeout(this._msgT);
+  }
+  componentDidUpdate() {
+    if (this.state.cmdMode && !this._cmdFocused) { const c = this.cmdRef.current; if (c) { c.focus(); if (c.setSelectionRange) c.setSelectionRange(c.value.length, c.value.length); this._cmdFocused = true; } }
+    if (!this.state.cmdMode) this._cmdFocused = false;
+    this.measureVis();
+    this.paintAll();
+    const len = this.state.stream.length;
+    if (len !== this._lastLen) { this._lastLen = len; if (this.follow) { const mt = this.maxTop(); if (this.state.top !== mt) this.setState({ top: mt }); } }
+  }
+
+  // ---------- seed data ----------
+  buildSessions() {
+    return [
+      { id: 's1', hub: 'http://127.0.0.1:4444/wd/hub', sid: 'a1f3c8b2', loc: 'local', physics: 'call', alive: true, cdp: true, browser: 'chrome 126 · webdriver', kind: 'browser', device: 'chrome window', dw: 1280, dh: 800, url: 'https://demo.app/login' },
+      { id: 'c1', hub: 'ws://localhost:9222/devtools', sid: '4f8b2a90', loc: 'local', physics: 'channel', alive: true, cdp: true, browser: 'chrome cdp · bidi', kind: 'browser', device: 'chrome window', dw: 1440, dh: 900, url: 'https://demo.app/dashboard' },
+      { id: 's2', hub: 'https://hub-cloud.browserstack.com/wd/hub', sid: '9c2e7b14', loc: 'cloud', physics: 'call', alive: true, cdp: false, browser: 'safari 17 · ios 17', kind: 'phone', device: 'iphone 14 pro', dw: 1170, dh: 2532, url: 'https://demo.app/m/reports' },
+      { id: 's3', hub: 'http://127.0.0.1:4723/wd/hub', sid: '2d11aa67', loc: 'local', physics: 'call', alive: false, cdp: false, browser: 'appium · pixel 8', kind: 'phone', device: 'pixel 8', dw: 1080, dh: 2400, url: '—' }
+    ];
+  }
+  poolTemplates() {
+    const rnd = n => Math.floor(Math.random() * n);
+    const rid = () => '1000.' + (40 + rnd(900));
+    return [
+      () => ({ physics: 'call', method: 'GET', route: '/session/a1f3c8b2/title', status: 200, latency: 28 + rnd(40), sideEffect: false, sessionId: 's1', reqUrl: 'http://127.0.0.1:4444/wd/hub/session/a1f3c8b2/title', reqHeaders: { Accept: 'application/json' }, reqBody: null, respBody: { value: 'demo · dashboard' } }),
+      () => ({ physics: 'call', method: 'POST', route: '/session/a1f3c8b2/element', status: 200, latency: 55 + rnd(50), sideEffect: false, sessionId: 's1', reqUrl: 'http://127.0.0.1:4444/wd/hub/session/a1f3c8b2/element', reqHeaders: { 'Content-Type': 'application/json' }, reqBody: { using: 'css selector', value: '[data-test="row"]' }, respBody: { value: { 'element-6066-11e4-a52e-4f735466cecf': 'b3c9e0' } } }),
+      () => ({ physics: 'call', method: 'POST', route: '/session/a1f3c8b2/element/b3c9e0/click', status: 200, latency: 70 + rnd(60), sideEffect: true, sessionId: 's1', reqUrl: 'http://127.0.0.1:4444/wd/hub/session/a1f3c8b2/element/b3c9e0/click', reqHeaders: { 'Content-Type': 'application/json' }, reqBody: {}, respBody: { value: null } }),
+      () => ({ physics: 'call', method: 'GET', route: '/session/a1f3c8b2/element/b3c9e0/text', status: 200, latency: 30 + rnd(30), sideEffect: false, sessionId: 's1', reqUrl: 'http://127.0.0.1:4444/wd/hub/session/a1f3c8b2/element/b3c9e0/text', reqHeaders: { Accept: 'application/json' }, reqBody: null, respBody: { value: 'Sign in' } }),
+      () => ({ physics: 'call', method: 'POST', route: '/session/9c2e7b14/url', status: 200, latency: 180 + rnd(160), sideEffect: true, sessionId: 's2', reqUrl: 'https://hub-cloud.browserstack.com/wd/hub/session/9c2e7b14/url', reqHeaders: { 'Content-Type': 'application/json' }, reqBody: { url: 'https://demo.app/reports' }, respBody: { value: null } }),
+      () => ({ physics: 'call', method: 'DELETE', route: '/session/2d11aa67', status: 404, latency: 12 + rnd(20), sideEffect: true, sessionId: 's3', reqUrl: 'http://127.0.0.1:4723/wd/hub/session/2d11aa67', reqHeaders: { Accept: 'application/json' }, reqBody: null, respBody: { value: { error: 'invalid session id', message: 'session deleted' } } }),
+      () => ({ physics: 'call', method: 'GET', route: '/status', status: 200, latency: 7 + rnd(10), sideEffect: false, sessionId: 's1', reqUrl: 'http://127.0.0.1:4444/wd/hub/status', reqHeaders: { Accept: 'application/json' }, reqBody: null, respBody: { value: { ready: true, message: 'Grid ready' } } }),
+      () => ({ physics: 'channel', kind: 'cmd-resp', wsMethod: 'Runtime.evaluate', wsId: this.wsIdSeq++, params: { expression: 'document.readyState', returnByValue: true }, result: { result: { type: 'string', value: 'complete' } }, latency: 9 + rnd(20), sideEffect: false, sessionId: 'c1', wsUrl: 'ws://localhost:9222/devtools/page/3A7F2C' }),
+      () => ({ physics: 'channel', kind: 'cmd-resp', wsMethod: 'DOM.getDocument', wsId: this.wsIdSeq++, params: { depth: 1, pierce: false }, result: { root: { nodeId: 1, nodeName: '#document', childNodeCount: 2 } }, latency: 13 + rnd(22), sideEffect: false, sessionId: 'c1', wsUrl: 'ws://localhost:9222/devtools/page/3A7F2C' }),
+      () => ({ physics: 'channel', kind: 'cmd-resp', wsMethod: 'Input.dispatchMouseEvent', wsId: this.wsIdSeq++, params: { type: 'mousePressed', x: 412, y: 288, button: 'left', clickCount: 1 }, result: {}, latency: 6 + rnd(14), sideEffect: true, sessionId: 'c1', wsUrl: 'ws://localhost:9222/devtools/page/3A7F2C' }),
+      () => ({ physics: 'channel', kind: 'event', wsMethod: 'Network.requestWillBeSent', params: { requestId: rid(), request: { url: 'https://demo.app/api/metrics', method: 'GET' }, type: 'XHR' }, latency: 0, sideEffect: false, sessionId: 'c1', wsUrl: 'ws://localhost:9222/devtools/page/3A7F2C' }),
+      () => ({ physics: 'channel', kind: 'event', wsMethod: 'Network.responseReceived', params: { requestId: rid(), response: { url: 'https://demo.app/api/metrics', status: 200, mimeType: 'application/json' }, type: 'XHR' }, latency: 0, sideEffect: false, sessionId: 'c1', wsUrl: 'ws://localhost:9222/devtools/page/3A7F2C' }),
+      () => ({ physics: 'channel', kind: 'event', wsMethod: 'Runtime.consoleAPICalled', params: { type: 'log', args: [{ type: 'string', value: '[demo] route ready' }] }, latency: 0, sideEffect: false, sessionId: 'c1', wsUrl: 'ws://localhost:9222/devtools/page/3A7F2C' })
+    ];
+  }
+  namedSeeds() {
+    return [
+      { physics: 'call', method: 'POST', route: '/session', status: 200, latency: 342, sideEffect: true, sessionId: 's1',
+        reqUrl: 'http://127.0.0.1:4444/wd/hub/session',
+        reqHeaders: { 'Content-Type': 'application/json; charset=utf-8', 'Accept': 'application/json', 'User-Agent': 'selenium/4.21.0 (java mac)' },
+        reqBody: { capabilities: { alwaysMatch: { browserName: 'chrome', 'goog:chromeOptions': { args: ['--headless=new', '--window-size=1280,800'] } } } },
+        respBody: { value: { sessionId: 'a1f3c8b27d44', capabilities: { browserName: 'chrome', browserVersion: '126.0.6478', platformName: 'mac', 'goog:chromeOptions': { debuggerAddress: 'localhost:9222' } } } } },
+      { physics: 'channel', kind: 'cmd-resp', wsMethod: 'Page.navigate', wsId: 18, sideEffect: true, latency: 214, sessionId: 'c1',
+        wsUrl: 'ws://localhost:9222/devtools/page/3A7F2C', params: { url: 'https://demo.app/login', transitionType: 'address_bar' },
+        result: { frameId: '3A7F2C8E9B1D', loaderId: '9C1F0A77E2', errorText: '' } },
+      { physics: 'channel', kind: 'event', wsMethod: 'Network.responseReceived', sideEffect: false, latency: 0, sessionId: 'c1',
+        wsUrl: 'ws://localhost:9222/devtools/page/3A7F2C',
+        params: { requestId: '1000.42', timestamp: 184213.77, type: 'Document', response: { url: 'https://demo.app/login', status: 200, mimeType: 'text/html', remoteIPAddress: '104.18.32.7' } } },
+      { physics: 'call', method: 'POST', route: '/session/a1f3c8b2/element', status: 200, latency: 71, sideEffect: false, sessionId: 's1',
+        reqUrl: 'http://127.0.0.1:4444/wd/hub/session/a1f3c8b2/element',
+        reqHeaders: { 'Content-Type': 'application/json' }, reqBody: { using: 'css selector', value: 'button[type="submit"]' },
+        respBody: { value: { 'element-6066-11e4-a52e-4f735466cecf': 'f8a2d1' } } },
+      { physics: 'call', method: 'POST', route: '/session/a1f3c8b2/element/f8a2d1/click', status: 200, latency: 88, sideEffect: true, sessionId: 's1',
+        reqUrl: 'http://127.0.0.1:4444/wd/hub/session/a1f3c8b2/element/f8a2d1/click',
+        reqHeaders: { 'Content-Type': 'application/json' }, reqBody: {}, respBody: { value: null } }
+    ];
+  }
+  buildAll() {
+    // No synthetic seed: the stream fills ONLY from the real /feed. Nothing made up.
+    this.idSeq = 1;
+    this._createId = 0;
+    return [];
+  }
+
+  // ---------- color helpers ----------
+  methodColor(m) { return ({ GET: 'var(--cyan)', POST: 'var(--green)', DELETE: 'var(--red)', PUT: 'var(--yellow)', PATCH: 'var(--yellow)' })[m] || 'var(--blue)'; }
+  statusColor(s) { if (s < 300) return 'var(--green)'; if (s < 400) return 'var(--cyan)'; if (s < 500) return 'var(--yellow)'; return 'var(--red)'; }
+  pretty(x) { if (x == null) return 'null'; try { return typeof x === 'string' ? x : JSON.stringify(x, null, 2); } catch (e) { return String(x); } }
+  rowLabel(r) { return r.physics === 'call' ? (r.method + ' ' + r.route) : (r.wsMethod + (r.kind === 'event' ? ' ⟨event⟩' : ' #' + r.wsId)); }
+
+  // ---------- data flow ----------
+  getFiltered() {
+    return this.state.stream
+      .filter(r => this.state.filters[r.physics])
+      .filter(r => !this.state.filterSession || r.sessionId === this.state.filterSession)
+      .filter(r => this.props.showProbes !== false || r.sideEffect);
+  }
+  msg(t, color) { clearTimeout(this._msgT); this.setState({ message: t, messageColor: color || 'var(--fg-dim)' }); this._msgT = setTimeout(() => this.setState({ message: '' }), 4500); }
+  appendRandom() {
+    const raw = { ...this.poolTemplates()[Math.floor(Math.random() * 13)](), id: this.idSeq++, isReplay: false };
+    this.setState(st => ({ stream: [...st.stream, raw].slice(-2200) }));
+  }
+
+  // ---------- live feed: real frames from the collector (replaces synthetic appendRandom) ----------
+  connectFeed() {
+    try {
+      this.feed = new EventSource('http://127.0.0.1:7070/feed');
+      this.feed.onmessage = (e) => {
+        if (!this.state.capturing) return;
+        let d; try { d = JSON.parse(e.data); } catch (_) { return; }
+        const row = this.mapFrame(d);
+        if (row) this.setState(st => ({ stream: [...st.stream, row].slice(-2200) }));
+      };
+    } catch (_) {}
+  }
+  mapFrame(d) {
+    const f = d && d.frame; if (!f || !f.method) return null;
+    const p = f.params || {};
+    const url = p.url || (p.request && p.request.url) || (p.response && p.response.url) || '';
+    return {
+      physics: 'channel', kind: 'event', wsMethod: f.method, params: p,
+      latency: 0, sideEffect: false, sessionId: 'c1',
+      wsUrl: 'live · ' + (d.session || 'wire'), reqUrl: url,
+      id: this.idSeq++, isReplay: false
+    };
+  }
+
+  // ---------- viewport / virtualization ----------
+  measureVis() { const el = this.viewRef.current; if (!el) return; const vis = Math.max(1, Math.floor(el.clientHeight / this.ROWH)); if (vis !== this.state.vis) this.setState({ vis }); }
+  maxTop() { return Math.max(0, (this._F || 0) - (this.state.vis || 1)); }
+  setTop(n) { const mt = this.maxTop(); const t = Math.max(0, Math.min(mt, n)); this.follow = t >= mt; if (t !== this.state.top) this.setState({ top: t }); }
+  scrollPage(dir) { this.setTop((this.state.top || 0) + dir * (this.state.vis || 1)); }
+  onWheel(e) { this.setTop((this.state.top || 0) + (e.deltaY > 0 ? 3 : -3)); }
+  ensureVisible(idx) { const top = this.state.top || 0, vis = this.state.vis || 1; if (idx < top) this.setTop(idx); else if (idx >= top + vis) this.setTop(idx - vis + 1); }
+
+  // ---------- selection ----------
+  rangeIds(a, b) { const lo = Math.min(a, b), hi = Math.max(a, b); const f = this._filtered || []; const out = []; for (let i = lo; i <= hi && i < f.length; i++) out.push(f[i].id); return out; }
+  toggleId(arr, id) { return arr.includes(id) ? arr.filter(x => x !== id) : arr.concat(id); }
+  selectedRows() { const set = this.state.selected; return (this._filtered || []).filter(r => set.includes(r.id)); }
+
+  rowClick(idx, e) {
+    const f = this._filtered; const row = f[idx]; if (!row) return;
+    if (e && e.shiftKey) {
+      const a = this.state.anchor == null ? this.state.cursor : this.state.anchor;
+      const sel = this.rangeIds(a, idx);
+      this.setState({ selected: sel, cursor: idx, inspectId: row.id, rightTab: sel.length > 1 ? 'batch' : 'inspect' });
+    } else if (e && (e.metaKey || e.ctrlKey)) {
+      const sel = this.toggleId(this.state.selected, row.id);
+      this.setState({ selected: sel, cursor: idx, anchor: idx, inspectId: row.id, rightTab: sel.length > 1 ? 'batch' : 'inspect' });
+    } else {
+      this.setState({ selected: [row.id], cursor: idx, anchor: idx, inspectId: row.id, rightTab: 'inspect', vimMode: 'NORMAL' });
+    }
+  }
+
+  // ---------- keyboard ----------
+  handleKey(e) {
+    if (this.state.cmdMode) return;
+    const tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea') return;
+    const k = e.key;
+    if (this.state.confirm) {
+      if (k === 'y' || k === 'Y') { this.confirmYes(); e.preventDefault(); }
+      else if (k === 'n' || k === 'N' || k === 'Escape') { this.setState({ confirm: null }); this.msg('cancelled'); e.preventDefault(); }
+      return;
+    }
+    if (this._gPending) { this._gPending = false; if (k === 'g') { this.gotoIndex(0); e.preventDefault(); return; } }
+    if (e.ctrlKey && k === 'd') { this.pageMove(0.5); e.preventDefault(); return; }
+    if (e.ctrlKey && k === 'u') { this.pageMove(-0.5); e.preventDefault(); return; }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    switch (k) {
+      case 'j': case 'ArrowDown': this.moveCursor(1); e.preventDefault(); break;
+      case 'k': case 'ArrowUp': this.moveCursor(-1); e.preventDefault(); break;
+      case 'G': this.gotoIndex(this._F - 1); e.preventDefault(); break;
+      case 'g': this._gPending = true; setTimeout(() => { this._gPending = false; }, 450); break;
+      case 'PageDown': this.pageMove(1); e.preventDefault(); break;
+      case 'PageUp': this.pageMove(-1); e.preventDefault(); break;
+      case 'Enter': this.enterAct(); e.preventDefault(); break;
+      case 'v': case 'V': this.toggleVisual(); e.preventDefault(); break;
+      case 'm': this.markCursor(); e.preventDefault(); break;
+      case 'r': this.replayCursor(); e.preventDefault(); break;
+      case 'p': this.togglePause(); e.preventDefault(); break;
+      case 'i': this.toggleCompose(); e.preventDefault(); break;
+      case 'z': this.toggleGrid(); e.preventDefault(); break;
+      case 'b': this.broadcastCursor(); e.preventDefault(); break;
+      case 'q': this.quitAct(); e.preventDefault(); break;
+      case ':': this.openCmd(); e.preventDefault(); break;
+      case 'Escape': this.escAct(); e.preventDefault(); break;
+    }
+  }
+  moveCursor(d) {
+    const F = this._F; if (!F) return;
+    const cur = Math.min(this.state.cursor, F - 1);
+    const nc = Math.max(0, Math.min(F - 1, cur + d));
+    const patch = { cursor: nc };
+    if (this.state.vimMode === 'VISUAL') { const a = this.state.anchor == null ? cur : this.state.anchor; patch.selected = this.rangeIds(a, nc); patch.rightTab = 'batch'; }
+    this.setState(patch, () => this.ensureVisible(nc));
+  }
+  gotoIndex(i) { const F = this._F; if (!F) return; const nc = Math.max(0, Math.min(F - 1, i)); const patch = { cursor: nc }; if (this.state.vimMode === 'VISUAL') { const a = this.state.anchor == null ? nc : this.state.anchor; patch.selected = this.rangeIds(a, nc); } this.setState(patch, () => this.ensureVisible(nc)); }
+  pageMove(frac) { this.moveCursor(Math.round(frac * (this.state.vis || 10))); }
+  enterAct() {
+    const F = this._F; const cur = Math.min(this.state.cursor, F - 1); const row = (this._filtered || [])[cur]; if (!row) return;
+    if (this.state.inspectId === row.id && this.state.rightTab === 'inspect') this.replay(row.id, this.state.replayTarget);
+    else this.setState({ inspectId: row.id, rightTab: 'inspect' });
+  }
+  toggleVisual() {
+    if (this.state.vimMode === 'VISUAL') { this.setState({ vimMode: 'NORMAL' }); this.msg('-- NORMAL --'); }
+    else { const cur = Math.min(this.state.cursor, this._F - 1); const row = (this._filtered || [])[cur]; this.setState({ vimMode: 'VISUAL', anchor: cur, selected: row ? [row.id] : [], rightTab: 'batch' }); this.msg('-- VISUAL LINE -- (j/k extend)', 'var(--yellow)'); }
+  }
+  markCursor() {
+    const cur = Math.min(this.state.cursor, this._F - 1); const row = (this._filtered || [])[cur]; if (!row) return;
+    const sel = this.toggleId(this.state.selected, row.id);
+    this.setState({ selected: sel, anchor: cur, rightTab: sel.length > 1 ? 'batch' : this.state.rightTab });
+    this.msg((sel.includes(row.id) ? 'marked ' : 'unmarked ') + this.rowLabel(row));
+  }
+  replayCursor() { const cur = Math.min(this.state.cursor, this._F - 1); const row = (this._filtered || [])[cur]; if (row) this.replay(row.id, this.state.replayTarget); }
+  escAct() { if (this.state.vimMode === 'VISUAL') { this.setState({ vimMode: 'NORMAL' }); this.msg('-- NORMAL --'); } else { this.setState({ selected: [], diff: null }); } }
+  quitAct() { this.setState({ selected: [], diff: null, rightTab: 'inspect', vimMode: 'NORMAL', composeOpen: false }); this.msg('q · closed'); }
+  openCmd() { this.setState({ cmdMode: true, cmdText: ':' }); }
+  closeCmd() { this.setState({ cmdMode: false, cmdText: ':' }); }
+  togglePause() { this.setState(st => ({ capturing: !st.capturing }), () => this.msg(this.state.capturing ? 'capture resumed' : 'capture paused', this.state.capturing ? 'var(--green)' : 'var(--yellow)')); }
+  toggleCompose() { this.setState(st => ({ composeOpen: !st.composeOpen })); }
+  toggleGrid() { this.setState(st => ({ gridView: !st.gridView }), () => this.msg(this.state.gridView ? 'grid · all sessions' : 'stream', 'var(--fg-dim)')); }
+  drillSession(id) { const x = this.state.sessions.find(z => z.id === id); this.setState({ focusSession: id, filterSession: id, gridView: false }); this.msg('focus ' + (x ? x.sid : id), 'var(--fg-dim)'); }
+  setCastSource(src) { this.setState({ castSource: src, castResult: null }); }
+  toggleCastTarget(id) { const x = this.state.sessions.find(z => z.id === id); if (!x || !x.alive) return; this.setState(st => ({ castExclude: { ...st.castExclude, [id]: !st.castExclude[id] }, castResult: null })); }
+  navUrlOf(row) { if (!row) return null; if (row.physics === 'call' && /\/url$/.test(row.route || '') && row.reqBody && row.reqBody.url) return row.reqBody.url; if (row.physics === 'channel' && row.wsMethod === 'Page.navigate' && row.params && row.params.url) return row.params.url; return null; }
+  castCommand() {
+    if (this.state.castSource === 'compose') {
+      const c = this.state.compose;
+      if (this.state.composeKind === 'http') {
+        let body = null; try { body = c.body ? JSON.parse(c.body) : null; } catch (e) { body = c.body; }
+        let path = c.url; try { path = new URL(c.url).pathname; } catch (e) {}
+        const raw = { physics: 'call', method: c.method, route: path, status: 200, latency: 60, sideEffect: c.method !== 'GET', reqUrl: c.url, reqBody: body, respBody: { value: null }, composed: true };
+        return { raw, label: c.method + ' ' + path, latency: 60, isChannel: false, navUrl: this.navUrlOf(raw) };
+      }
+      let params = {}; try { params = JSON.parse(c.params || '{}'); } catch (e) { params = {}; }
+      const raw = { physics: 'channel', kind: 'cmd-resp', wsMethod: c.bidiMethod, params, result: { acknowledged: true }, latency: 30, sideEffect: true, wsUrl: c.wsUrl, composed: true };
+      return { raw, label: c.bidiMethod, latency: 30, isChannel: true, navUrl: this.navUrlOf(raw) };
+    }
+    const f = this._filtered || []; const row = f[Math.min(this.state.cursor, f.length - 1)];
+    if (!row) return null;
+    return { raw: { ...row }, label: this.rowLabel(row), latency: row.latency || 40, isChannel: row.physics === 'channel', navUrl: this.navUrlOf(row) };
+  }
+  broadcastCursor() { this.setState({ castSource: 'cursor', rightTab: 'cast' }, () => this.broadcastRun()); }
+  broadcastRun() {
+    const cmd = this.castCommand();
+    if (!cmd) { this.msg('no command to broadcast — put cursor on a row or compose one', 'var(--yellow)'); return; }
+    const targets = this.state.sessions.filter(x => x.alive && !this.state.castExclude[x.id]);
+    if (!targets.length) { this.msg('no live targets selected', 'var(--yellow)'); return; }
+    const order = this.state.order;
+    let total = 0, maxL = 0;
+    const items = targets.map(x => {
+      const valid = !(cmd.isChannel && !x.cdp);
+      const lat = Math.max(1, Math.round((cmd.latency || 60) * (0.8 + 0.5 * ((parseInt(x.sid.slice(0, 3), 16) % 100) / 100))));
+      if (valid) { total += lat; maxL = Math.max(maxL, lat); }
+      return { physics: x.physics, physColor: x.physics === 'channel' ? 'var(--purple)' : 'var(--blue)', physLabel: x.physics === 'channel' ? 'CHAN' : 'CALL', sid: x.sid, sessId: x.id, status: valid ? (cmd.isChannel ? 'ok' : '200') : '—', latency: lat, ok: valid, note: valid ? 'ok' : 'no CDP · ' + x.browser.split(' ')[0] };
+    });
+    const summary = { ok: items.filter(i => i.ok).length, fail: items.filter(i => !i.ok).length };
+    const reps = items.filter(i => i.ok).map(i => ({ ...cmd.raw, id: this.idSeq++, isReplay: true, broadcast: true, sessionId: i.sessId, latency: i.latency }));
+    this.follow = true;
+    this.setState(st => {
+      let sessions = st.sessions;
+      if (cmd.navUrl) { const okIds = {}; items.forEach(i => { if (i.ok) okIds[i.sessId] = 1; }); sessions = sessions.map(x => okIds[x.id] ? { ...x, url: cmd.navUrl } : x); }
+      return { sessions, stream: [...st.stream, ...reps].slice(-2200), castResult: { items, summary, order, total: order === 'parallel' ? maxL : total, cmdLabel: cmd.label }, rightTab: 'cast' };
+    });
+    this.msg('broadcast ' + order + ' → ' + summary.ok + ' ok · ' + summary.fail + ' fail · ' + items.length + ' sessions', summary.fail ? 'var(--yellow)' : 'var(--green)');
+  }
+  // ---------- live screen mirror (real canvas surface) ----------
+  registerCanvas(key, el, sess) { if (!this._canvases) this._canvases = {}; if (el) { this._canvases[key] = { el, sess }; this.paintCanvas(el, sess); } else { delete this._canvases[key]; } }
+  paintAll() { if (!this._canvases) return; for (const k in this._canvases) { const c = this._canvases[k]; if (c && c.el && c.el.isConnected) this.paintCanvas(c.el, c.sess); } }
+  paintCanvas(canvas, sess) {
+    const ctx = canvas.getContext('2d'); if (!ctx) return;
+    const cs = getComputedStyle(canvas);
+    const V = (n, f) => { const v = cs.getPropertyValue(n).trim(); return v || f; };
+    const bg = V('--bg', '#1e1e1e'), bg2 = V('--bg2', '#2a2a2a'), fg = V('--fg', '#c0c0c0'), faint = V('--fg-faint', '#6a6a6a'), border = V('--border', '#3a3a3a');
+    const accent = sess.physics === 'channel' ? V('--purple', '#b48ead') : V('--blue', '#5e81ac');
+    const dead = !sess.alive;
+    const phone = sess.kind === 'phone';
+    const W = canvas.width, H = canvas.height;
+    const phase = (parseInt(sess.sid.slice(0, 4), 16) || 7) % 53;
+    const t = this.state.tick + phase;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+    if (dead) {
+      ctx.fillStyle = faint; ctx.globalAlpha = 0.5;
+      ctx.font = Math.round(W * 0.05) + 'px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('session ended', W / 2, H / 2 - W * 0.04); ctx.fillText('· no feed ·', W / 2, H / 2 + W * 0.04);
+      ctx.globalAlpha = 1; this.drawGrain(ctx, W, H, faint, 0.04, t); return;
+    }
+    const px = Math.max(2, Math.round(W * 0.035));
+    // chrome bar
+    const barH = phone ? Math.round(H * 0.045) : Math.round(H * 0.085);
+    ctx.fillStyle = bg2; ctx.fillRect(0, 0, W, barH);
+    ctx.fillStyle = border; ctx.fillRect(0, barH, W, 1);
+    if (phone) {
+      // status bar: time + notch + dots
+      ctx.fillStyle = fg; ctx.font = Math.round(barH * 0.5) + 'px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText('9:41', px, barH / 2);
+      ctx.fillStyle = '#000'; ctx.fillRect(W / 2 - W * 0.11, 0, W * 0.22, barH * 0.62);
+      ctx.fillStyle = fg; for (let i = 0; i < 3; i++) ctx.fillRect(W - px - i * px * 1.1, barH * 0.35, px * 0.7, barH * 0.3);
+      // url chip below status
+      const uy = barH + Math.round(H * 0.012);
+      ctx.fillStyle = bg; ctx.fillRect(px, uy, W - px * 2, Math.round(H * 0.03));
+      ctx.strokeStyle = border; ctx.lineWidth = 1; ctx.strokeRect(px + .5, uy + .5, W - px * 2 - 1, Math.round(H * 0.03) - 1);
+      ctx.fillStyle = faint; ctx.font = Math.round(H * 0.016) + 'px monospace'; ctx.textBaseline = 'middle';
+      ctx.fillText(this.shortUrl(sess.url, 26), px * 1.6, uy + Math.round(H * 0.015));
+    } else {
+      // desktop: traffic lights + url field
+      for (let i = 0; i < 3; i++) { ctx.fillStyle = [accent, faint, faint][i]; ctx.globalAlpha = 0.5; ctx.beginPath(); ctx.arc(px + i * px * 1.6, barH / 2, px * 0.5, 0, 7); ctx.fill(); }
+      ctx.globalAlpha = 1;
+      const ux = px * 6, uw = W - ux - px;
+      ctx.fillStyle = bg; ctx.fillRect(ux, barH * 0.22, uw, barH * 0.56);
+      ctx.fillStyle = faint; ctx.font = Math.round(barH * 0.34) + 'px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(this.shortUrl(sess.url, 52), ux + px, barH / 2);
+    }
+    // page content wireframe
+    const top = barH + (phone ? Math.round(H * 0.06) : Math.round(H * 0.04));
+    const hoverIdx = Math.floor(t / 7) % 5;
+    const widths = [0.82, 0.62, 0.9, 0.5, 0.74];
+    // hero block
+    ctx.fillStyle = accent; ctx.globalAlpha = 0.22; ctx.fillRect(px, top, W - px * 2, phone ? H * 0.1 : H * 0.16); ctx.globalAlpha = 1;
+    let y = top + (phone ? H * 0.13 : H * 0.2);
+    const lh = phone ? H * 0.035 : H * 0.052;
+    for (let i = 0; i < 5; i++) {
+      const hot = i === hoverIdx;
+      ctx.fillStyle = hot ? accent : fg; ctx.globalAlpha = hot ? 0.85 : 0.18;
+      ctx.fillRect(px, y, (W - px * 2) * widths[i], lh * 0.5);
+      y += lh;
+    }
+    ctx.globalAlpha = 1;
+    // a button
+    ctx.fillStyle = accent; ctx.globalAlpha = 0.7; ctx.fillRect(px, y + lh * 0.3, W * (phone ? 0.42 : 0.2), lh * 0.9); ctx.globalAlpha = 1;
+    // blinking caret near hovered row
+    if ((t % 12) < 6) { ctx.fillStyle = accent; ctx.fillRect(px + (W - px * 2) * widths[hoverIdx] + 3, top + (phone ? H * 0.13 : H * 0.2) + hoverIdx * lh - lh * 0.05, Math.max(1, W * 0.006), lh * 0.6); }
+    // scanline (screencast tearing feel)
+    const sy = (t * 6) % H;
+    ctx.fillStyle = accent; ctx.globalAlpha = 0.10; ctx.fillRect(0, sy, W, Math.max(1, H * 0.004)); ctx.globalAlpha = 1;
+    this.drawGrain(ctx, W, H, accent, 0.02, t);
+  }
+  drawGrain(ctx, W, H, color, alpha, t) { ctx.globalAlpha = alpha; ctx.fillStyle = color; for (let i = 0; i < 14; i++) { const x = (i * 53 + t * 7) % W, y = (i * 97 + t * 3) % H; ctx.fillRect(x, y, 1, 1); } ctx.globalAlpha = 1; }
+  shortUrl(u, n) { if (!u) return ''; return u.length > n ? u.slice(0, n - 1) + '…' : u; }
+  deriveMirror(sess, big) {
+    const ph = sess.physics; const physColor = ph === 'channel' ? 'var(--purple)' : 'var(--blue)';
+    const dead = !sess.alive;
+    const caretOn = (this.state.tick % 12) < 6;
+    const phone = sess.kind === 'phone';
+    // backing-store resolution proportional to device aspect (long side capped)
+    const cap = 260; const scale = cap / Math.max(sess.dw, sess.dh);
+    const cw = Math.max(40, Math.round(sess.dw * scale)), chh = Math.max(40, Math.round(sess.dh * scale));
+    const focused = sess.id === this.state.focusSession;
+    return {
+      id: sess.id, sidShort: sess.sid.slice(0, 8), physLabel: ph === 'channel' ? 'CHAN' : 'CALL', physColor,
+      url: dead ? 'session ended · no feed' : sess.url, browser: sess.browser, device: sess.device, dead, phone,
+      dimLabel: sess.dw + '×' + sess.dh,
+      cw, chh, aspect: sess.dw + ' / ' + sess.dh,
+      liveDotStyle: { color: dead ? 'var(--red)' : 'var(--green)', opacity: dead ? 0.7 : (caretOn ? 1 : 0.4), fontSize: '8px', flex: 'none' },
+      frame: this.state.tick,
+      onClick: () => this.drillSession(sess.id),
+      canvasRef: (el) => this.registerCanvas((big ? 'F:' : 'G:') + sess.id, el, sess),
+      canvasStyle: { display: 'block', maxWidth: '100%', maxHeight: (big ? (phone ? 240 : 168) : (phone ? 184 : 150)) + 'px', width: 'auto', height: 'auto', aspectRatio: sess.dw + ' / ' + sess.dh, imageRendering: 'pixelated', border: '1px solid ' + (focused ? physColor : 'var(--border)'), background: 'var(--bg)' },
+      frameWrapStyle: { display: 'flex', justifyContent: 'center', alignItems: 'center', padding: phone ? '0' : '0', background: 'var(--bg)', border: 'none' }
+    };
+  }
+
+  onCmdKey(e) {
+    if (e.key === 'Enter') { this.runCommand(this.state.cmdText); e.preventDefault(); }
+    else if (e.key === 'Escape') { this.closeCmd(); this.msg(''); e.preventDefault(); }
+  }
+  runCommand(text) {
+    const cmd = text.replace(/^:/, '').trim();
+    this.closeCmd();
+    if (cmd === 'clear' || cmd === 'clear!') this.askClear();
+    else if (cmd === 'save' || cmd === 'w') this.saveJSON();
+    else if (cmd === 'q' || cmd === 'quit') this.quitAct();
+    else if (cmd === 'pause') this.togglePause();
+    else if (cmd === 'run') this.runBatch();
+    else if (cmd === '') {}
+    else this.msg('E492: not an editor command: ' + cmd, 'var(--red)');
+  }
+  askClear() { this.setState({ confirm: { type: 'clear', n: this.state.stream.length } }); }
+  confirmYes() {
+    const c = this.state.confirm; if (!c) return;
+    if (c.type === 'clear') { this.follow = true; this.setState({ stream: [], selected: [], diff: null, runResult: null, preflightResult: null, cursor: 0, inspectId: null, confirm: null, top: 0 }); this.msg('capture cleared', 'var(--yellow)'); }
+  }
+  saveJSON() {
+    try {
+      const data = JSON.stringify(this.state.stream, null, 2);
+      const blob = new Blob([data], { type: 'application/json' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'wire-capture.json';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      this.msg('saved wire-capture.json · ' + this.state.stream.length + ' rows', 'var(--green)');
+    } catch (e) { this.msg('save failed: ' + e.message, 'var(--red)'); }
+  }
+
+  // ---------- sessions / targets ----------
+  currentSessionId() { const f = this._filtered || []; const row = f[Math.min(this.state.cursor, f.length - 1)]; return (row && row.sessionId) || this.state.filterSession || 's1'; }
+  currentSession() { const id = this.currentSessionId(); return this.state.sessions.find(s => s.id === id) || this.state.sessions[0]; }
+  newSid() { const h = '0123456789abcdef'; let s = ''; let seed = (this.sessionCounter++ * 2654435761) >>> 0; for (let i = 0; i < 8; i++) { seed = (seed * 1103515245 + 12345) >>> 0; s += h[seed & 15]; } return s; }
+  targetMeta(kind) {
+    if (kind === 'new-local') return { loc: 'local', hub: 'http://127.0.0.1:4444/wd/hub', browser: 'chrome · webdriver', cdp: true, capsKey: 'new-local' };
+    if (kind === 'new-cloud') return { loc: 'cloud', hub: 'https://hub-cloud.browserstack.com/wd/hub', browser: 'safari · ios 17', cdp: false, capsKey: 'new-cloud' };
+    return { loc: 'local', hub: 'http://127.0.0.1:4723/wd/hub', browser: 'appium · android', cdp: false, capsKey: 'new-appium' };
+  }
+  resolveTarget(kind) {
+    if (kind === 'current') { const s = this.currentSession(); return { kind, label: 'current · ' + s.sid, cdp: !!s.cdp, alive: !!s.alive, sid: s.id }; }
+    const m = this.targetMeta(kind);
+    try { JSON.parse(this.state.caps[m.capsKey] || '{}'); } catch (e) { return { error: 'caps JSON invalid — fix before run' }; }
+    return { kind, label: kind.replace('new-', 'new ') + ' · ' + m.browser, cdp: m.cdp, alive: true, meta: m };
+  }
+  createSession(kind) {
+    const m = this.targetMeta(kind);
+    let caps; try { caps = JSON.parse(this.state.caps[m.capsKey] || '{}'); } catch (e) { return { error: 'caps JSON invalid' }; }
+    const sid = this.newSid();
+    const sess = { id: 'x' + sid, hub: m.hub, sid, loc: m.loc, physics: 'call', alive: true, cdp: m.cdp, browser: m.browser + ' · new', caps };
+    this.setState(st => ({ sessions: [...st.sessions, sess] }));
+    return { id: sess.id, sid };
+  }
+
+  // ---------- replay / diff ----------
+  perturb(obj, row) {
+    let next; try { next = JSON.parse(JSON.stringify(obj == null ? null : obj)); } catch (e) { return { next: obj, changes: 0 }; }
+    if (next == null || typeof next !== 'object') return { next, changes: 0 };
+    let changes = 0; let seed = (row.id * 7 + 3) >>> 0;
+    const rnd = () => { seed = (seed * 1103515245 + 12345) >>> 0; return seed / 0xffffffff; };
+    const walk = (o) => {
+      if (changes >= 2 || o == null || typeof o !== 'object') return;
+      for (const key of Object.keys(o)) {
+        if (changes >= 2) break;
+        const v = o[key];
+        if (typeof v === 'number') { o[key] = v === 0 ? Math.round(rnd() * 40) : Math.max(1, Math.round(v * (0.85 + 0.4 * rnd()))); changes++; }
+        else if (typeof v === 'string' && /[0-9a-fA-F]{4,}/.test(v)) { o[key] = v.replace(/[0-9a-f]/gi, () => '0123456789abcdef'[Math.floor(rnd() * 16)]); changes++; }
+        else if (v && typeof v === 'object') walk(v);
+      }
+    };
+    walk(next);
+    return { next, changes };
+  }
+  diffLines(a, b) {
+    const A = a.split('\n'), B = b.split('\n'); const out = []; const n = Math.max(A.length, B.length);
+    for (let i = 0; i < n; i++) {
+      const la = A[i], lb = B[i];
+      if (la === lb) out.push({ type: 'ctx', text: la == null ? '' : la });
+      else { if (la != null) out.push({ type: 'del', text: la }); if (lb != null) out.push({ type: 'add', text: lb }); }
+    }
+    return out;
+  }
+  replay(id, targetKind) {
+    const row = this.state.stream.find(r => r.id === id); if (!row) return;
+    let sessId = row.sessionId, createdSid = null;
+    if (targetKind && targetKind !== 'current') {
+      const tgt = this.resolveTarget(targetKind); if (tgt.error) { this.msg(tgt.error, 'var(--red)'); return; }
+      if (row.physics === 'channel' && !tgt.cdp) { this.msg('cannot replay channel cmd on a non-CDP target', 'var(--red)'); return; }
+      const c = this.createSession(targetKind); if (c.error) { this.msg(c.error, 'var(--red)'); return; }
+      sessId = c.id; createdSid = c.sid;
+    }
+    const orig = row.physics === 'call' ? row.respBody : (row.kind === 'event' ? row.params : row.result);
+    const pr = this.perturb(orig, row);
+    const newLat = Math.max(1, Math.round((row.latency || 12) * (0.8 + 0.5 * (((row.id * 13) % 100) / 100))));
+    const rep = { ...row, id: this.idSeq++, isReplay: true, sessionId: sessId, latency: newLat };
+    if (row.physics === 'call') rep.respBody = pr.next;
+    else if (row.kind === 'event') rep.params = pr.next; else rep.result = pr.next;
+    const diff = {
+      rowLabel: this.rowLabel(row),
+      leftLabel: 'original ' + (row.latency || 0) + 'ms',
+      rightLabel: 'replay ' + newLat + 'ms · ' + (createdSid ? 'new ' + createdSid.slice(0, 6) : 'same session'),
+      lines: this.diffLines(this.pretty(orig), this.pretty(pr.next)),
+      identical: pr.changes === 0
+    };
+    this.follow = true;
+    this.setState(st => ({ stream: [...st.stream, rep].slice(-2200), diff, rightTab: 'diff', inspectId: rep.id }));
+    this.msg('replayed ' + this.rowLabel(row) + (createdSid ? ' → new ' + createdSid.slice(0, 6) : ''), 'var(--green)');
+  }
+
+  // ---------- batch ----------
+  preflightCheck(rows, tgt) {
+    const items = rows.map(r => {
+      let ok = true, note = 'ok';
+      if (r.physics === 'channel' && !tgt.cdp) { ok = false; note = 'no CDP on target'; }
+      else if (r.status >= 400) { ok = true; note = 'orig 4xx'; }
+      return { srcId: r.id, label: this.rowLabel(r), ok, note };
+    });
+    return { items, okCount: items.filter(i => i.ok).length, failCount: items.filter(i => !i.ok).length };
+  }
+  simulateRun(rows, sessId, tgt, order, onError) {
+    const items = []; let stopped = false; let total = 0; let maxL = 0;
+    for (const r of rows) {
+      if (stopped) { items.push({ srcId: r.id, label: this.rowLabel(r), ok: false, skip: true, note: 'skipped', latency: 0 }); continue; }
+      const valid = !(r.physics === 'channel' && !tgt.cdp);
+      const lat = Math.max(1, Math.round((r.latency || 12) * (0.85 + 0.35 * (((r.id * 17) % 100) / 100))));
+      if (!valid) {
+        items.push({ srcId: r.id, label: this.rowLabel(r), ok: false, note: 'unsupported on ' + (tgt.meta ? tgt.meta.browser.split(' ')[0] : 'target'), latency: lat });
+        if (order === 'serial' && onError === 'stop') stopped = true;
+      } else {
+        items.push({ srcId: r.id, label: this.rowLabel(r), ok: true, note: 'ok', latency: lat });
+        total += lat; maxL = Math.max(maxL, lat);
+      }
+    }
+    const summary = { ok: items.filter(i => i.ok).length, fail: items.filter(i => !i.ok && !i.skip).length, skip: items.filter(i => i.skip).length };
+    return { items, summary, total: order === 'parallel' ? maxL : total, order, target: tgt.label };
+  }
+  runBatch() {
+    const rows = this.selectedRows();
+    if (!rows.length) { this.msg('— no calls selected (m / V / click)', 'var(--yellow)'); return; }
+    const tgt = this.resolveTarget(this.state.runTarget);
+    if (tgt.error) { this.msg(tgt.error, 'var(--red)'); return; }
+    if (this.state.preflight && !this.state.preflightResult) {
+      const pf = this.preflightCheck(rows, tgt);
+      this.setState({ preflightResult: pf });
+      this.msg('preflight · ' + pf.okCount + ' ok · ' + pf.failCount + ' blocked — confirm to run', pf.failCount ? 'var(--yellow)' : 'var(--green)');
+      return;
+    }
+    let sessId, createdSid = null;
+    if (this.state.runTarget === 'current') sessId = this.currentSessionId();
+    else { const c = this.createSession(this.state.runTarget); if (c.error) { this.msg(c.error, 'var(--red)'); return; } sessId = c.id; createdSid = c.sid; }
+    const res = this.simulateRun(rows, sessId, tgt, this.state.order, this.state.onError);
+    const reps = res.items.filter(it => it.ok).map(it => { const row = rows.find(r => r.id === it.srcId); return { ...row, id: this.idSeq++, isReplay: true, batched: true, sessionId: sessId, latency: it.latency }; });
+    this.follow = true;
+    this.setState(st => ({ stream: [...st.stream, ...reps].slice(-2200), runResult: res, preflightResult: null, rightTab: 'batch' }));
+    this.msg('batch ' + res.order + ' · ' + res.summary.ok + ' ok · ' + res.summary.fail + ' fail · ' + res.summary.skip + ' skip' + (createdSid ? ' · session ' + createdSid.slice(0, 6) : ''), res.summary.fail ? 'var(--yellow)' : 'var(--green)');
+  }
+
+  // ---------- compose fire ----------
+  setComposeField(k, v) { this.setState(st => ({ compose: { ...st.compose, [k]: v } })); }
+  fire() {
+    const c = this.state.compose;
+    let raw;
+    if (this.state.composeKind === 'http') {
+      let headers = {}, body = null; try { headers = JSON.parse(c.headers || '{}'); } catch (e) { headers = { _error: c.headers }; }
+      try { body = c.body ? JSON.parse(c.body) : null; } catch (e) { body = c.body; }
+      let path = c.url; try { path = new URL(c.url).pathname; } catch (e) {}
+      raw = { id: this.idSeq++, physics: 'call', method: c.method, route: path, status: 200, latency: 40 + Math.floor(Math.random() * 120), sideEffect: c.method !== 'GET', sessionId: this.currentSessionId(), reqUrl: c.url, reqHeaders: headers, reqBody: body, respBody: { value: null }, composed: true };
+    } else {
+      let params = {}; try { params = JSON.parse(c.params || '{}'); } catch (e) { params = { _error: c.params }; }
+      raw = { id: this.idSeq++, physics: 'channel', kind: 'cmd-resp', wsMethod: c.bidiMethod, wsId: this.wsIdSeq++, params, result: { acknowledged: true }, latency: 10 + Math.floor(Math.random() * 55), sideEffect: !/evaluate$|get|describe/i.test(c.bidiMethod), sessionId: 'c1', wsUrl: c.wsUrl, composed: true };
+    }
+    this.follow = true;
+    this.setState(st => ({ stream: [...st.stream, raw].slice(-2200), inspectId: raw.id, rightTab: 'inspect' }));
+    this.msg('fired ' + this.rowLabel(raw), 'var(--green)');
+  }
+
+  // ---------- row + inspector derive ----------
+  deriveRow(r, absIdx, curIdx, sessById) {
+    const rh = this.ROWH;
+    const sess = sessById[r.sessionId] || {};
+    const selected = this.state.selected.includes(r.id);
+    const isCur = absIdx === curIdx;
+    const probe = !r.sideEffect;
+    const cell = w => ({ flex: 'none', width: w + 'px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+    let phys, physC, method, methodC, route, stat, statC, lat, eff, effC;
+    if (r.physics === 'call') {
+      phys = 'CALL'; physC = 'var(--blue)';
+      method = r.method; methodC = this.methodColor(r.method);
+      route = r.route; stat = String(r.status); statC = this.statusColor(r.status); lat = r.latency + 'ms';
+    } else {
+      phys = 'CHAN'; physC = 'var(--purple)';
+      if (r.kind === 'cmd-resp') { method = 'cmd→resp'; methodC = 'var(--purple)'; route = r.wsMethod + ' #' + r.wsId; stat = 'ok'; statC = 'var(--green)'; lat = r.latency + 'ms'; }
+      else { method = 'event'; methodC = 'var(--fg-dim)'; route = r.wsMethod; stat = '—'; statC = 'var(--fg-faint)'; lat = ''; }
+    }
+    eff = probe ? 'ro' : 'MUT'; effC = probe ? 'var(--fg-faint)' : 'var(--yellow)';
+    if (r.isReplay) route = '↻ ' + route; else if (r.composed) route = '▷ ' + route;
+    const num = this.props.relativeNumbers && !isCur ? Math.abs(absIdx - curIdx) : (absIdx + 1);
+    return {
+      onClick: (e) => this.rowClick(absIdx, e),
+      rowStyle: { display: 'flex', alignItems: 'center', height: rh + 'px', lineHeight: rh + 'px', paddingLeft: '6px', paddingRight: '8px', fontSize: '12.5px', cursor: 'pointer', color: 'var(--fg)', background: selected ? 'var(--sel)' : (isCur ? 'var(--cursorline)' : 'transparent'), borderLeft: '2px solid ' + (isCur ? 'var(--blue)' : 'transparent') },
+      sign: selected ? '●' : (isCur ? '▸' : ''), signStyle: { flex: 'none', width: '18px', color: selected ? 'var(--blue)' : 'var(--fg-faint)', fontSize: '10px' },
+      num: num, numStyle: { flex: 'none', width: '40px', textAlign: 'right', paddingRight: '8px', color: isCur ? 'var(--fg)' : 'var(--gutter)', fontWeight: isCur ? 700 : 400, fontVariantNumeric: 'tabular-nums' },
+      phys, physStyle: { ...cell(46), color: physC, fontSize: '10px', fontWeight: 700, letterSpacing: '.04em' },
+      method, methodStyle: { ...cell(78), color: methodC, fontWeight: 700 },
+      route, routeStyle: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: probe ? 'var(--fg-dim)' : 'var(--fg)' },
+      eff, effStyle: { ...cell(44), color: effC, fontSize: '10px', fontWeight: 700 },
+      stat, statStyle: { ...cell(44), textAlign: 'right', color: statC, fontWeight: 700 },
+      lat, latStyle: { flex: 'none', width: '58px', textAlign: 'right', color: 'var(--fg-dim)', fontVariantNumeric: 'tabular-nums' },
+      sess: (sess.sid || r.sessionId).slice(0, 6), sessStyle: { flex: 'none', width: '66px', paddingLeft: '8px', color: 'var(--fg-faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
+    };
+  }
+  deriveInspector(r, sessById) {
+    const sess = sessById[r.sessionId] || {};
+    const probe = !r.sideEffect;
+    let titleColor, title, route, kind, statText, statColor, blocks;
+    if (r.physics === 'call') {
+      titleColor = this.methodColor(r.method); title = r.method; route = r.reqUrl; kind = 'call · http';
+      statText = String(r.status); statColor = this.statusColor(r.status);
+      blocks = [
+        { label: 'method', value: r.method },
+        { label: 'url', value: r.reqUrl },
+        { label: 'request headers', value: this.pretty(r.reqHeaders) },
+        { label: 'request body', value: this.pretty(r.reqBody) },
+        { label: 'response · decoded', value: this.pretty(r.respBody) }
+      ];
+    } else {
+      titleColor = 'var(--purple)'; title = r.wsMethod; kind = 'channel · ws';
+      if (r.kind === 'cmd-resp') {
+        route = 'id #' + r.wsId + ' · cmd → resp'; statText = 'matched'; statColor = 'var(--green)';
+        blocks = [
+          { label: 'method', value: r.wsMethod }, { label: 'ws_url', value: r.wsUrl },
+          { label: 'command (sent)', value: this.pretty({ id: r.wsId, method: r.wsMethod, params: r.params }) },
+          { label: 'params', value: this.pretty(r.params) },
+          { label: 'response · matched by id', value: this.pretty({ id: r.wsId, result: r.result }) }
+        ];
+      } else {
+        route = 'event · id-less stream'; statText = 'event'; statColor = 'var(--fg-dim)';
+        blocks = [
+          { label: 'method', value: r.wsMethod }, { label: 'ws_url', value: r.wsUrl },
+          { label: 'frame', value: this.pretty({ method: r.wsMethod, params: r.params }) },
+          { label: 'params', value: this.pretty(r.params) },
+          { label: 'note', value: 'unsolicited event — no id to match, not a reply to any command.' }
+        ];
+      }
+    }
+    return {
+      titleMethod: title, titleStyle: { fontSize: '17px', fontWeight: 700, color: titleColor }, kindText: kind, route,
+      statText, statStyle: { fontSize: '11px', fontWeight: 700, color: statColor, padding: '2px 8px', border: '1px solid var(--border)' },
+      latText: (r.latency || 0) + 'ms', effText: probe ? 'zero side-effect' : 'mutates', effStyle: { fontSize: '11px', fontWeight: 600, color: probe ? 'var(--fg-dim)' : 'var(--yellow)', padding: '2px 8px', border: '1px solid var(--border)' },
+      sessText: (sess.sid || r.sessionId).slice(0, 8), blocks
+    };
+  }
+
+  // ---------- render ----------
+  renderVals() {
+    const s = this.state;
+    const sessById = {}; s.sessions.forEach(x => { sessById[x.id] = x; });
+    const filtered = this.getFiltered();
+    const F = filtered.length;
+    this._filtered = filtered; this._F = F;
+
+    const counts = { call: 0, channel: 0 }; s.stream.forEach(r => { counts[r.physics]++; });
+
+    const vis = s.vis || 18;
+    const maxTop = Math.max(0, F - vis);
+    const top = Math.min(s.top || 0, maxTop);
+    const curIdx = Math.min(s.cursor, Math.max(0, F - 1));
+    const slice = filtered.slice(top, top + vis);
+    const winRows = slice.map((r, i) => this.deriveRow(r, top + i, curIdx, sessById));
+    const aboveN = top;
+    const belowN = Math.max(0, F - (top + vis));
+
+    const themeMap = {
+      dark: { '--bg': '#1e1e1e', '--bg2': '#181818', '--panel': '#1e1e1e', '--fg': '#c0c0c0', '--fg-dim': '#7d7d7d', '--fg-faint': '#565656', '--border': '#333333', '--sl-bg': '#3c3c3c', '--sl-fg': '#d6d6d6', '--cursorline': '#2b2b2b', '--sel': '#2d4f67', '--sel-fg': '#e8e8e8', '--blue': '#6a9bd8', '--purple': '#b48ead', '--green': '#8fbf6f', '--red': '#d96c6c', '--yellow': '#d8b46a', '--cyan': '#6fb3b3', '--gutter': '#5a6066' },
+      light: { '--bg': '#f8f8f8', '--bg2': '#eeeeee', '--panel': '#f8f8f8', '--fg': '#333333', '--fg-dim': '#777777', '--fg-faint': '#a8a8a8', '--border': '#d6d6d6', '--sl-bg': '#cccccc', '--sl-fg': '#222222', '--cursorline': '#ececec', '--sel': '#bcd6f5', '--sel-fg': '#10243a', '--blue': '#2257c7', '--purple': '#8a3fa0', '--green': '#2e8b3d', '--red': '#c0392b', '--yellow': '#9a7a16', '--cyan': '#1f8a8a', '--gutter': '#a0a0a0' }
+    };
+    const themeVars = (this.props.theme === 'dark' || this.props.theme === 'light') ? themeMap[this.props.theme] : {};
+    const rootStyle = { ...themeVars, position: 'fixed', inset: 0, display: 'grid', gridTemplateRows: 'auto 1fr auto auto auto', background: 'var(--bg)', color: 'var(--fg)', fontFamily: 'var(--mono)', overflow: 'hidden' };
+
+    const toolBtn = { fontSize: '11px', color: 'var(--fg-dim)', padding: '3px 8px', cursor: 'pointer', border: '1px solid transparent', whiteSpace: 'nowrap' };
+    const physRow = (on, color) => ({ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', cursor: 'pointer', opacity: on ? 1 : 0.42 });
+    const chip = { fontSize: '11px', color: 'var(--fg-dim)', padding: '2px 8px', border: '1px solid var(--border)' };
+    const pre = { margin: 0, fontFamily: 'var(--mono)', fontSize: '11.5px', lineHeight: 1.55, color: 'var(--fg)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: 'var(--bg)', border: '1px solid var(--border)', padding: '8px 10px', overflowX: 'auto' };
+    const runSm = { display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '12px', fontWeight: 700, color: 'var(--bg)', background: 'var(--green)', padding: '5px 12px', cursor: 'pointer', whiteSpace: 'nowrap' };
+    const runLg = { display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: 700, color: 'var(--bg)', background: 'var(--green)', padding: '9px 0', cursor: 'pointer' };
+    const tab = (active) => ({ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontWeight: 700, letterSpacing: '.06em', cursor: 'pointer', color: active ? 'var(--fg)' : 'var(--fg-faint)', background: active ? 'var(--bg)' : 'transparent', borderBottom: '2px solid ' + (active ? 'var(--blue)' : 'transparent') });
+    const seg = (active) => ({ fontSize: '11.5px', fontWeight: 700, padding: '4px 10px', cursor: 'pointer', border: '1px solid ' + (active ? 'var(--blue)' : 'var(--border)'), color: active ? 'var(--blue)' : 'var(--fg-dim)', background: active ? 'var(--cursorline)' : 'transparent' });
+    const radio = (active) => ({ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 6px', cursor: 'pointer', fontSize: '11.5px', color: active ? 'var(--fg)' : 'var(--fg-dim)' });
+    const mark = (active) => ({ flex: 'none', color: active ? 'var(--blue)' : 'var(--fg-faint)' });
+    const inp = { flex: 1, minWidth: 0, background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--fg)', fontSize: '11.5px', padding: '6px 8px', outline: 'none' };
+    const tinp = { width: '90px', flex: 'none', background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--fg)', fontSize: '11.5px', padding: '6px 8px', outline: 'none' };
+
+    const sessions = s.sessions.map(x => ({
+      ...x, short: x.sid.slice(0, 8), active: s.filterSession === x.id,
+      dot: x.alive ? '●' : '○', dotStyle: { color: x.alive ? 'var(--green)' : 'var(--red)', fontSize: '9px', flex: 'none' },
+      loc: x.loc, locStyle: { fontSize: '9px', fontWeight: 700, padding: '1px 6px', letterSpacing: '.04em', color: x.loc === 'cloud' ? 'var(--cyan)' : 'var(--fg-dim)', border: '1px solid var(--border)' },
+      phys: x.physics === 'channel' ? 'ws' : 'http', physStyle: { fontSize: '9px', fontWeight: 700, padding: '1px 6px', color: x.physics === 'channel' ? 'var(--purple)' : 'var(--blue)', border: '1px solid var(--border)' },
+      onClick: () => this.setState(st => ({ filterSession: st.filterSession === x.id ? null : x.id, focusSession: x.id })),
+      rowStyle: { padding: '7px 8px', cursor: 'pointer', borderLeft: '2px solid ' + (s.filterSession === x.id ? 'var(--blue)' : 'transparent'), background: s.filterSession === x.id ? 'var(--cursorline)' : 'transparent', opacity: x.alive ? 1 : 0.5, marginBottom: '2px' }
+    }));
+
+    const selRaw = s.stream.find(r => r.id === s.inspectId) || null;
+    const inspector = selRaw ? this.deriveInspector(selRaw, sessById) : null;
+    const selCount = s.selected.length;
+
+    const replayTargets = [
+      { key: 'current', label: 'same' }, { key: 'new-local', label: '+local' }, { key: 'new-cloud', label: '+cloud' }, { key: 'new-appium', label: '+appium' }
+    ].map(t => ({ label: t.label, onClick: () => this.setState({ replayTarget: t.key }), style: { fontSize: '10.5px', padding: '2px 7px', cursor: 'pointer', border: '1px solid ' + (s.replayTarget === t.key ? 'var(--blue)' : 'var(--border)'), color: s.replayTarget === t.key ? 'var(--blue)' : 'var(--fg-dim)' } }));
+
+    const selRows = filtered.filter(r => s.selected.includes(r.id));
+    const selectedList = selRows.slice(0, 40).map(r => ({
+      num: filtered.indexOf(r) + 1, method: r.physics === 'call' ? r.method : (r.kind === 'event' ? 'event' : 'cmd→resp'),
+      methodStyle: { flex: 'none', width: '72px', color: r.physics === 'call' ? this.methodColor(r.method) : 'var(--purple)', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      route: r.physics === 'call' ? r.route : r.wsMethod, lat: (r.latency || 0) + 'ms'
+    }));
+
+    const cur = this.currentSession();
+    const targetChoices = [
+      { key: 'current', label: 'Current Session', sub: cur.sid },
+      { key: 'new-local', label: 'New — Local Chrome', sub: ':4444' },
+      { key: 'new-cloud', label: 'New — Cloud (BrowserStack)', sub: 'safari/ios' },
+      { key: 'new-appium', label: 'New — Appium (Android)', sub: 'pixel 8' }
+    ].map(t => ({ label: t.label, sub: t.sub, mark: s.runTarget === t.key ? '(•)' : '( )', markStyle: mark(s.runTarget === t.key), rowStyle: radio(s.runTarget === t.key), onClick: () => this.setState({ runTarget: t.key, preflightResult: null }) }));
+
+    const orderChoices = [
+      { key: 'serial', label: 'Serial (default)' }, { key: 'parallel', label: 'Parallel' }
+    ].map(o => ({ label: o.label, mark: s.order === o.key ? '(•)' : '( )', markStyle: mark(s.order === o.key), rowStyle: radio(s.order === o.key), onClick: () => this.setState({ order: o.key }) }));
+    const errChoices = [
+      { key: 'stop', label: 'Stop' }, { key: 'continue', label: 'Continue' }
+    ].map(o => ({ label: o.label, mark: s.onError === o.key ? '(•)' : '( )', markStyle: mark(s.onError === o.key), rowStyle: radio(s.onError === o.key), onClick: () => this.setState({ onError: o.key }) }));
+
+    const pf = s.preflightResult;
+    const preflightItems = pf ? pf.items.map(it => ({ label: it.label, mark: it.ok ? '✓' : '✗', markStyle: { flex: 'none', color: it.ok ? 'var(--green)' : 'var(--red)' }, note: it.note, noteStyle: { flex: 'none', color: it.ok ? 'var(--fg-faint)' : 'var(--red)', fontSize: '10px' } })) : [];
+    const rr = s.runResult;
+    const runItems = rr ? rr.items.map(it => ({ label: it.label, mark: it.skip ? '–' : (it.ok ? '✓' : '✗'), markStyle: { flex: 'none', color: it.skip ? 'var(--fg-faint)' : (it.ok ? 'var(--green)' : 'var(--red)') }, note: it.note, noteStyle: { flex: 'none', fontSize: '10px', color: it.ok ? 'var(--fg-faint)' : (it.skip ? 'var(--fg-faint)' : 'var(--red)') }, lat: it.latency ? it.latency + 'ms' : '' })) : [];
+
+    let runLabel = 'Run Batch';
+    if (s.preflight && !s.preflightResult) runLabel = 'Preflight ▸ Run';
+    else if (s.preflightResult) runLabel = 'Confirm & Run';
+    else if (s.runTarget !== 'current') runLabel = 'Create & Run';
+
+    const diff = s.diff;
+    const diffLines = diff ? diff.lines.map(l => ({ text: l.text, gutter: l.type === 'del' ? '− ' : (l.type === 'add' ? '+ ' : '  '), style: { fontSize: '11px', lineHeight: 1.5, padding: '0 8px', whiteSpace: 'pre', color: l.type === 'del' ? 'var(--red)' : (l.type === 'add' ? 'var(--green)' : 'var(--fg-dim)'), background: l.type === 'del' ? 'rgba(217,108,108,.10)' : (l.type === 'add' ? 'rgba(143,191,111,.12)' : 'transparent') } })) : [];
+
+    const curRow = filtered[curIdx];
+    const slCur = curRow ? curRow : null;
+    const connAlive = cur.alive;
+    const modeStyle = { display: 'flex', alignItems: 'center', padding: '0 12px', fontWeight: 700, letterSpacing: '.08em', color: 'var(--bg)', background: s.vimMode === 'VISUAL' ? 'var(--yellow)' : 'var(--blue)' };
+
+    const composeKinds = [
+      { label: 'http call', onClick: () => this.setState({ composeKind: 'http' }), style: seg(s.composeKind === 'http') },
+      { label: 'bidi command', onClick: () => this.setState({ composeKind: 'bidi' }), style: seg(s.composeKind === 'bidi') }
+    ];
+
+    const physTag = (label, color) => ({ fontSize: '9px', fontWeight: 700, padding: '1px 6px', color: color, border: '1px solid var(--border)' });
+    const focusSess = sessById[s.focusSession] || s.sessions.find(x => x.alive) || s.sessions[0];
+    const focusMirror = this.deriveMirror(focusSess, true);
+    const mirrors = s.sessions.map(x => this.deriveMirror(x, false));
+    const cmdPreview = this.castCommand();
+    const castTargetsList = s.sessions.map(x => {
+      const included = x.alive && !s.castExclude[x.id];
+      return { sidShort: x.sid.slice(0, 8), physLabel: x.physics === 'channel' ? 'CHAN' : 'CALL', physColor: x.physics === 'channel' ? 'var(--purple)' : 'var(--blue)',
+        mark: x.alive ? (included ? '[x]' : '[ ]') : '[–]', markStyle: { flex: 'none', color: !x.alive ? 'var(--fg-faint)' : (included ? 'var(--green)' : 'var(--fg-faint)') },
+        state: x.alive ? (x.cdp ? 'cdp' : 'http') : 'dead', stateStyle: { flex: 'none', fontSize: '10px', color: x.alive ? 'var(--fg-faint)' : 'var(--red)' },
+        rowStyle: { display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 6px', cursor: x.alive ? 'pointer' : 'default', fontSize: '11.5px', color: x.alive ? 'var(--fg)' : 'var(--fg-faint)', opacity: x.alive ? 1 : 0.6 },
+        onClick: () => this.toggleCastTarget(x.id) };
+    });
+    const cr = s.castResult;
+    const castItems = cr ? cr.items.map(it => ({ physLabel: it.physLabel, physColor: it.physColor, physStyle: { flex: 'none', width: '38px', fontWeight: 700, fontSize: '10px', color: it.physColor }, sid: it.sid, status: it.status, statusStyle: { flex: 'none', width: '34px', textAlign: 'right', fontWeight: 700, color: it.ok ? 'var(--green)' : 'var(--red)' }, lat: it.latency + 'ms', mark: it.ok ? '✓' : '✗', markStyle: { flex: 'none', color: it.ok ? 'var(--green)' : 'var(--red)' }, note: it.note, noteStyle: { flex: 'none', fontSize: '10px', color: it.ok ? 'var(--fg-faint)' : 'var(--red)' } })) : [];
+    const liveCount = s.sessions.filter(x => x.alive && !s.castExclude[x.id]).length;
+
+    return {
+      rootStyle, toolBtn,
+      pauseLabel: s.capturing ? '⏸ pause' : '▶ resume',
+      togglePause: () => this.togglePause(),
+      onClear: () => this.askClear(), onSave: () => this.saveJSON(), onToggleCompose: () => this.toggleCompose(),
+
+      callMark: s.filters.call ? '[x]' : '[ ]', chanMark: s.filters.channel ? '[x]' : '[ ]',
+      callRow: physRow(s.filters.call), chanRow: physRow(s.filters.channel),
+      toggleCall: () => this.toggleFilter('call'), toggleChannel: () => this.toggleFilter('channel'),
+      callCount: counts.call, channelCount: counts.channel, sessionCount: s.sessions.length,
+      sessions,
+
+      viewRef: this.viewRef, onWheel: (e) => this.onWheel(e),
+      winRows,
+      showAbove: aboveN > 0, aboveText: '+' + aboveN + ' above',
+      showBelow: belowN > 0, belowText: '+' + belowN + ' below',
+      onPageUp: () => this.scrollPage(-1), onPageDown: () => this.scrollPage(1),
+
+      tabInspect: { onClick: () => this.setState({ rightTab: 'inspect' }), style: tab(s.rightTab === 'inspect') },
+      tabBatch: { onClick: () => this.setState({ rightTab: 'batch' }), style: tab(s.rightTab === 'batch'), label: 'BATCH ' + (selCount || '') },
+      tabDiff: { onClick: () => this.setState({ rightTab: 'diff' }), style: tab(s.rightTab === 'diff') },
+
+      showInspect: s.rightTab === 'inspect' && !!inspector,
+      showInspectEmpty: s.rightTab === 'inspect' && !inspector,
+      inspector: inspector || { titleStyle: {}, statStyle: {}, effStyle: {}, blocks: [] },
+      chipStyle: chip, preStyle: pre, runBtnSm: runSm,
+      replayTargets, onReplay: () => { if (s.inspectId) this.replay(s.inspectId, s.replayTarget); },
+
+      showBatch: s.rightTab === 'batch',
+      selCount, selectedList, hasMore: selRows.length > 40, moreText: '+' + (selRows.length - 40) + ' more selected',
+      targetChoices, showCaps: s.runTarget !== 'current', capsValue: s.caps[s.runTarget] || '', onCaps: (e) => this.setState(st => ({ caps: { ...st.caps, [st.runTarget]: e.target.value } })), capsStyle: { width: '100%', height: '78px', resize: 'vertical', background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: '11.5px', padding: '7px 9px', outline: 'none' },
+      orderChoices, errChoices,
+      orderNote: s.order === 'serial' ? 'serial — WebDriver/BiDi commands are stateful; order matters.' : 'parallel — only safe for independent / stateless calls.',
+      preflight: s.preflight, preflightMark: s.preflight ? '[x]' : '[ ]', preflightMarkStyle: mark(s.preflight), onTogglePreflight: () => this.setState(st => ({ preflight: !st.preflight, preflightResult: null })),
+      hasPreflight: !!pf, preflightSummary: pf ? (pf.okCount + ' ok · ' + pf.failCount + ' blocked') : '', preflightItems,
+      runBtnLg: runLg, runLabel, onRun: () => this.runBatch(),
+      hasRunResult: !!rr, runSummary: rr ? (rr.order + ' · ' + rr.summary.ok + ' ok · ' + rr.summary.fail + ' fail · ' + rr.summary.skip + ' skip · ' + rr.total + 'ms ' + (rr.order === 'parallel' ? 'wall' : 'total')) : '', runSummaryStyle: { padding: '6px 8px', fontSize: '11px', fontWeight: 700, color: 'var(--fg)', background: 'var(--cursorline)' }, runItems,
+
+      showDiff: s.rightTab === 'diff' && !!diff, showDiffEmpty: s.rightTab === 'diff' && !diff,
+      diff: diff || { lines: [] }, diffHasLines: !!(diff && !diff.identical), diffLines,
+
+      slMode: s.vimMode, slModeStyle: modeStyle,
+      slSession: (slCur ? sessById[slCur.sessionId] : cur) ? ((slCur ? (sessById[slCur.sessionId] || cur) : cur).sid) : cur.sid,
+      slConnText: connAlive ? 'CONNECTION ALIVE' : 'CONNECTION DEAD',
+      slLat: slCur ? ((slCur.latency || 0) + 'ms') : '—',
+      slCapture: F, slCaptureState: s.capturing ? '● capturing' : '⏸ paused', slCaptureColor: s.capturing ? 'var(--green)' : 'var(--yellow)',
+      slSel: selCount ? (selCount + ' selected') : '', slPos: (F ? (curIdx + 1) : 0) + '/' + F,
+
+      cmdMode: s.cmdMode, cmdText: s.cmdText, cmdRef: this.cmdRef,
+      onCmdInput: (e) => this.setState({ cmdText: e.target.value.startsWith(':') ? e.target.value : ':' + e.target.value }),
+      onCmdKey: (e) => this.onCmdKey(e),
+      hasConfirm: !!s.confirm && !s.cmdMode, confirmText: s.confirm ? ('clear all ' + s.confirm.n + ' rows?  [y/n]') : '',
+      showHints: !s.cmdMode && !s.confirm, messageText: s.message || '', messageColor: s.messageColor,
+
+      composeOpen: s.composeOpen, composeKinds, isHttp: s.composeKind === 'http', isBidi: s.composeKind === 'bidi',
+      methodChoices: ['GET', 'POST', 'DELETE'].map(m => ({ m, onClick: () => this.setComposeField('method', m), style: seg(s.compose.method === m) })),
+      c: s.compose, inpStyle: inp, inpStyleSm: tinp,
+      onUrl: (e) => this.setComposeField('url', e.target.value), onHeaders: (e) => this.setComposeField('headers', e.target.value), onBody: (e) => this.setComposeField('body', e.target.value),
+      onWsUrl: (e) => this.setComposeField('wsUrl', e.target.value), onBidiMethod: (e) => this.setComposeField('bidiMethod', e.target.value), onParams: (e) => this.setComposeField('params', e.target.value),
+      onFire: () => this.fire(),
+
+      showStream: !s.gridView, showGrid: s.gridView,
+      onToggleGrid: () => this.toggleGrid(), gridLabel: s.gridView ? '▦ stream' : '▦ grid',
+      mirrors, focusMirror, focusPhysTag: physTag(focusMirror.physLabel, focusMirror.physColor),
+      tabCast: { onClick: () => this.setState({ rightTab: 'cast' }), style: tab(s.rightTab === 'cast') },
+      showCast: s.rightTab === 'cast',
+      castSourceCursor: { onClick: () => this.setCastSource('cursor'), style: seg(s.castSource === 'cursor') },
+      castSourceCompose: { onClick: () => this.setCastSource('compose'), style: seg(s.castSource === 'compose') },
+      castCmdLabel: cmdPreview ? cmdPreview.label : '— (no command)',
+      castTargetsList, castItems, hasCastResult: !!cr,
+      castSummary: cr ? (cr.order + ' · ' + cr.summary.ok + ' ok · ' + cr.summary.fail + ' fail · ' + cr.total + 'ms ' + (cr.order === 'parallel' ? 'wall' : 'total')) : '',
+      castRunLabel: '⇉ Broadcast (' + liveCount + ')', onBroadcast: () => this.broadcastRun(),
+      onComposeBroadcast: () => { this.setState({ castSource: 'compose', rightTab: 'cast' }, () => this.broadcastRun()); }
+    };
+  }
+
+  toggleFilter(k) { this.setState(st => ({ filters: { ...st.filters, [k]: !st.filters[k] } })); }
+}
+</script>
+</body>
+</html>

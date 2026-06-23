@@ -1,0 +1,82 @@
+/* ============================================================
+   Kosaten — Color tokens
+   Palette mirrors the app/dashboard "GitHub dark" system
+   (KTheme in KosatenApp/App/Theme.swift). Dark-first.
+   ============================================================ */
+
+:root {
+  /* ---- Core surfaces (darkest → lightest) ---- */
+  --k-bg:            #0d1117; /* app background, deepest */
+  --k-surface:       #161b22; /* cards, sheets, nav */
+  --k-surface-light: #21262d; /* raised tiles, inputs, hover fill */
+  --k-border:        #30363d; /* hairline borders, dividers */
+
+  /* ---- Text ---- */
+  --k-text:           #e6edf3; /* primary text */
+  --k-text-soft:      #c9d1d9; /* body copy on web surfaces */
+  --k-text-secondary: #8b949e; /* labels, captions, secondary */
+  --k-text-dim:       #484f58; /* disabled, faint metadata */
+
+  /* ---- Accent ramp ---- */
+  --k-blue:   #58a6ff; /* primary accent / brand */
+  --k-green:  #3fb950; /* alive, success, healthy */
+  --k-purple: #bc8cff; /* calibration / cognition */
+  --k-orange: #f0883e; /* findings, warning */
+  --k-red:    #f85149; /* error, limitation, debate */
+  --k-cyan:   #56d4dd; /* blueprint, session */
+  --k-yellow: #e3b341; /* moment, highlight */
+  --k-amber:  #d29922; /* "why" annotations (architecture docs) */
+
+  /* ---- Card-type colors (the knowledge atoms) ---- */
+  --k-type-pattern:     var(--k-blue);
+  --k-type-calibration: var(--k-purple);
+  --k-type-decision:    var(--k-green);
+  --k-type-finding:     var(--k-orange);
+  --k-type-debate:      var(--k-red);
+  --k-type-blueprint:   var(--k-cyan);
+  --k-type-limitation:  var(--k-red);
+  --k-type-moment:      var(--k-yellow);
+  --k-type-letter:      var(--k-purple);
+  --k-type-thread:      var(--k-green);
+  --k-type-session:     var(--k-cyan);
+
+  /* ---- Spatial-graph neon (the 3D consciousness map @ :3941) ---- */
+  --k-neon-pattern:     #33ff77;
+  --k-neon-calibration: #55ddff;
+  --k-neon-decision:    #cc66ff;
+  --k-neon-thread:      #ffdd00;
+  --k-neon-session:     #ff4466;
+  --k-neon-moment:      #ff55ff;
+  --k-neon-agent:       #ff8800;
+  --k-neon-letter:      #ffdd22;
+  --k-neon-artifact:    #aa66ff;
+  --k-neon-limitation:  #ff3333;
+  --k-neon-blueprint:   #00eeff;
+  --k-neon-finding:     #ffbb00;
+  --k-neon-observer:    #00ffcc;
+  --k-neon-organism:    #a855f7;
+
+  /* ---- Semantic aliases ---- */
+  --surface-page:    var(--k-bg);
+  --surface-card:    var(--k-surface);
+  --surface-raised:  var(--k-surface-light);
+  --border-default:  var(--k-border);
+  --border-strong:   #3d444d;
+
+  --text-body:       var(--k-text);
+  --text-muted:      var(--k-text-secondary);
+  --text-faint:      var(--k-text-dim);
+
+  --accent-primary:  var(--k-blue);
+  --status-alive:    var(--k-green);
+  --status-warn:     var(--k-orange);
+  --status-dead:     var(--k-red);
+
+  /* Translucent fills (capsules, hover tints, accent washes) */
+  --tint-accent:     rgba(88, 166, 255, 0.10);
+  --tint-accent-2:   rgba(88, 166, 255, 0.20);
+  --tint-alive:      rgba(63, 185, 80, 0.15);
+  --tint-warn:       rgba(240, 136, 62, 0.15);
+  --tint-dead:       rgba(248, 81, 73, 0.15);
+  --wash-card:       rgba(255, 255, 255, 0.03); /* faint type-color wash over cards */
+}

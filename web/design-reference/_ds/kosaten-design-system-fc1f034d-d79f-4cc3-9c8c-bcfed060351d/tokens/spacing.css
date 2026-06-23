@@ -1,0 +1,50 @@
+/* ============================================================
+   Kosaten — Spacing, radii, shadows, borders, motion
+   ============================================================ */
+
+:root {
+  /* ---- Spacing scale (px) — 4-based, matches SwiftUI paddings ---- */
+  --space-1:  4px;
+  --space-2:  6px;
+  --space-3:  8px;
+  --space-4:  10px;
+  --space-5:  12px;
+  --space-6:  16px;
+  --space-7:  20px;
+  --space-8:  24px;
+  --space-10: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ---- Radii ---- */
+  --radius-xs:   3px;  /* code chips, file refs */
+  --radius-sm:   6px;  /* buttons, inputs, badges */
+  --radius-md:   8px;  /* tiles, list rows, small cards */
+  --radius-lg:   12px; /* standard cards, sheets */
+  --radius-xl:   16px; /* big/feature cards */
+  --radius-pill: 999px; /* capsules, status pills, FAB */
+
+  /* ---- Borders ---- */
+  --border-hairline: 1px solid var(--border-default);
+  --border-accent:   1px solid var(--tint-accent-2);
+  --accent-bar:      4px; /* left-edge accent on big cards */
+
+  /* ---- Shadows & glows ---- */
+  --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.30);
+  --shadow-fab:  0 4px 8px rgba(0, 0, 0, 0.30);
+  /* Status dots emit a colored glow rather than a drop shadow */
+  --glow-alive:  0 0 8px rgba(63, 185, 80, 0.60);
+  --glow-blue:   0 0 12px rgba(88, 166, 255, 0.40);
+  --glow-warn:   0 0 8px rgba(240, 136, 62, 0.50);
+  --glow-dead:   0 0 8px rgba(248, 81, 73, 0.50);
+
+  /* ---- Motion ---- */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1); /* @kind other */
+  --ease-out:      cubic-bezier(0.0, 0, 0.2, 1); /* @kind other */
+  --dur-fast:   0.15s; /* @kind other */
+  --dur-normal: 0.3s;  /* @kind other */
+  --dur-slow:   0.5s;  /* @kind other */
+  /* Signature ambient rhythms: breathe = concentric loops; pulse = heartbeat */
+  --dur-breathe: 5s; /* @kind other */
+  --dur-pulse:   2s; /* @kind other */
+}
