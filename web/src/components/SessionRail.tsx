@@ -18,7 +18,6 @@ export function SessionRail({ sessions, rows, filters, onToggle, onSelect }: Pro
   const tabs = [...new Set(rows.map((r) => r.tab).filter(Boolean))] as string[];
   return (
     <aside className="rail">
-      <div className="panel-h">physics</div>
       <ul className="filters">
         <li className={`filt${filters.call ? ' on' : ''}`} onClick={() => onToggle('call')}>
           <span className="box">[{filters.call ? 'x' : ' '}]</span>
@@ -54,6 +53,8 @@ export function SessionRail({ sessions, rows, filters, onToggle, onSelect }: Pro
           </li>
         ))}
       </ul>
+
+      <div className="rail-foot"><span className="eight">8</span></div>
     </aside>
   );
 }

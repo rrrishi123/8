@@ -114,6 +114,22 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .tab-row .sid { color: var(--cyan); }
 .tab-row .cnt { margin-left: auto; color: var(--fg); }
 .insp-tab { color: var(--cyan); font-size: 11px; }
+
+/* rail footer: 8's glyph, pinned bottom-left (replaces the "physics" label) */
+.rail-foot { margin-top: auto; padding: 8px 0 6px 12px; }
+.rail-foot .eight { color: var(--blue); font-weight: 700; font-size: 20px; line-height: 1; }
+
+/* ---- View 2 right pane: this session's traffic (incl. 8's own calls) ---- */
+.sess-stream { flex: none; width: 340px; min-width: 300px; background: var(--panel); }
+.sess-stream .panel-h .ss-count { margin-left: auto; color: var(--fg); }
+.sess-stream .cap-head .ln, .sess-stream .cap-row .ln { width: 4ch; }
+.sess-stream .org, .sess-stream .cap-head .org { width: 3ch; flex: none; text-align: center; color: var(--cyan); }
+.sess-stream .cap-row .org { font-weight: 700; }
+.sess-stream .method, .sess-stream .cap-head .method { width: 70px; flex: none; }
+.sess-stream .detail, .sess-stream .cap-head .detail { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.sess-stream .cap-row.err-row { background: rgba(217, 108, 108, .14); }
+.sess-stream .cap-row.err-row .detail, .sess-stream .cap-row.err-row .org { color: var(--red); }
+
 .sess-card { cursor: pointer; }
 .sess-card:hover { background: var(--cursorline); }
 

@@ -4,6 +4,7 @@ import { Inspector } from './components/Inspector';
 import { Viewport } from './components/Viewport';
 import { SessionRail } from './components/SessionRail';
 import { Interaction } from './components/Interaction';
+import { SessionStream } from './components/SessionStream';
 import { openFeed } from './lib/feed';
 import { listSessions } from './lib/api';
 import type { CaptureRow, Session } from './types';
@@ -16,6 +17,10 @@ export default function App() {
   const [filters, setFilters] = useState({ call: true, channel: true });
   const [selSession, setSelSession] = useState<Session | null>(null);
   const buf = useRef<CaptureRow[]>([]);
+  // per-session buffers (500/session) so View 2 survives global-ring eviction —
+  // a noisy session must not evict a quiet one's history.
+  const sessBuf = useRef<Map<string, CaptureRow[]>>(new Map());
+  const [, setSessTick] = useState(0);
 
   useEffect(() => {
     const load = () => listSessions().then(setSessions).catch(() => {});
@@ -23,7 +28,13 @@ export default function App() {
     const poll = window.setInterval(load, 3000);
     const close = openFeed(
       // bounded deque: keep the newest 200 rows, evict the oldest (FIFO).
-      (row) => { buf.current = [...buf.current, row].slice(-200); setRows(buf.current); },
+      (row) => {
+        buf.current = [...buf.current, row].slice(-200);
+        setRows(buf.current);
+        const k = row.session || 'wire';
+        sessBuf.current.set(k, [...(sessBuf.current.get(k) || []), row].slice(-500));
+        setSessTick((t) => t + 1);
+      },
       setLive,
     );
     return () => { clearInterval(poll); close(); };
@@ -31,6 +42,7 @@ export default function App() {
 
   const selected = rows.find((r) => r.id === selId) || null;
   const shown = rows.filter((r) => filters[r.physics]);
+  const sessionRows = selSession ? sessBuf.current.get(selSession.id) || [] : [];
   const toggle = (k: 'call' | 'channel') => setFilters((f) => ({ ...f, [k]: !f[k] }));
 
   return (
@@ -39,8 +51,12 @@ export default function App() {
         <SessionRail sessions={sessions} rows={rows} filters={filters} onToggle={toggle} onSelect={setSelSession} />
 
         {selSession ? (
-          <Interaction session={selSession} onClose={() => setSelSession(null)} />
+          <>
+            <Interaction session={selSession} onClose={() => setSelSession(null)} />
+            <SessionStream session={selSession} rows={sessionRows} />
+          </>
         ) : (
+          <>
         <section className="panel stream">
           <div className="cap-head">
             <span className="ln">ln</span>
@@ -68,13 +84,13 @@ export default function App() {
             ))}
           </ul>
         </section>
-        )}
-
         <div className="side">
           <Viewport session={sessions.find((s) => s.physics === 'channel')?.id || null} />
           <Inspector row={selected} />
           <PasteCurl />
         </div>
+          </>
+        )}
       </main>
 
       <header className="statusline">
