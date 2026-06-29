@@ -1,4 +1,4 @@
-import type { FetchResult, ParsedCurl, Session } from '../types';
+import type { BenchRec, FetchResult, ParsedCurl, ReplayResult, ReqRec, Session } from '../types';
 
 const BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
 
@@ -43,5 +43,65 @@ export async function run(session: string, method: string, params: Record<string
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ method, params }),
   });
+  return r.json();
+}
+
+// Benchmark batches (clubbed + filterable by tag), the request ledger, and replay.
+export async function getBenches(tag?: string): Promise<BenchRec[]> {
+  const q = tag ? `?tag=${encodeURIComponent(tag)}` : '';
+  const r = await fetch(`${BASE}/benches${q}`);
+  const j = await r.json();
+  return j.benches || [];
+}
+
+export async function getRequests(n = 150): Promise<ReqRec[]> {
+  const r = await fetch(`${BASE}/requests?n=${n}`);
+  const j = await r.json();
+  return j.requests || [];
+}
+
+export async function replay(id: number): Promise<ReplayResult> {
+  const r = await fetch(`${BASE}/replay?id=${id}`, { method: 'POST' });
+  return r.json();
+}
+
+// ── per-tab resources (8 watching itself + every tab) ────────────────────────
+export interface TabProc {
+  title: string; url: string; pid: number;
+  mem_mb: number; cpu_ms: number; coresident_tabs: number; exact: boolean;
+  cpu_pct?: number | null; // derived in the cockpit from cpu_ms deltas
+}
+export interface ProcInfo {
+  tabs: TabProc[];
+  gpu: { pid: number; mem_mb: number; cpu_ms: number; cpu_pct?: number | null } | null;
+  parent_mem_mb: number;
+  note: string;
+}
+// Per-tab memory/CPU via the chrome context (ChromeUtils.requestProcInfo).
+// Exact per-tab when a tab is alone in its content process; GPU is one shared
+// process. null when the collector was started without -gecko.
+export async function procinfo(session = 'fox'): Promise<ProcInfo | null> {
+  try {
+    const r = await fetch(`${BASE}/procinfo?session=${encodeURIComponent(session)}`);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
+// ── record → replay series (control driven through the wire, seat-attributed) ──
+export interface SeriesInfo { name: string; frames: number; seats: string[]; modes: string[]; }
+export async function recordCtl(action: 'start' | 'stop' | '', name = '', seat = 'operator'): Promise<{ recording: boolean; name?: string; frames?: number; saved?: string }> {
+  const q = new URLSearchParams();
+  if (action) q.set('action', action);
+  if (name) q.set('name', name);
+  if (seat) q.set('seat', seat);
+  const r = await fetch(`${BASE}/record?${q.toString()}`);
+  return r.json();
+}
+export async function listSeries(): Promise<SeriesInfo[]> {
+  try { const r = await fetch(`${BASE}/series`); return (await r.json()).series || []; } catch { return []; }
+}
+export async function replaySeries(name: string): Promise<{ fired: number; results: { physics: string; seat: string; method: string; ok: boolean }[] }> {
+  const r = await fetch(`${BASE}/replay-series?name=${encodeURIComponent(name)}`, { method: 'POST' });
   return r.json();
 }

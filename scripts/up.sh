@@ -16,8 +16,8 @@ REPO=/Users/rishirajs/Desktop/repos
 PROFILE=/Users/rishirajs/.ltqa-firefox-deepseek
 GECKO="$REPO/ltqa-platform/.bin/drivers/firefox/0.37.0/geckodriver"
 CHANNEL="$REPO/http-mcp/.bin/channel"
-COLLECTOR="$REPO/command-explorer/collector/collector"
-WEB="$REPO/command-explorer/web"
+COLLECTOR="$REPO/8/collector/collector"
+WEB="$REPO/8/web"
 BROKER=http://127.0.0.1:4445/command
 
 up()   { lsof -ti :"$1" >/dev/null 2>&1; }
@@ -30,9 +30,13 @@ nohup "$GECKO" --port 4444 --host 127.0.0.1 --allow-hosts localhost 127.0.0.1 --
 wait_up 4444 && echo "geckodriver: up :4444"
 
 # 2. Firefox BiDi session on the persistent profile (= the saved login).
+#    -remote-allow-system-access unlocks the chrome context, which is how the
+#    WITNESS reads per-tab memory/CPU (ChromeUtils.requestProcInfo) — Firefox
+#    refuses requestProcInfo from a content sandbox. This is the observe-all-tabs
+#    Observation channel's privilege, read-only; it never drives a target.
 RESP=$(curl -s -m 90 http://127.0.0.1:4444/session -H 'Content-Type: application/json' -d @- <<JSON
 {"capabilities":{"alwaysMatch":{"browserName":"firefox","webSocketUrl":true,
-  "moz:firefoxOptions":{"args":["-profile","$PROFILE"]}}}}
+  "moz:firefoxOptions":{"args":["-profile","$PROFILE","-remote-allow-system-access"]}}}}
 JSON
 )
 WS=$(echo "$RESP"  | jq -r '.value.capabilities.webSocketUrl // empty')
@@ -55,10 +59,11 @@ echo "preload:    navigator.webdriver hidden"
 cmd '{"method":"session.subscribe","params":{"events":["network.beforeRequestSent","network.responseCompleted","log.entryAdded","browsingContext.domContentLoaded"]}}' >/dev/null
 echo "subscribe:  channel events flowing (network, log, domContentLoaded)"
 
-# 5. collector.
+# 5. collector. -gecko enables /procinfo (per-tab mem/CPU via the chrome context).
 if up 7070; then echo "collector:  already up :7070"; else
-  nohup "$COLLECTOR" -listen :7070 -brokers fox=http://127.0.0.1:4445 >/tmp/collector-8.log 2>&1 &
-  wait_up 7070 && echo "collector:  up :7070"
+  nohup "$COLLECTOR" -listen :7070 -brokers fox=http://127.0.0.1:4445 \
+    -gecko "http://127.0.0.1:4444/session/$SID" >/tmp/collector-8.log 2>&1 &
+  wait_up 7070 && echo "collector:  up :7070 (procinfo enabled)"
 fi
 
 # 6. vite cockpit.
@@ -67,17 +72,34 @@ if up 8088; then echo "vite:       already up :8088"; else
   wait_up 8088 && echo "vite:       up :8088"
 fi
 
-# 7. open the working tabs: cockpit (default ctx) + DeepSeek peer (new tab).
-CTX=$(cmd '{"method":"browsingContext.getTree","params":{}}' | jq -r '.result.contexts[0].context')
-cmd "{\"method\":\"browsingContext.navigate\",\"params\":{\"context\":\"$CTX\",\"url\":\"http://localhost:8088/\",\"wait\":\"complete\"}}" 30 >/dev/null
-echo "cockpit:    $CTX -> :8088"
-DS=$(cmd '{"method":"browsingContext.create","params":{"type":"tab"}}' | jq -r '.result.context')
-# resume the SAME peer thread (the one with the full discussion), not a fresh chat
+# 7. RESTORE the working tabs from the persistent store (the watchdog auto-saves
+#    them every cycle). First run / empty store -> defaults: cockpit + peer thread.
+#    This is the session-store the channel Firefox lacks across crashes.
+TABS_FILE="${TABS_FILE:-$HOME/.8-tabs.txt}"
 DS_THREAD="https://chat.deepseek.com/a/chat/s/82a7eafd-2ba5-4226-836d-344368e7723b"
-cmd "{\"method\":\"browsingContext.navigate\",\"params\":{\"context\":\"$DS\",\"url\":\"$DS_THREAD\",\"wait\":\"complete\"}}" 60 >/dev/null
-echo "deepseek:   $DS -> peer thread (context preserved)"
+CTX=$(cmd '{"method":"browsingContext.getTree","params":{}}' | jq -r '.result.contexts[0].context')
+
+URLS=()
+if [ -s "$TABS_FILE" ]; then
+  while IFS= read -r u; do [ -n "$u" ] && URLS+=("$u"); done < "$TABS_FILE"
+fi
+[ ${#URLS[@]} -eq 0 ] && URLS=("http://localhost:8088/" "$DS_THREAD")
+# 8's own cockpit always comes back, even if it wasn't in the last snapshot
+case " ${URLS[*]} " in *":8088"*) ;; *) URLS=("http://localhost:8088/" "${URLS[@]}");; esac
+
+first=1; DS=""
+for u in "${URLS[@]}"; do
+  case "$u" in about:*|chrome:*|"") continue;; esac
+  if [ "$first" = 1 ]; then target="$CTX"; first=0
+  else target=$(cmd '{"method":"browsingContext.create","params":{"type":"tab"}}' | jq -r '.result.context'); fi
+  cmd "{\"method\":\"browsingContext.navigate\",\"params\":{\"context\":\"$target\",\"url\":\"$u\",\"wait\":\"complete\"}}" 60 >/dev/null
+  echo "tab:        $target -> $u"
+  case "$u" in *deepseek.com*) DS="$target";; esac
+done
+echo "restored ${#URLS[@]} tab(s) from $TABS_FILE"
 
 # 8. login check: is DeepSeek authenticated? (textarea present = yes)
+[ -z "$DS" ] && DS="$CTX"
 LOGGEDIN=$(cmd "{\"method\":\"script.evaluate\",\"params\":{\"expression\":\"!!document.querySelector('textarea')\",\"target\":{\"context\":\"$DS\"},\"awaitPromise\":true}}" 15 | jq -r '.result.result.value // "?"')
 echo
 echo "WIRE UP.  cockpit=$CTX  deepseek=$DS"
