@@ -333,3 +333,8 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .cbox { position: absolute; display: flex; }
 .cbox > .panel { flex: 1; min-height: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; box-shadow: 0 6px 30px #000b; background: var(--panel); }
 .cbox.gravity > .panel { border-color: color-mix(in srgb, var(--purple) 50%, var(--border)); box-shadow: 0 10px 44px #000d, 0 0 0 1px color-mix(in srgb,var(--purple) 28%,transparent); }
+
+/* pretext interaction: kill native scroll/zoom/img-drag so pan+pinch own the canvas */
+.canvas-wrap { touch-action: none; overscroll-behavior: none; }
+.world { user-select: none; }
+.world img { -webkit-user-drag: none; user-drag: none; }

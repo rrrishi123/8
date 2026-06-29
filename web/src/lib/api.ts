@@ -101,7 +101,7 @@ export async function recordCtl(action: 'start' | 'stop' | '', name = '', seat =
 export async function listSeries(): Promise<SeriesInfo[]> {
   try { const r = await fetch(`${BASE}/series`); return (await r.json()).series || []; } catch { return []; }
 }
-export async function replaySeries(name: string): Promise<{ fired: number; results: { physics: string; seat: string; method: string; ok: boolean }[] }> {
+export async function replaySeries(name: string): Promise<{ fired: number; results: { seq: number; physics: string; seat: string; method: string; status: number; ok: boolean }[] }> {
   const r = await fetch(`${BASE}/replay-series?name=${encodeURIComponent(name)}`, { method: 'POST' });
   return r.json();
 }

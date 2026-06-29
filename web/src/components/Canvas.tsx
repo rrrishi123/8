@@ -43,14 +43,35 @@ export function Canvas({ session }: { session: string | null }) {
   ];
   const worldW = Math.max(2400, 120 + Math.max(seats.length, 2) * 620);
 
-  const drag = useRef<{ x: number; y: number } | null>(null);
-  const onDown = (e: React.PointerEvent) => { if ((e.target as HTMLElement).closest('.cpane-body, .persp-bar')) return; drag.current = { x: e.clientX, y: e.clientY }; };
-  const onMove = (e: React.PointerEvent) => { if (!drag.current) return; const dx = e.clientX - drag.current.x, dy = e.clientY - drag.current.y; drag.current = { x: e.clientX, y: e.clientY }; setCam((c) => ({ ...c, x: c.x + dx, y: c.y + dy })); };
-  const onUp = () => { drag.current = null; };
-  const onWheel = (e: React.WheelEvent) => {
-    const r = wrap.current!.getBoundingClientRect(); const mx = e.clientX - r.left, my = e.clientY - r.top;
-    setCam((c) => { const nz = Math.max(0.18, Math.min(2.5, c.z * (e.deltaY < 0 ? 1.12 : 0.89))); const k = nz / c.z; return { z: nz, x: mx - (mx - c.x) * k, y: my - (my - c.y) * k }; });
-  };
+  // pretext interaction, all via raw non-passive listeners (so dispatched + real
+  // events both fire, and we can preventDefault the browser's own scroll/zoom):
+  //   two-finger / wheel        = PAN
+  //   pinch (ctrl/⌘ + wheel)    = ZOOM toward cursor
+  //   drag the background       = PAN  (window-level move/up so a fast drag holds)
+  // (React's onPointerDown was unreliable for this; raw addEventListener is not.)
+  useEffect(() => {
+    const el = wrap.current; if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) {
+        const r = el.getBoundingClientRect(); const mx = e.clientX - r.left, my = e.clientY - r.top;
+        setCam((c) => { const nz = Math.max(0.1, Math.min(3, c.z * (e.deltaY < 0 ? 1.06 : 0.94))); const k = nz / c.z; return { z: nz, x: mx - (mx - c.x) * k, y: my - (my - c.y) * k }; });
+      } else {
+        setCam((c) => ({ ...c, x: c.x - e.deltaX, y: c.y - e.deltaY }));
+      }
+    };
+    const onDown = (e: PointerEvent) => {
+      if ((e.target as HTMLElement).closest('button, input, select, textarea, a, .seeing-tabs, .tab-pick, .series-row, .rec-btn, .curl-in, .persp-bar')) return;
+      el.style.cursor = 'grabbing';
+      let lx = e.clientX, ly = e.clientY;
+      const move = (ev: PointerEvent) => { setCam((c) => ({ ...c, x: c.x + (ev.clientX - lx), y: c.y + (ev.clientY - ly) })); lx = ev.clientX; ly = ev.clientY; };
+      const up = () => { el.style.cursor = ''; window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+      window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('pointerdown', onDown);
+    return () => { el.removeEventListener('wheel', onWheel); el.removeEventListener('pointerdown', onDown); };
+  }, [setCam]);
   const goto = (rx: number, ry: number, rw: number, rh: number, z: number) => { const r = wrap.current!.getBoundingClientRect(); setCam({ z, x: r.width / 2 - (rx + rw / 2) * z, y: r.height / 2 - (ry + rh / 2) * z }); };
   const persp = {
     p1: () => goto(120, 200, 560, 900, 0.9),                 // one seat (the gravity browser)
@@ -59,7 +80,7 @@ export function Canvas({ session }: { session: string | null }) {
   };
 
   return (
-    <div className="canvas-wrap" ref={wrap} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onWheel={onWheel}>
+    <div className="canvas-wrap" ref={wrap}>
       <div className="world" style={{ transform: `translate(${cam.x}px,${cam.y}px) scale(${cam.z})` }}>
         {/* each element IS its own box (pretext) — the component's own panel,
             positioned freely in the world; no wrapper box around it. */}
