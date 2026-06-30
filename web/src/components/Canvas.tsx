@@ -180,6 +180,27 @@ export function Canvas({ session }: { session: string | null }) {
         <button onClick={persp.bird} title="see everything">◇ bird's-eye</button>
         <span className="persp-z">{cells.length} seats · {Math.round(cam.z * 100)}%</span>
       </div>
+      {/* MINIMAP — the elegant solve to the infinite mirror (peer + you): a
+          SCHEMATIC drawn from LAYOUT DATA, not a screenshot, so it never recurses.
+          8's self isn't a seat, it's the canvas; the moving green viewport rect is
+          the witness watching its own ATTENTION — a map, not a mirror. Click to jump. */}
+      {vpRect && worldW > 0 && (
+        <svg className="minimap" viewBox={`0 0 ${worldW} ${worldH}`}
+          style={{ width: 220, height: Math.round(Math.min(170, 220 * worldH / worldW)) }}
+          onClick={(e) => {
+            const r = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
+            const wx = (e.clientX - r.left) / r.width * worldW, wy = (e.clientY - r.top) / r.height * worldH;
+            setCam((c) => ({ ...c, x: vpRect.width / 2 - wx * c.z, y: vpRect.height / 2 - wy * c.z }));
+          }}>
+          <rect x={0} y={0} width={worldW} height={worldH} className="mm-bg" />
+          {screened.map((L) => (
+            <rect key={L.c.key} x={L.x} y={L.y} width={L.w} height={H}
+              className={L.c.key === heroKey ? 'mm-hero' : 'mm-seat'} />
+          ))}
+          <rect x={-cam.x / cam.z} y={-cam.y / cam.z} width={vpRect.width / cam.z} height={vpRect.height / cam.z}
+            className="mm-view" vectorEffect="non-scaling-stroke" />
+        </svg>
+      )}
     </div>
   );
 }

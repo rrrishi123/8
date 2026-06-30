@@ -354,3 +354,9 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .vp-title { cursor: pointer; }
 .vp-title:hover { color: var(--fg); }
 .vp-title.pinned { color: var(--purple); font-weight: 700; }
+/* minimap: schematic "you are here" — drawn from layout, never a screenshot */
+.minimap { position: absolute; right: 12px; bottom: 54px; z-index: 5; background: #000a; border: 1px solid var(--border); border-radius: 6px; backdrop-filter: blur(3px); cursor: pointer; }
+.mm-bg { fill: #ffffff0a; }
+.mm-seat { fill: var(--purple); opacity: .3; }
+.mm-hero { fill: var(--purple); opacity: .85; }
+.mm-view { fill: #8fbf6f22; stroke: var(--green); stroke-width: 2; }
