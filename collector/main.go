@@ -240,6 +240,57 @@ func (c *collector) handleProcInfo(w http.ResponseWriter, r *http.Request) {
 	w.Write(v.Value)
 }
 
+// drawProbeScript runs in the chrome/parent context: call WindowGlobalParent.
+// drawSnapshot() ~250x on a background tab, bounded buffer reuse, and report the
+// parent-process memory delta. The DECISIVE test: if drawSnapshot leaks the parent
+// like captureScreenshot, the MediaRecorder plan is moot; if memory stays flat,
+// the peer's "the leak is the BiDi base64-hold, drawSnapshot bypasses it" holds.
+const drawProbeScript = `const cb=arguments[arguments.length-1];(async()=>{try{const wins=gBrowser.browsers.filter(b=>b.browsingContext&&b.browsingContext.currentWindowGlobal);const tgt=wins.find(b=>/youtube|excalidraw|example|lambdatest|deepseek/.test(b.currentURI.spec))||wins[0];const wg=tgt.browsingContext.currentWindowGlobal;const m0=(await ChromeUtils.requestProcInfo()).memory;let n=0,errs=0,lastErr='';for(let i=0;i<250;i++){try{const bmp=await wg.drawSnapshot(null,1.0,'white');if(bmp&&bmp.close)bmp.close();n++;}catch(e){errs++;lastErr=''+e;if(errs>2)break;}}try{if(typeof Cu!=='undefined'&&Cu.forceGC){Cu.forceGC();Cu.forceCC&&Cu.forceCC();}}catch(e){}const m1=(await ChromeUtils.requestProcInfo()).memory;cb(JSON.stringify({frames:n,errs:errs,lastErr:lastErr.slice(0,140),url:tgt.currentURI.spec.slice(0,60),parent_mb_before:Math.round(m0/1048576),parent_mb_after:Math.round(m1/1048576),delta_mb:Math.round((m1-m0)/1048576)}));}catch(e){cb('ERR:'+e);}})();`
+
+func (c *collector) handleDrawProbe(w http.ResponseWriter, r *http.Request) {
+	if c.gecko == "" {
+		http.Error(w, `{"error":"disabled: collector started without -gecko"}`, http.StatusServiceUnavailable)
+		return
+	}
+	post := func(path, body string) ([]byte, error) {
+		req, _ := http.NewRequest("POST", c.gecko+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := c.client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		return io.ReadAll(resp.Body)
+	}
+	post("/timeouts", `{"script":60000}`)
+	if _, err := post("/moz/context", `{"context":"chrome"}`); err != nil {
+		http.Error(w, `{"error":"chrome context: `+err.Error()+`"}`, http.StatusBadGateway)
+		return
+	}
+	defer post("/moz/context", `{"context":"content"}`)
+	body, _ := json.Marshal(map[string]any{"script": drawProbeScript, "args": []any{}})
+	out, err := post("/execute/async", string(body))
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
+		return
+	}
+	var v struct {
+		Value json.RawMessage `json:"value"`
+	}
+	json.Unmarshal(out, &v)
+	var inner string
+	w.Header().Set("Content-Type", "application/json")
+	if json.Unmarshal(v.Value, &inner) == nil {
+		if strings.HasPrefix(inner, "ERR:") {
+			w.Write([]byte(`{"error":` + strconv.Quote(strings.TrimPrefix(inner, "ERR:")) + `}`))
+			return
+		}
+		w.Write([]byte(inner))
+		return
+	}
+	w.Write(v.Value)
+}
+
 func (c *collector) find(id string) *broker {
 	for i := range c.brokers {
 		if c.brokers[i].id == id {
@@ -2178,6 +2229,7 @@ func main() {
 	mux.HandleFunc("/shot", c.handleShot)
 	mux.HandleFunc("/tabs", c.handleTabs)
 	mux.HandleFunc("/procinfo", c.handleProcInfo)
+	mux.HandleFunc("/drawprobe", c.handleDrawProbe)
 	mux.HandleFunc("/sessions", c.handleSessions)
 	mux.HandleFunc("/source", c.handleSource)
 	mux.HandleFunc("/act", c.handleAct)
