@@ -141,7 +141,7 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
   };
   // click on the frame → target pixel coords (ratio × the frame's natural size).
   const onTap = (e: React.MouseEvent<HTMLImageElement>) => {
-    if (!interact || !persistent) return; // act only on a LIVE view, never a frozen still
+    if (!interact) return;
     const img = e.currentTarget, r = img.getBoundingClientRect();
     const nx = img.naturalWidth || r.width, ny = img.naturalHeight || r.height;
     act({ action: 'tap', x: Math.round((e.clientX - r.left) / r.width * nx), y: Math.round((e.clientY - r.top) / r.height * ny) });
@@ -149,7 +149,7 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
   };
   // keystrokes -> /act type. WebDriver special keys: Enter \uE007, Backspace \uE003.
   const onKey = (e: React.KeyboardEvent<HTMLImageElement>) => {
-    if (!interact || !persistent) return;
+    if (!interact) return;
     if (e.key === 'Enter') { e.preventDefault(); act({ action: 'type', text: '\uE007' }); }
     else if (e.key === 'Backspace') { e.preventDefault(); act({ action: 'type', text: '\uE003' }); }
     else if (e.key.length === 1) { e.preventDefault(); act({ action: 'type', text: e.key }); }
@@ -160,7 +160,7 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
   // Propagation keeps the canvas from also panning.
   useEffect(() => {
     const img = imgRef.current;
-    if (!img || !interact || !persistent) return; // scroll the live target, not a still
+    if (!img || !interact) return;
     let ax = 0, ay = 0, cx = 0, cy = 0, timer: number | undefined;
     const flush = () => {
       timer = undefined;

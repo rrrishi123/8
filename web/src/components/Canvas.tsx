@@ -228,8 +228,15 @@ export function Canvas({ session }: { session: string | null }) {
             <rect key={L.c.key} x={L.x} y={L.y} width={L.w} height={H}
               className={L.c.key === heroKey ? 'mm-hero' : 'mm-seat'} />
           ))}
-          <rect x={-cam.x / cam.z} y={-cam.y / cam.z} width={vpRect.width / cam.z} height={vpRect.height / cam.z}
-            className="mm-view" vectorEffect="non-scaling-stroke" />
+          {(() => {
+            // CLAMP the viewport rect to the world: at low zoom your view spills far
+            // past the territory (x can be negative, w can exceed worldW), which SVG
+            // then clips so it "covers everything." Clamping shows the honest slice of
+            // the world you're actually seeing — full when zoomed out, small when in.
+            const vx = Math.max(0, -cam.x / cam.z), vy = Math.max(0, -cam.y / cam.z);
+            const vx2 = Math.min(worldW, (vpRect.width - cam.x) / cam.z), vy2 = Math.min(worldH, (vpRect.height - cam.y) / cam.z);
+            return <rect x={vx} y={vy} width={Math.max(0, vx2 - vx)} height={Math.max(0, vy2 - vy)} className="mm-view" vectorEffect="non-scaling-stroke" />;
+          })()}
         </svg>
       )}
     </div>
