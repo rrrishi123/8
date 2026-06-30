@@ -80,6 +80,9 @@ if up 7070 && ! curl -s -m2 http://127.0.0.1:7070/health | grep -q '"chrome"' &&
   lsof -ti :7070 | xargs kill 2>/dev/null || true; sleep 0.5
 fi
 if up 7070; then echo "collector:  already up :7070"; else
+  # a missing binary must NOT kill the wire (8 would poll a dead :7070 forever) —
+  # build it on demand. This is the gap that left 8 "moving while doing nothing".
+  [ -x "$COLLECTOR" ] || { echo "collector:  binary missing -> building"; ( cd "$REPO/8/collector" && go build -o collector . ); }
   nohup "$COLLECTOR" -listen :7070 -brokers "$BROKERS" \
     -gecko "http://127.0.0.1:4444/session/$SID" >/tmp/collector-8.log 2>&1 &
   wait_up 7070 && echo "collector:  up :7070 (procinfo enabled; brokers: $BROKERS)"

@@ -34,11 +34,23 @@ export function Canvas({ session }: { session: string | null }) {
   const [rec, setRec] = useState<{ recording: boolean; name?: string; frames?: number; captured?: CapFrame[] }>({ recording: false });
   const [series, setSeries] = useState<SeriesInfo[]>([]);
   const [recName, setRecName] = useState('canvas-1');
+  // idle 8 should be QUIET: poll /record fast ONLY while recording (the deck needs
+  // it live), slow otherwise; /series only every 8s (it changes only on save). This
+  // is why "idle 8 was moving" — it was hammering /record+/series every 1.2s.
+  const recRef = useRef(false);
   useEffect(() => {
-    const tick = () => { if (!document.hidden) { recordCtl('').then(setRec); listSeries().then(setSeries); } };
+    let alive = true;
+    const tick = async () => {
+      if (!alive) return;
+      if (!document.hidden) {
+        const r = await recordCtl(''); setRec(r); recRef.current = !!r.recording;
+      }
+      if (alive) window.setTimeout(tick, recRef.current ? 1000 : 4000);
+    };
     tick();
-    const t = window.setInterval(tick, 1200);
-    return () => clearInterval(t);
+    listSeries().then(setSeries);
+    const st = window.setInterval(() => { if (!document.hidden) listSeries().then(setSeries); }, 8000);
+    return () => { alive = false; clearInterval(st); };
   }, []);
   const toggleRec = async () => {
     if (rec.recording) await recordCtl('stop'); else await recordCtl('start', recName, 'ai');

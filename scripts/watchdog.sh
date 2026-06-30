@@ -31,6 +31,19 @@ while true; do
       bash scripts/up.sh >/tmp/up-watchdog.log 2>&1
       sleep 30
     fi
+
+    # COLLECTOR liveness: the watchdog used to watch only Firefox, so a dead
+    # collector left 8 polling a corpse (the "8 moves while idle" symptom). Revive
+    # it WITHOUT Firefox churn — rebuild if needed, derive SID from the live broker,
+    # re-add the chrome seat if that browser is up.
+    if ! lsof -ti :7070 >/dev/null 2>&1; then
+      echo "[watchdog $(date +%H:%M:%S)] collector :7070 down -> reviving (collector-only, no Firefox churn)"
+      [ -x collector/collector ] || ( cd collector && go build -o collector . )
+      SID=$(ps aux | grep '[c]hannel -ws' | grep 4445 | grep -o 'session/[0-9a-f-]*' | head -1 | cut -d/ -f2)
+      BRK="fox=http://127.0.0.1:4445"
+      lsof -ti :4446 >/dev/null 2>&1 && BRK="$BRK,chrome=http://127.0.0.1:4446"
+      nohup collector/collector -listen :7070 -brokers "$BRK" -gecko "http://127.0.0.1:4444/session/$SID" >/tmp/collector-8.log 2>&1 &
+    fi
   else
     echo "[watchdog $(date +%H:%M:%S)] Firefox unreachable -> reviving via up.sh"
     bash scripts/up.sh >/tmp/up-watchdog.log 2>&1
