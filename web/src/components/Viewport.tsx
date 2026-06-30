@@ -10,9 +10,9 @@ type Seeing = 'pixels' | 'channel' | 'request';
 // live stream stops being a mirror and becomes hands: a click on the <img> maps
 // to the target's pixels and fires /act (tap), keystrokes fire /act (type). Same
 // surface drives a Firefox tab (BiDi) OR a real device (Appium) — one wire.
-export function Viewport({ session, title, context: fixedCtx, onAspect, hud, visible, fps: fpsProp, act: actMode, pinned, onPin }:
+export function Viewport({ session, title, context: fixedCtx, onAspect, hud, visible, fps: fpsProp, act: actMode, pinned, onPin, lodW }:
   { session: string | null; title?: string; context?: string;
-    onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; fps?: number; act?: boolean; pinned?: boolean; onPin?: () => void }) {
+    onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; fps?: number; act?: boolean; pinned?: boolean; onPin?: () => void; lodW?: number }) {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [ctx, setCtx] = useState(fixedCtx || '');
   const [reqSeat, setReqSeat] = useState('');
@@ -104,15 +104,16 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
   // live stream + cheap stills, so every seat is seen. (Foveation + the cap.)
   const persistent = streaming && effFps >= 2;
   const [shot, setShot] = useState('');
+  const lodq = lodW ? `&w=${lodW}` : ''; // LOD: ask for only the pixels we display
   const streamSrc = session && persistent
-    ? `${BASE}/stream?session=${encodeURIComponent(session)}${ctx ? `&context=${encodeURIComponent(ctx)}` : ''}&fps=${effFps}`
+    ? `${BASE}/stream?session=${encodeURIComponent(session)}${ctx ? `&context=${encodeURIComponent(ctx)}` : ''}&fps=${effFps}${lodq}`
     : '';
   useEffect(() => {
     if (!session) return;
     let alive = true;
     const cq = ctx ? `&context=${encodeURIComponent(ctx)}` : '';
     const tick = async () => {
-      try { const j = await (await fetch(`${BASE}/shot?session=${encodeURIComponent(session)}${cq}`)).json(); if (alive && j.data) { setShot(j.data); if (!persistent) setErr(false); } } catch { if (alive && !persistent) setErr(true); }
+      try { const j = await (await fetch(`${BASE}/shot?session=${encodeURIComponent(session)}${cq}${lodq}`)).json(); if (alive && j.data) { setShot(j.data); if (!persistent) setErr(false); } } catch { if (alive && !persistent) setErr(true); }
     };
     // SEED one still ALWAYS — even off-screen — so zooming out / bird's-eye shows
     // every card's LAST FRAME instead of a blank "paused" placeholder. You asked:
@@ -124,7 +125,7 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
     // stream, but the cached still means it never blanks either.
     const id = window.setInterval(tick, persistent ? 5000 : Math.max(600, Math.round(1000 / effFps)));
     return () => { alive = false; clearInterval(id); };
-  }, [session, ctx, streaming, persistent, effFps]);
+  }, [session, ctx, streaming, persistent, effFps, lodW]);
   // FIGMA/FIGJAM behaviour: when a seat is off-screen we stop FETCHING (the poll
   // effect gates on `streaming`, the live stream unmounts) — but we keep showing
   // its LAST frame frozen, so panning the board shows what's there, not blanks.

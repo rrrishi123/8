@@ -590,46 +590,64 @@ func (c *collector) commandS(b *broker, body string) ([]byte, int, error) {
 // handleShot grabs one screenshot of a session's tab — the "viewport" frame.
 // BiDi has no screencast stream, so the cockpit polls this (~1 fps is plenty
 // for a live-ish mirror). Defaults to the session's first top-level context.
-// shrink2x halves a base64 JPEG's dimensions with a 2x2 box average (stdlib only).
-// Captures come back at devicePixelRatio (retina 2x) — far more pixels than the
-// cockpit ever displays — so this cuts the cockpit's decode + GPU-texture memory
-// ~4x (the seeded stills for every card were holding 3592x3046 each). Returns the
-// input unchanged on any decode issue, so it can never break a frame.
-func shrink2x(b64 string) string {
+// shrinkToRaw downscales a JPEG to ~targetW px wide (nearest-neighbor, stdlib
+// only). LEVEL-OF-DETAIL: 8 asks for only as many pixels as the card is actually
+// DISPLAYED at — a tab in a tiny zoomed-out container costs tiny memory/bandwidth;
+// the zoomed hero asks for full res. "Pay for the pixels you show" (Maps/Figma
+// LOD), not the naive fixed 2x. Capture is still 3592 at the Firefox side (that
+// needs dpr=1 separately) — this governs what the COCKPIT holds + the wire carries.
+// targetW<=0 or >= source returns the input unchanged (never upscales/breaks).
+func shrinkToRaw(raw []byte, targetW int) []byte {
+	if len(raw) == 0 || targetW <= 0 {
+		return raw
+	}
+	src, err := jpeg.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return raw
+	}
+	b := src.Bounds()
+	sw, sh := b.Dx(), b.Dy()
+	if sw < 2 || targetW >= sw {
+		return raw
+	}
+	ow := targetW
+	oh := sh * ow / sw
+	if oh < 1 {
+		oh = 1
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, ow, oh))
+	for y := 0; y < oh; y++ {
+		sy := b.Min.Y + y*sh/oh
+		for x := 0; x < ow; x++ {
+			r, g, l, _ := src.At(b.Min.X+x*sw/ow, sy).RGBA()
+			dst.SetRGBA(x, y, color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(l >> 8), 255})
+		}
+	}
+	var out bytes.Buffer
+	if jpeg.Encode(&out, dst, &jpeg.Options{Quality: 70}) != nil {
+		return raw
+	}
+	return out.Bytes()
+}
+
+// shrinkTo is the base64 wrapper (for /shot's data URL).
+func shrinkTo(b64 string, targetW int) string {
 	raw, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil || len(raw) == 0 {
 		return b64
 	}
-	src, err := jpeg.Decode(bytes.NewReader(raw))
-	if err != nil {
-		return b64
-	}
-	b := src.Bounds()
-	w, h := b.Dx()/2, b.Dy()/2
-	if w < 2 || h < 2 {
-		return b64
-	}
-	dst := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			sx, sy := b.Min.X+x*2, b.Min.Y+y*2
-			r0, g0, l0, _ := src.At(sx, sy).RGBA()
-			r1, g1, l1, _ := src.At(sx+1, sy).RGBA()
-			r2, g2, l2, _ := src.At(sx, sy+1).RGBA()
-			r3, g3, l3, _ := src.At(sx+1, sy+1).RGBA()
-			dst.SetRGBA(x, y, color.RGBA{
-				uint8(((r0 + r1 + r2 + r3) / 4) >> 8),
-				uint8(((g0 + g1 + g2 + g3) / 4) >> 8),
-				uint8(((l0 + l1 + l2 + l3) / 4) >> 8),
-				255,
-			})
+	return base64.StdEncoding.EncodeToString(shrinkToRaw(raw, targetW))
+}
+
+// lodWidth reads the ?w= LOD target the cockpit requests (the card's displayed px
+// width). Empty -> a sane cap so a frame is never the full 3592 by accident.
+func lodWidth(r *http.Request) int {
+	if q := r.URL.Query().Get("w"); q != "" {
+		if n, err := strconv.Atoi(q); err == nil && n > 0 {
+			return n
 		}
 	}
-	var out bytes.Buffer
-	if jpeg.Encode(&out, dst, &jpeg.Options{Quality: 62}) != nil {
-		return b64
-	}
-	return base64.StdEncoding.EncodeToString(out.Bytes())
+	return 1280
 }
 
 func (c *collector) handleShot(w http.ResponseWriter, r *http.Request) {
@@ -718,7 +736,7 @@ func (c *collector) handleShot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"context": ctx,
-		"data":    "data:image/jpeg;base64," + shrink2x(s.Result.Data),
+		"data":    "data:image/jpeg;base64," + shrinkTo(s.Result.Data, lodWidth(r)),
 	})
 }
 
@@ -1312,6 +1330,7 @@ func (c *collector) handleStream(w http.ResponseWriter, r *http.Request) {
 		if v, err := strconv.ParseFloat(r.URL.Query().Get("quality"), 64); err == nil && v >= 0 && v <= 1 {
 			quality = v
 		}
+		lw := lodWidth(r) // LOD: downscale each frame to the card's displayed px width
 		shot := fmt.Sprintf(`{"method":"browsingContext.captureScreenshot","params":{"context":%q,"origin":"viewport","format":{"type":"image/jpeg","quality":%g}}}`, ctx, quality)
 		if isCDP {
 			// Chrome CDP: Page.captureScreenshot returns the same result.data base64
@@ -1350,6 +1369,7 @@ func (c *collector) handleStream(w http.ResponseWriter, r *http.Request) {
 			json.Unmarshal(sr, &s)
 			if s.Result.Data != "" {
 				if raw, derr := base64.StdEncoding.DecodeString(s.Result.Data); derr == nil && len(raw) > 0 {
+					raw = shrinkToRaw(raw, lw) // LOD: only the pixels the card shows
 					fmt.Fprintf(w, "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n", len(raw))
 					if _, werr := w.Write(raw); werr != nil {
 						return

@@ -182,6 +182,11 @@ export function Canvas({ session }: { session: string | null }) {
   const screened = laid.map((L) => ({ ...L, vis: onScreen(L.x, L.y, L.w, H) }));
   rectsRef.current = {}; // card key -> world rect, for /focus auto-zoom
   for (const L of laid) rectsRef.current[L.c.key] = { x: L.x, y: L.y, w: L.w };
+  // LEVEL-OF-DETAIL: the card's DISPLAYED width (world × zoom) → a quantized bucket
+  // 8 asks the capture for, so a tiny zoomed-out card costs tiny pixels and the
+  // zoomed hero asks for full res. Buckets keep the stream from reconnecting on
+  // every zoom tick. "Pay for the pixels you show."
+  const lodBucket = (px: number) => { for (const v of [160, 240, 360, 540, 768, 1024, 1440]) if (px <= v) return v; return 1600; };
   const seatPanes: PaneRect[] = screened.map((L) => {
     const hero = L.c.key === heroKey;
     const streams = L.top && L.vis; // only the deck's TOP card spends the socket
@@ -189,6 +194,7 @@ export function Canvas({ session }: { session: string | null }) {
       id: 'seat-' + L.c.key, x: L.x, y: L.y, w: L.w, h: H, z: L.z, gravity: hero,
       node: <Viewport session={L.c.session} context={L.c.context} title={L.c.title}
         visible={streams} fps={hero ? 3 : (streams ? 0.4 : 0)} pinned={hero}
+        lodW={lodBucket(L.w * cam.z)}
         onPin={() => setPinnedKey(L.c.key)}
         onAspect={(r) => setAspectBy((p) => (Math.abs((p[L.c.key] || 0) - r) > 0.01 ? { ...p, [L.c.key]: r } : p))}
         hud={L.c.url ? hudBy[L.c.url] : undefined} />,
