@@ -37,7 +37,9 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -338,6 +340,44 @@ func (c *collector) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleFetch executes one raw HTTP request server-side (the "curl hit"), and
+// guardFetchTarget blocks the unambiguous SSRF target: the cloud-metadata /
+// link-local range (169.254.0.0/16, fe80::/10) — never a legitimate /fetch
+// destination, the classic credential-theft pivot (169.254.169.254). It checks
+// the RESOLVED IPs, so a hostname that resolves into the range is caught too.
+// It deliberately does NOT block loopback/private by default: /fetch's job IS
+// hitting local appium/webdriver hubs (127.0.0.1:4723, brokers). Set
+// EIGHT_FETCH_DENY_PRIVATE=1 to also block private/loopback for a hardened,
+// non-loopback deployment. (Resolve-then-dial leaves a TOCTOU DNS-rebind gap;
+// auth + this baseline is the proportionate mitigation for a local wire.)
+func guardFetchTarget(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("bad url")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("scheme %q not allowed (http/https only)", u.Scheme)
+	}
+	host := u.Hostname()
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		if ip := net.ParseIP(host); ip != nil {
+			ips = []net.IP{ip} // literal IP that doesn't "resolve"
+		} else {
+			return nil // genuine DNS failure surfaces downstream as a fetch error
+		}
+	}
+	denyPrivate := os.Getenv("EIGHT_FETCH_DENY_PRIVATE") == "1"
+	for _, ip := range ips {
+		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("blocked link-local/metadata address %s", ip)
+		}
+		if denyPrivate && (ip.IsLoopback() || ip.IsPrivate()) {
+			return fmt.Errorf("blocked private address %s (EIGHT_FETCH_DENY_PRIVATE)", ip)
+		}
+	}
+	return nil
+}
+
 // echoes it into the feed so the cockpit shows the call alongside browser events.
 func (c *collector) handleFetch(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -352,6 +392,10 @@ func (c *collector) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.Method == "" {
 		in.Method = "GET"
+	}
+	if err := guardFetchTarget(in.URL); err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusForbidden)
+		return
 	}
 	var body io.Reader
 	if in.Body != "" {
