@@ -60,10 +60,29 @@ cmd '{"method":"session.subscribe","params":{"events":["network.beforeRequestSen
 echo "subscribe:  channel events flowing (network, log, domContentLoaded)"
 
 # 5. collector. -gecko enables /procinfo (per-tab mem/CPU via the chrome context).
+#    BROWSER PACK — the 2nd engine: if a Chrome CDP is reachable (started by
+#    `adapters/browser up`, on :9333), hold its page socket as a SECOND broker so
+#    8 shows Firefox AND Chrome side by side (the channel-physics twin: fox is
+#    BiDi, chrome is CDP — the collector probes which and captures accordingly).
+#    Auto-detected: no Chrome -> no seat -> default behaviour unchanged.
+BROKERS="fox=http://127.0.0.1:4445"
+if curl -s -m2 http://127.0.0.1:9333/json/version >/dev/null 2>&1; then
+  CHROME_WS=$(curl -s -m3 http://127.0.0.1:9333/json | jq -r '[.[]|select(.type=="page" and .webSocketDebuggerUrl)][0].webSocketDebuggerUrl // empty')
+  if [ -n "$CHROME_WS" ]; then
+    lsof -ti :4446 | xargs kill 2>/dev/null || true; sleep 0.3
+    nohup "$CHANNEL" -ws "$CHROME_WS" -listen :4446 >/tmp/broker-chrome.log 2>&1 &
+    wait_up 4446 && BROKERS="$BROKERS,chrome=http://127.0.0.1:4446" && echo "browser:    chrome seat on :4446"
+  fi
+fi
+# brokers are fixed at collector start, so a NEW chrome seat needs a fresh
+# collector. If one is already up WITHOUT chrome, restart it to pick the seat up.
+if up 7070 && ! curl -s -m2 http://127.0.0.1:7070/health | grep -q '"chrome"' && [ "$BROKERS" != "fox=http://127.0.0.1:4445" ]; then
+  lsof -ti :7070 | xargs kill 2>/dev/null || true; sleep 0.5
+fi
 if up 7070; then echo "collector:  already up :7070"; else
-  nohup "$COLLECTOR" -listen :7070 -brokers fox=http://127.0.0.1:4445 \
+  nohup "$COLLECTOR" -listen :7070 -brokers "$BROKERS" \
     -gecko "http://127.0.0.1:4444/session/$SID" >/tmp/collector-8.log 2>&1 &
-  wait_up 7070 && echo "collector:  up :7070 (procinfo enabled)"
+  wait_up 7070 && echo "collector:  up :7070 (procinfo enabled; brokers: $BROKERS)"
 fi
 
 # 6. vite cockpit (the web app served on :8088).
