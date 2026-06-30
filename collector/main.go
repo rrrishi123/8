@@ -261,6 +261,77 @@ func (c *collector) frameChan(id string) chan []byte {
 	return ch
 }
 
+// streamCDP is the EFFICIENT stream (Chrome): Page.startScreencast makes Chrome
+// PUSH frames (the pump routes them to frameChan + acks) — capture ONCE, encode
+// continuously, no repeated captureScreenshot. That kills both failure modes of
+// the poll loop: the parent-process leak and the single-BiDi-socket saturation
+// that was false-tripping the watchdog. maxWidth gives LOD natively (Chrome
+// downscales before it sends). One start per stream; stop on disconnect.
+func (c *collector) streamCDP(w http.ResponseWriter, r *http.Request, b *broker, quality float64, maxW int) {
+	c.command(b, `{"method":"Page.enable","params":{}}`)
+	start := fmt.Sprintf(`{"method":"Page.startScreencast","params":{"format":"jpeg","quality":%d,"maxWidth":%d,"maxHeight":%d}}`, int(quality*100), maxW, maxW*2)
+	if _, err := c.command(b, start); err != nil {
+		http.Error(w, `{"error":"startScreencast: `+err.Error()+`"}`, http.StatusBadGateway)
+		return
+	}
+	defer c.command(b, `{"method":"Page.stopScreencast","params":{}}`)
+	// Own the broker's /events for the life of this stream: read frame -> ack ->
+	// write. (The shared pump's frameChan indirection only ever delivered the first
+	// frame; a single self-contained consumer that acks each frame streams cleanly,
+	// proven at ~10fps.) ack must happen per frame or Chrome sends exactly one.
+	// DEDICATED client + transport — not the shared c.client. The fox pump holds a
+	// long-lived /events read on c.client; sharing its transport pool starved this
+	// stream down to a single frame. Its own transport isolates the SSE read.
+	evClient := &http.Client{Transport: &http.Transport{}}
+	req, _ := http.NewRequestWithContext(r.Context(), "GET", b.base+"/events", nil)
+	resp, err := evClient.Do(req)
+	if err != nil {
+		http.Error(w, `{"error":"events: `+err.Error()+`"}`, http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	defer evClient.CloseIdleConnections()
+	w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+	w.Header().Set("Cache-Control", "no-cache")
+	flusher, _ := w.(http.Flusher)
+	ackClient := &http.Client{Timeout: 3 * time.Second}
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	for sc.Scan() {
+		line := sc.Text()
+		if !strings.HasPrefix(line, "data: ") || !strings.Contains(line, `"Page.screencastFrame"`) {
+			continue
+		}
+		var ev struct {
+			Params struct {
+				Data      string `json:"data"`
+				SessionID int    `json:"sessionId"`
+			} `json:"params"`
+		}
+		if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev) != nil || ev.Params.Data == "" {
+			continue
+		}
+		// ack first so Chrome keeps producing while we decode+write this frame
+		go func(id int) {
+			if rp, e := ackClient.Post(b.base+"/command", "application/json", strings.NewReader(fmt.Sprintf(`{"method":"Page.screencastFrameAck","params":{"sessionId":%d}}`, id))); e == nil {
+				rp.Body.Close()
+			}
+		}(ev.Params.SessionID)
+		raw, derr := base64.StdEncoding.DecodeString(ev.Params.Data)
+		if derr != nil || len(raw) == 0 {
+			continue
+		}
+		fmt.Fprintf(w, "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n", len(raw))
+		if _, werr := w.Write(raw); werr != nil {
+			return
+		}
+		io.WriteString(w, "\r\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+}
+
 // publish fans one frame to every /feed subscriber, non-blocking so a slow
 // consumer never stalls the wire.
 func (c *collector) publish(frame string) {
@@ -292,6 +363,12 @@ func (c *collector) unsubscribe(id int) {
 // pump holds one broker's /events stream open and publishes each event into the
 // hub, tagged BIDI. Reconnects if the stream drops or the broker is down.
 func (c *collector) pump(ctx context.Context, b broker) {
+	// CDP (Chrome) brokers: streamCDP owns /events on demand and MUST be the sole
+	// consumer — it acks each screencast frame, and Chrome sends exactly one frame
+	// until acked. A second /events consumer here would race it and starve the ack.
+	if b.id != "fox" {
+		return
+	}
 	for ctx.Err() == nil {
 		req, _ := http.NewRequestWithContext(ctx, "GET", b.base+"/events", nil)
 		resp, err := c.client.Do(req)
@@ -308,27 +385,6 @@ func (c *collector) pump(ctx context.Context, b broker) {
 				// CDP screencast frames are a firehose -> route to the session's
 				// /stream, NOT the feed (which they would drown). Decode + ack here.
 				if strings.Contains(payload, `"Page.screencastFrame"`) {
-					var ev struct {
-						Params struct {
-							Data      string `json:"data"`
-							SessionID int    `json:"sessionId"`
-						} `json:"params"`
-					}
-					if json.Unmarshal([]byte(payload), &ev) == nil && ev.Params.Data != "" {
-						if raw, derr := base64.StdEncoding.DecodeString(ev.Params.Data); derr == nil {
-							ch := c.frameChan(b.id)
-							select { // latest-wins: drop the stale frame, push the new
-							case <-ch:
-							default:
-							}
-							select {
-							case ch <- raw:
-							default:
-							}
-						}
-						bb := b // ack so Chrome keeps streaming
-						c.command(&bb, fmt.Sprintf(`{"method":"Page.screencastFrameAck","params":{"sessionId":%d}}`, ev.Params.SessionID))
-					}
 					continue
 				}
 				// THE WITNESS MUST NOT WITNESS ITS OWN NERVOUS SYSTEM. The cockpit's
@@ -1331,12 +1387,15 @@ func (c *collector) handleStream(w http.ResponseWriter, r *http.Request) {
 			quality = v
 		}
 		lw := lodWidth(r) // LOD: downscale each frame to the card's displayed px width
-		shot := fmt.Sprintf(`{"method":"browsingContext.captureScreenshot","params":{"context":%q,"origin":"viewport","format":{"type":"image/jpeg","quality":%g}}}`, ctx, quality)
 		if isCDP {
-			// Chrome CDP: Page.captureScreenshot returns the same result.data base64
-			// JPEG the loop below already decodes. quality is 0-100 (BiDi uses 0-1).
-			shot = fmt.Sprintf(`{"method":"Page.captureScreenshot","params":{"format":"jpeg","quality":%d}}`, int(quality*100))
+			// EFFICIENT STREAM (Chrome): push, don't poll. Page.startScreencast — no
+			// repeated captureScreenshot -> no parent leak, no socket saturation. The
+			// Firefox captureScreenshot loop below is the leaky fallback until the
+			// drawSnapshot/MediaRecorder Firefox-native path lands.
+			c.streamCDP(w, r, b, quality, lw)
+			return
 		}
+		shot := fmt.Sprintf(`{"method":"browsingContext.captureScreenshot","params":{"context":%q,"origin":"viewport","format":{"type":"image/jpeg","quality":%g}}}`, ctx, quality)
 		w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary=frame")
 		w.Header().Set("Cache-Control", "no-cache")
 		flusher, _ := w.(http.Flusher)
