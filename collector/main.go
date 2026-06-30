@@ -231,6 +231,15 @@ func (c *collector) pump(ctx context.Context, b broker) {
 					}
 					continue
 				}
+				// THE WITNESS MUST NOT WITNESS ITS OWN NERVOUS SYSTEM. The cockpit's
+				// own traffic to the collector (:7070) and to itself (:8088) — /shot,
+				// /stream, /procinfo, /sessions, /act, /feed — otherwise reflects back
+				// as network events (~91% of the feed): a recursive loop that churns
+				// memory + adds latency (each render triggers more polls). Drop it.
+				if strings.Contains(payload, `"network.`) &&
+					(strings.Contains(payload, ":7070") || strings.Contains(payload, ":8088")) {
+					continue
+				}
 				c.publish(fmt.Sprintf(`{"session":%q,"origin":"BIDI","frame":%s}`, b.id, payload))
 			}
 		}
@@ -356,7 +365,9 @@ func (c *collector) handleFetch(w http.ResponseWriter, r *http.Request) {
 		req.Header.Set(k, v)
 	}
 	start := time.Now()
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	// 4min: a device session-create (Appium launching/building WDA, first-run
+	// uiautomator2 install) routinely exceeds 30s; a plain curl hit is unaffected.
+	resp, err := (&http.Client{Timeout: 240 * time.Second}).Do(req)
 	if err != nil {
 		c.publish(fmt.Sprintf(`{"session":"wire","origin":"COLLECTOR","frame":{"method":"http_request","params":{"http_method":%q,"url":%q,"status":0,"error":%q}}}`, strings.ToUpper(in.Method), in.URL, err.Error()))
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
@@ -663,7 +674,7 @@ func (c *collector) handleSessions(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		go func(rec sessionRec) {
-			cl := &http.Client{Timeout: 1500 * time.Millisecond}
+			cl := &http.Client{Timeout: 4 * time.Second}
 			resp, err := cl.Get(rec.Hub + "/session/" + rec.ID + "/window/rect")
 			rec.Status = "disconnected" // proxy/connection error => device gone
 			if err == nil {
@@ -679,20 +690,22 @@ func (c *collector) handleSessions(w http.ResponseWriter, r *http.Request) {
 	for range byID {
 		all = append(all, <-ch)
 	}
-	// auto-remove: a disconnected CALL session is gone — drop it from the response
-	// AND compact it out of the registry so it never reappears.
+	// liveness is a HINT, not a death sentence: a CALL session that fails one probe
+	// is greyed out of the response (the canvas stops drawing a dead seat) but KEPT
+	// in the registry, so a transient blip (device busy, appium mid-command, mjpeg
+	// reconnecting) recovers next cycle instead of vanishing forever.
 	live := make([]sessionRec, 0, len(all))
-	var liveCalls []sessionRec
+	var keepCalls []sessionRec
 	for _, s := range all {
+		if s.Physics == "call" {
+			keepCalls = append(keepCalls, s) // keep every call session on disk
+		}
 		if s.Status == "disconnected" {
 			continue
 		}
 		live = append(live, s)
-		if s.Physics == "call" {
-			liveCalls = append(liveCalls, s)
-		}
 	}
-	rewriteRegistry(liveCalls)
+	rewriteRegistry(keepCalls)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"sessions": live})
 }
@@ -807,6 +820,9 @@ func (c *collector) actChannel(w http.ResponseWriter, r *http.Request, b *broker
 			ms = 800
 		}
 		cmd = pointer(fmt.Sprintf(`{"type":"pointerMove","x":%d,"y":%d},{"type":"pointerDown","button":0},{"type":"pause","duration":%d},{"type":"pointerUp","button":0}`, in.X, in.Y, ms))
+	case "scroll":
+		// wheel scroll at a point (X,Y = origin on the page; X2,Y2 = deltaX,deltaY)
+		cmd = fmt.Sprintf(`{"method":"input.performActions","params":{"context":%q,"actions":[{"type":"wheel","id":"w","actions":[{"type":"scroll","x":%d,"y":%d,"deltaX":%d,"deltaY":%d}]}]}}`, ctx, in.X, in.Y, in.X2, in.Y2)
 	case "sendkeys", "type":
 		var ka strings.Builder
 		first := true
@@ -911,6 +927,11 @@ func (c *collector) handleAct(w http.ResponseWriter, r *http.Request) {
 		}
 		url = base + "/actions"
 		body = fmt.Sprintf(`{"actions":[{"type":"pointer","id":"finger","parameters":{"pointerType":"touch"},"actions":[{"type":"pointerMove","duration":0,"x":%d,"y":%d},{"type":"pointerDown","button":0},{"type":"pause","duration":%d},{"type":"pointerUp","button":0}]}]}`, in.X, in.Y, ms)
+	case "scroll":
+		// a device scroll IS a swipe opposite the wheel delta (content follows the
+		// finger): wheel-down (deltaY>0) → drag finger up. X,Y origin; X2,Y2 deltas.
+		url = base + "/actions"
+		body = fmt.Sprintf(`{"actions":[{"type":"pointer","id":"finger","parameters":{"pointerType":"touch"},"actions":[{"type":"pointerMove","duration":0,"x":%d,"y":%d},{"type":"pointerDown","button":0},{"type":"pause","duration":80},{"type":"pointerMove","duration":250,"x":%d,"y":%d},{"type":"pointerUp","button":0}]}]}`, in.X, in.Y, in.X-in.X2, in.Y-in.Y2)
 	case "click":
 		url, body = base+"/element/"+in.El+"/click", `{}`
 	case "sendkeys":
@@ -978,28 +999,141 @@ func (c *collector) handleStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Browser CHANNEL (CDP): start screencast on the held socket; the pump routes
-	// each Page.screencastFrame into this session's frame channel; we re-serve
-	// them as MJPEG so the cockpit <img> is identical to the device path.
-	if b := c.find(sid); b != nil {
-		c.command(b, `{"method":"Page.enable","params":{}}`)
-		c.command(b, `{"method":"Page.startScreencast","params":{"format":"jpeg","quality":60,"maxFrameRate":12}}`)
-		defer c.command(b, `{"method":"Page.stopScreencast","params":{}}`)
+	// CALL session (WebDriver) with no device mjpeg: stream the wire's NATIVE
+	// screenshot in a loop. Heavier than channel (full PNG, not viewport-jpeg), so
+	// the default fps is gentle — still a live mirror where /shot was one still.
+	if rec != nil && rec.Physics == "call" && !strings.HasPrefix(rec.Stream, "http") {
+		fps := 3.0
+		if v, err := strconv.ParseFloat(r.URL.Query().Get("fps"), 64); err == nil && v > 0 && v <= 30 {
+			fps = v
+		}
 		w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary=frame")
 		w.Header().Set("Cache-Control", "no-cache")
 		flusher, _ := w.(http.Flusher)
-		ch := c.frameChan(sid)
+		client := &http.Client{Timeout: 10 * time.Second}
+		interval := time.Duration(float64(time.Second) / fps)
+		url := rec.Hub + "/session/" + sid + "/screenshot"
+		fails := 0
 		for {
 			select {
 			case <-r.Context().Done():
 				return
-			case raw := <-ch:
-				fmt.Fprintf(w, "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n", len(raw))
-				w.Write(raw)
-				io.WriteString(w, "\r\n")
-				if flusher != nil {
-					flusher.Flush()
+			default:
+			}
+			start := time.Now()
+			resp, err := client.Get(url)
+			if err != nil {
+				if fails++; fails > 40 { // sustained failure → device/socket gone
+					return
 				}
+				time.Sleep(interval)
+				continue
+			}
+			fails = 0
+			rb, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+			resp.Body.Close()
+			var sv struct {
+				Value string `json:"value"`
+			}
+			json.Unmarshal(rb, &sv)
+			if sv.Value != "" {
+				if raw, derr := base64.StdEncoding.DecodeString(sv.Value); derr == nil && len(raw) > 0 {
+					fmt.Fprintf(w, "--frame\r\nContent-Type: image/png\r\nContent-Length: %d\r\n\r\n", len(raw))
+					if _, werr := w.Write(raw); werr != nil {
+						return
+					}
+					io.WriteString(w, "\r\n")
+					if flusher != nil {
+						flusher.Flush()
+					}
+				}
+			}
+			if d := interval - time.Since(start); d > 0 {
+				time.Sleep(d)
+			}
+		}
+	}
+
+	// Browser CHANNEL (BiDi): Firefox has NO screencast push — Page.startScreencast
+	// is a CDP/Chrome command, and Firefox BiDi answers "unknown command". So the
+	// live wire is a tight captureScreenshot loop re-emitted as MJPEG: identical
+	// multipart to the device path, so the cockpit <img> renders it live. Frame
+	// rate is bounded by the BiDi round-trip (a few fps) — enough to SEE a video
+	// tab move, where /shot's slow poll only showed stills. fps/quality tunable.
+	if b := c.find(sid); b != nil {
+		ctx := r.URL.Query().Get("context")
+		if ctx == "" {
+			if tr, err := c.command(b, `{"method":"browsingContext.getTree","params":{}}`); err == nil {
+				var t struct {
+					Result struct {
+						Contexts []struct {
+							Context string `json:"context"`
+						} `json:"contexts"`
+					} `json:"result"`
+				}
+				json.Unmarshal(tr, &t)
+				if len(t.Result.Contexts) > 0 {
+					ctx = t.Result.Contexts[0].Context
+				}
+			}
+		}
+		if ctx == "" {
+			http.Error(w, `{"error":"no context"}`, http.StatusBadGateway)
+			return
+		}
+		fps := 6.0
+		if v, err := strconv.ParseFloat(r.URL.Query().Get("fps"), 64); err == nil && v > 0 && v <= 30 {
+			fps = v
+		}
+		quality := 0.5
+		if v, err := strconv.ParseFloat(r.URL.Query().Get("quality"), 64); err == nil && v >= 0 && v <= 1 {
+			quality = v
+		}
+		shot := fmt.Sprintf(`{"method":"browsingContext.captureScreenshot","params":{"context":%q,"origin":"viewport","format":{"type":"image/jpeg","quality":%g}}}`, ctx, quality)
+		w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+		w.Header().Set("Cache-Control", "no-cache")
+		flusher, _ := w.(http.Flusher)
+		interval := time.Duration(float64(time.Second) / fps)
+		fails := 0
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			default:
+			}
+			start := time.Now()
+			sr, err := c.command(b, shot)
+			if err != nil {
+				// transient (e.g. socket busy under N-seat contention) — skip this
+				// frame and keep streaming; only give up after sustained failure so a
+				// momentary timeout never turns a seat permanently black.
+				if fails++; fails > 40 {
+					return
+				}
+				time.Sleep(interval)
+				continue
+			}
+			fails = 0
+			var s struct {
+				Result struct {
+					Data string `json:"data"`
+				} `json:"result"`
+			}
+			json.Unmarshal(sr, &s)
+			if s.Result.Data != "" {
+				if raw, derr := base64.StdEncoding.DecodeString(s.Result.Data); derr == nil && len(raw) > 0 {
+					fmt.Fprintf(w, "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n", len(raw))
+					if _, werr := w.Write(raw); werr != nil {
+						return
+					}
+					io.WriteString(w, "\r\n")
+					if flusher != nil {
+						flusher.Flush()
+					}
+				}
+			}
+			if d := interval - time.Since(start); d > 0 {
+				time.Sleep(d)
 			}
 		}
 	}

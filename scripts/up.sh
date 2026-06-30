@@ -66,11 +66,16 @@ if up 7070; then echo "collector:  already up :7070"; else
   wait_up 7070 && echo "collector:  up :7070 (procinfo enabled)"
 fi
 
-# 6. vite cockpit.
+# 6. vite cockpit (the web app served on :8088).
 if up 8088; then echo "vite:       already up :8088"; else
   ( cd "$WEB" && nohup npm run dev >/tmp/vite-8.log 2>&1 & )
   wait_up 8088 && echo "vite:       up :8088"
 fi
+
+# 6b. the cockpit runs in its OWN browser (FLOW 7 "8 out-of-browser"), NOT as a tab
+#     inside the Firefox it observes — that reflexive load inflated the subject
+#     Firefox by ~8GB. cockpit.sh hosts it in a separate Chrome (CDP-driveable).
+bash "$REPO/8/scripts/cockpit.sh" || true
 
 # 7. RESTORE the working tabs from the persistent store (the watchdog auto-saves
 #    them every cycle). First run / empty store -> defaults: cockpit + peer thread.
@@ -97,6 +102,9 @@ for u in "${URLS[@]}"; do
   case "$u" in *deepseek.com*) DS="$target";; esac
 done
 echo "restored ${#URLS[@]} tab(s) from $TABS_FILE"
+
+# (8's cockpit is no longer a Firefox tab — it lives in its own Chrome via
+#  cockpit.sh, step 6b — so there's no cockpit tab to foreground here.)
 
 # 8. login check: is DeepSeek authenticated? (textarea present = yes)
 [ -z "$DS" ] && DS="$CTX"
