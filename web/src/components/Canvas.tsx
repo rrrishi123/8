@@ -3,7 +3,7 @@ import { Viewport } from './Viewport';
 import { Resources } from './Resources';
 import { PasteCurl } from './PasteCurl';
 import { useLocal } from './Dock';
-import { procinfo } from '../lib/api';
+import { procinfo, recordCtl, listSeries, replaySeries, type SeriesInfo } from '../lib/api';
 
 const BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
 
@@ -29,6 +29,22 @@ export function Canvas({ session }: { session: string | null }) {
   const [actMode, setActMode] = useState(false); // P1·act puts the hero seat into interaction
   const [pinnedKey, setPinnedKey] = useState(''); // the HERO seat (explicit pin, not center)
   const prevCpu = useRef<Record<string, { c: number; t: number }>>({});
+  // RECORD → REPLAY: the seer turns non-deterministic manual driving into a
+  // deterministic, replayable series. Every /act you do on a live seat is captured
+  // (seat-attributed) while recording; the live frame count shows it accumulating;
+  // replay re-fires the whole series. (record/replay = the spine — 137 mentions.)
+  const [rec, setRec] = useState<{ recording: boolean; name?: string; frames?: number }>({ recording: false });
+  const [series, setSeries] = useState<SeriesInfo[]>([]);
+  const [recName, setRecName] = useState('canvas-1');
+  useEffect(() => {
+    const t = window.setInterval(() => { if (!document.hidden) { recordCtl('').then(setRec); listSeries().then(setSeries); } }, 1500);
+    recordCtl('').then(setRec); listSeries().then(setSeries);
+    return () => clearInterval(t);
+  }, []);
+  const toggleRec = async () => {
+    if (rec.recording) await recordCtl('stop'); else await recordCtl('start', recName, 'ai');
+    recordCtl('').then(setRec); listSeries().then(setSeries);
+  };
 
   useEffect(() => {
     const load = async () => {
@@ -118,7 +134,7 @@ export function Canvas({ session }: { session: string | null }) {
     return {
       id: 'seat-' + L.c.key, x: L.x, y: L.y, w: L.w, h: H, gravity: hero,
       node: <Viewport session={L.c.session} context={L.c.context} title={L.c.title}
-        visible={L.vis} fps={hero ? 6 : 0.2} act={actMode && hero} pinned={hero}
+        visible={L.vis} fps={hero ? 6 : 0.2} pinned={hero}
         onPin={() => setPinnedKey(L.c.key)}
         onAspect={(r) => setAspectBy((p) => (Math.abs((p[L.c.key] || 0) - r) > 0.01 ? { ...p, [L.c.key]: r } : p))}
         hud={L.c.url ? hudBy[L.c.url] : undefined} />,
@@ -173,6 +189,21 @@ export function Canvas({ session }: { session: string | null }) {
             {p.node}
           </div>
         ))}
+      </div>
+      {/* RECORD → REPLAY, first-class on the canvas: drive a live seat, every
+          command is captured + counted here; replay re-fires the series. This is
+          how the seer turns manual (non-deterministic) driving into deterministic. */}
+      <div className="rec-bar">
+        <button className={`rec-btn${rec.recording ? ' on' : ''}`} onClick={toggleRec} title="record every /act you drive on a live seat; replay re-fires them — deterministic">
+          {rec.recording ? `● REC ${rec.name} · ${rec.frames ?? 0} cmds` : '○ record'}
+        </button>
+        {!rec.recording && <input className="rec-in" value={recName} onChange={(e) => setRecName(e.target.value)} title="series name" />}
+        {series.length > 0 && (
+          <select className="rec-in" value="" onChange={(e) => { if (e.target.value) replaySeries(e.target.value); e.currentTarget.value = ''; }} title="replay a saved series">
+            <option value="">▶ replay…</option>
+            {series.map((s) => <option key={s.name} value={s.name}>{s.name} · {s.frames} cmds</option>)}
+          </select>
+        )}
       </div>
       <div className="persp-bar">
         <button onClick={persp.p1} title="one seat">P1 · act</button>

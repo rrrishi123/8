@@ -36,9 +36,11 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
     document.addEventListener('visibilitychange', onVis);
     return () => document.removeEventListener('visibilitychange', onVis);
   }, []);
-  // P1·act drives this seat into act-mode (interactive) when it's the hero; leaving
-  // act-mode (P2/bird) drops back to watch. The ✋/👁 button still overrides.
-  useEffect(() => { if (actMode != null) setInteract(actMode); }, [actMode]);
+  // EXPLICIT live, never dynamic: the system must not decide you're "live" — that
+  // would make it ambiguous which of your actions are real commands to record. You
+  // arm a seat by clicking ✋ live (below), which also PINS it so it streams live
+  // and you act on a LIVE view, not a frozen still.
+  void actMode;
 
   // the frame's TRUE pixels size — report its aspect up so the seat box can match
   // the source (a portrait phone ≠ a landscape tab; pretext = natural size).
@@ -139,7 +141,7 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
   };
   // click on the frame → target pixel coords (ratio × the frame's natural size).
   const onTap = (e: React.MouseEvent<HTMLImageElement>) => {
-    if (!interact) return;
+    if (!interact || !persistent) return; // act only on a LIVE view, never a frozen still
     const img = e.currentTarget, r = img.getBoundingClientRect();
     const nx = img.naturalWidth || r.width, ny = img.naturalHeight || r.height;
     act({ action: 'tap', x: Math.round((e.clientX - r.left) / r.width * nx), y: Math.round((e.clientY - r.top) / r.height * ny) });
@@ -147,7 +149,7 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
   };
   // keystrokes -> /act type. WebDriver special keys: Enter \uE007, Backspace \uE003.
   const onKey = (e: React.KeyboardEvent<HTMLImageElement>) => {
-    if (!interact) return;
+    if (!interact || !persistent) return;
     if (e.key === 'Enter') { e.preventDefault(); act({ action: 'type', text: '\uE007' }); }
     else if (e.key === 'Backspace') { e.preventDefault(); act({ action: 'type', text: '\uE003' }); }
     else if (e.key.length === 1) { e.preventDefault(); act({ action: 'type', text: e.key }); }
@@ -158,7 +160,7 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
   // Propagation keeps the canvas from also panning.
   useEffect(() => {
     const img = imgRef.current;
-    if (!img || !interact) return;
+    if (!img || !interact || !persistent) return; // scroll the live target, not a still
     let ax = 0, ay = 0, cx = 0, cy = 0, timer: number | undefined;
     const flush = () => {
       timer = undefined;
@@ -176,7 +178,7 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
     };
     img.addEventListener('wheel', onWheel, { passive: false });
     return () => { img.removeEventListener('wheel', onWheel); if (timer) clearTimeout(timer); };
-  }, [interact, session, ctx, frameSrc]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [interact, persistent, session, ctx, frameSrc]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <section className="panel viewport">
@@ -188,7 +190,7 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
           ))}
         </span>
         {seeing === 'pixels' && <>
-          <button className={`act-toggle${interact ? ' on' : ''}`} onClick={() => setInteract((v) => !v)} title="click/type the live frame → /act">{interact ? '✋ live' : '👁 watch'}</button>
+          <button className={`act-toggle${interact ? ' on' : ''}`} onClick={() => setInteract((v) => { const nv = !v; if (nv) onPin?.(); return nv; })} title="arm THIS seat: pin it live + drive it (tap/type/scroll → /act)">{interact ? '✋ live' : '👁 watch'}</button>
           {fpsProp == null
             ? <select className="tab-pick fps-pick" value={fps} onChange={(e) => setFps(Number(e.target.value))} title="stream frame rate">
                 {[1, 3, 6, 12].map((f) => <option key={f} value={f}>{f} fps</option>)}
