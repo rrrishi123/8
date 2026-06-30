@@ -72,10 +72,13 @@ if up 8088; then echo "vite:       already up :8088"; else
   wait_up 8088 && echo "vite:       up :8088"
 fi
 
-# 6b. the cockpit runs in its OWN browser (FLOW 7 "8 out-of-browser"), NOT as a tab
-#     inside the Firefox it observes — that reflexive load inflated the subject
-#     Firefox by ~8GB. cockpit.sh hosts it in a separate Chrome (CDP-driveable).
-bash "$REPO/8/scripts/cockpit.sh" || true
+# 6b. 8 runs REFLEXIVELY — as a tab INSIDE the Firefox it observes (FLOW 6). That
+#     self-witness (8 sees its own ★ tab memory through its own /procinfo) is 8's
+#     biggest IP; the cockpit tab is restored below with the other tabs. The ~8GB
+#     blowup that once tempted moving it out was the RECURSION (witnessing its own
+#     traffic), now filtered at the pump — reflexive holds at ~0.7GB.
+#     (FLOW 7 "out-of-browser" lives in scripts/cockpit.sh as an OPT-IN, for when
+#      you want the seer isolated from the subject — it loses self-sight.)
 
 # 7. RESTORE the working tabs from the persistent store (the watchdog auto-saves
 #    them every cycle). First run / empty store -> defaults: cockpit + peer thread.
@@ -103,8 +106,10 @@ for u in "${URLS[@]}"; do
 done
 echo "restored ${#URLS[@]} tab(s) from $TABS_FILE"
 
-# (8's cockpit is no longer a Firefox tab — it lives in its own Chrome via
-#  cockpit.sh, step 6b — so there's no cockpit tab to foreground here.)
+# 8 IS the control surface AND the reflexive self-witness: foreground its tab so
+# you land on 8 and its streams run (they pause when its tab is hidden).
+cmd "{\"method\":\"browsingContext.activate\",\"params\":{\"context\":\"$CTX\"}}" >/dev/null
+echo "activated:  8's cockpit tab is foreground ($CTX) — reflexive, sees itself"
 
 # 8. login check: is DeepSeek authenticated? (textarea present = yes)
 [ -z "$DS" ] && DS="$CTX"

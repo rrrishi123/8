@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# cockpit.sh — run 8's cockpit in its OWN browser, NOT as a tab inside the Firefox
-# it observes. This is the Excalidraw's FLOW 7 ("8 out-of-browser"): the seer's
-# render + stream + poll load lives in a separate Chrome, so it never inflates the
-# SUBJECT Firefox. Measured: moving the cockpit out dropped the observed Firefox
-# from ~8GB to ~350MB. CDP (--remote-debugging-port) lets 8 — and you — drive the
-# cockpit itself through the wire (http-mcp bidi_command speaks CDP).
+# cockpit.sh — OPT-IN: run 8's cockpit in its OWN browser (Excalidraw FLOW 7,
+# "8 out-of-browser"). NOT the default — 8's default is REFLEXIVE: a tab inside
+# the Firefox it observes (FLOW 6), so it sees its own ★ memory through its own
+# /procinfo. That self-witness is 8's biggest IP; don't trade it away lightly.
+#
+# Use this ONLY when you deliberately want the seer ISOLATED from the subject
+# (e.g. measuring the subject Firefox without 8's render load on it). The cost:
+# out-of-browser 8 LOSES self-sight (it must fall back to `ps` for its own mem).
+# The ~8GB blowup that once motivated this was the RECURSION (8 witnessing its own
+# traffic), now filtered at the collector pump — reflexive holds at ~0.7GB, so you
+# rarely need this. CDP (--remote-debugging-port) keeps it driveable via http-mcp.
 set -uo pipefail
 CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 PORT="${COCKPIT_CDP_PORT:-9333}"
