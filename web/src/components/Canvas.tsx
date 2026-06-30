@@ -3,7 +3,7 @@ import { Viewport } from './Viewport';
 import { Resources } from './Resources';
 import { PasteCurl } from './PasteCurl';
 import { useLocal } from './Dock';
-import { procinfo, recordCtl, listSeries, replaySeries, addTab, type SeriesInfo, type CapFrame } from '../lib/api';
+import { procinfo, recordCtl, listSeries, replaySeries, addTab, getFocus, type SeriesInfo, type CapFrame } from '../lib/api';
 
 const BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
 
@@ -28,6 +28,8 @@ export function Canvas({ session }: { session: string | null }) {
   const [pinnedKey, setPinnedKey] = useState(''); // the HERO card (explicit pin, not center)
   const [spreadBy, setSpreadBy] = useLocal<Record<string, boolean>>('spreadBy', {}); // fanned decks
   const prevCpu = useRef<Record<string, { c: number; t: number }>>({});
+  const rectsRef = useRef<Record<string, { x: number; y: number; w: number }>>({}); // card key -> world rect
+  const lastFocusSeq = useRef(-1);
   // RECORD → REPLAY, shown IN the canvas: every /act you drive on a live seat is
   // captured (seat-attributed); the captured commands appear as a live deck right
   // here, not on the default feed page — replay re-fires the whole series.
@@ -93,6 +95,35 @@ export function Canvas({ session }: { session: string | null }) {
     return () => clearInterval(t);
   }, []);
 
+  // ATTENTION FOLLOWS ACTION: poll the collector's /focus (the last seat acted on,
+  // by anyone — me via the wire, a replay, the operator). When it changes, 8
+  // AUTO-FOVEATES: pin that card as hero and zoom to it. So driving deepseek from
+  // the wire makes 8 zoom to the deepseek card by itself — you never leave 8 to be
+  // "on" the tab; the seer's gaze follows the action automatically.
+  useEffect(() => {
+    let alive = true;
+    const poll = async () => {
+      if (!alive) return;
+      if (!document.hidden) {
+        const f = await getFocus();
+        if (f.seq > 0 && f.seq !== lastFocusSeq.current) {
+          lastFocusSeq.current = f.seq;
+          const key = f.session + (f.context || '');
+          setPinnedKey(key);
+          // let the pin re-render settle (the card becomes its deck's top), then
+          // zoom the camera to where it landed.
+          window.setTimeout(() => {
+            const rect = rectsRef.current[key]; const el = wrap.current;
+            if (rect && el) { const r = el.getBoundingClientRect(); const z = 0.85; setCam({ z, x: r.width / 2 - (rect.x + rect.w / 2) * z, y: r.height / 2 - (rect.y + 340) * z }); }
+          }, 80);
+        }
+      }
+      if (alive) window.setTimeout(poll, 1500);
+    };
+    poll();
+    return () => { alive = false; };
+  }, [setCam]);
+
   const host = (u: string) => { try { return new URL(u).host.replace(/^www\./, ''); } catch { return u || 'tab'; } };
 
   // ── group seats into solitaire decks ─────────────────────────────────────────
@@ -149,6 +180,8 @@ export function Canvas({ session }: { session: string | null }) {
   }
 
   const screened = laid.map((L) => ({ ...L, vis: onScreen(L.x, L.y, L.w, H) }));
+  rectsRef.current = {}; // card key -> world rect, for /focus auto-zoom
+  for (const L of laid) rectsRef.current[L.c.key] = { x: L.x, y: L.y, w: L.w };
   const seatPanes: PaneRect[] = screened.map((L) => {
     const hero = L.c.key === heroKey;
     const streams = L.top && L.vis; // only the deck's TOP card spends the socket

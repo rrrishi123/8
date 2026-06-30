@@ -101,6 +101,11 @@ export async function recordCtl(action: 'start' | 'stop' | '', name = '', seat =
   const r = await fetch(`${BASE}/record?${q.toString()}`);
   return r.json();
 }
+// getFocus — the last seat anything acted on. 8 polls this and auto-foveates to
+// it (attention follows action): driving a tab from the wire zooms 8 to its card.
+export async function getFocus(): Promise<{ session: string; context: string; seq: number }> {
+  try { const r = await fetch(`${BASE}/focus`); return r.json(); } catch { return { session: '', context: '', seq: 0 }; }
+}
 // addTab — open a new tab in a browser seat, protocol-aware. Firefox (BiDi)
 // creates a context then navigates; Chrome (CDP) creates a target at the url.
 // This is how the end user adds a tab to drive/record automation in.

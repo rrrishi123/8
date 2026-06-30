@@ -83,6 +83,28 @@ type collector struct {
 
 	dmu      sync.Mutex
 	dprCache map[string]float64 // context -> devicePixelRatio (act coord scaling)
+
+	// ATTENTION FOLLOWS ACTION: the last seat anything acted on. 8 polls /focus and
+	// auto-foveates (pin + fan + zoom) to it, so driving a tab from the wire makes
+	// the seer zoom to that card automatically — you never leave 8 to be "on" it.
+	focusMu      sync.Mutex
+	focusSession string
+	focusContext string
+	focusSeq     int64
+}
+
+func (c *collector) setFocus(session, context string) {
+	c.focusMu.Lock()
+	c.focusSession, c.focusContext, c.focusSeq = session, context, c.focusSeq+1
+	c.focusMu.Unlock()
+}
+
+func (c *collector) handleFocus(w http.ResponseWriter, r *http.Request) {
+	c.focusMu.Lock()
+	s, ctx, seq := c.focusSession, c.focusContext, c.focusSeq
+	c.focusMu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"session": s, "context": ctx, "seq": seq})
 }
 
 func newCollector(brokers []broker) *collector {
@@ -913,6 +935,7 @@ func (c *collector) actChannel(w http.ResponseWriter, r *http.Request, b *broker
 		in.X2 = int(math.Round(float64(in.X2) / dpr))
 		in.Y2 = int(math.Round(float64(in.Y2) / dpr))
 	}
+	c.setFocus(b.id, ctx) // 8 auto-zooms to the tab being driven
 	pointer := func(acts string) string {
 		return fmt.Sprintf(`{"method":"input.performActions","params":{"context":%q,"actions":[{"type":"pointer","id":"m","parameters":{"pointerType":"mouse"},"actions":[%s]}]}}`, ctx, acts)
 	}
@@ -1017,6 +1040,7 @@ func (c *collector) handleAct(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&in)
 	base := rec.Hub + "/session/" + sid
+	c.setFocus(sid, "") // 8 auto-zooms to the device being driven
 	var url, body string
 	switch in.Action {
 	case "tap":
@@ -2000,6 +2024,7 @@ func main() {
 	mux.HandleFunc("/series", c.handleSeries)
 	mux.HandleFunc("/replay-series", c.handleReplaySeries)
 	mux.HandleFunc("/benches", c.handleBenches)
+	mux.HandleFunc("/focus", c.handleFocus)
 	mux.HandleFunc("/health", c.handleHealth)
 
 	allow := map[string]bool{}
