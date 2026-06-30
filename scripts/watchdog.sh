@@ -8,10 +8,15 @@
 cd "$(dirname "$0")/.." || exit 1
 TABS_FILE="${TABS_FILE:-$HOME/.8-tabs.txt}"
 echo "[watchdog] started $(date +%H:%M:%S) — tab store: $TABS_FILE"
+fails=0  # consecutive Firefox-probe failures. The BiDi socket is ONE serialized
+         # channel; under stream load a getTree can queue behind captures and time
+         # out — that is NOT a dead Firefox. Recreating it on a single timeout was
+         # causing relentless false recycles. Only revive after several in a row.
 while true; do
-  resp=$(curl -s -m 5 http://127.0.0.1:4445/command -H 'Content-Type: application/json' \
+  resp=$(curl -s -m 12 http://127.0.0.1:4445/command -H 'Content-Type: application/json' \
     -d '{"method":"browsingContext.getTree","params":{}}' 2>/dev/null)
   if printf '%s' "$resp" | grep -q '"contexts"'; then
+    fails=0
     # ALIVE: auto-save the open tabs — the session-store the channel Firefox
     # lacks across its memory crashes. up.sh restores from this on the next revive.
     printf '%s' "$resp" | jq -r '.result.contexts[].url // empty' 2>/dev/null \
@@ -45,9 +50,14 @@ while true; do
       nohup collector/collector -listen :7070 -brokers "$BRK" -gecko "http://127.0.0.1:4444/session/$SID" >/tmp/collector-8.log 2>&1 &
     fi
   else
-    echo "[watchdog $(date +%H:%M:%S)] Firefox unreachable -> reviving via up.sh"
-    bash scripts/up.sh >/tmp/up-watchdog.log 2>&1
-    sleep 30   # cooldown: let the fresh session settle before probing again
+    fails=$((fails + 1))
+    echo "[watchdog $(date +%H:%M:%S)] Firefox probe failed ($fails/3) — socket likely busy under stream load, not dead"
+    if [ "$fails" -ge 3 ]; then
+      echo "[watchdog $(date +%H:%M:%S)] Firefox unreachable x$fails -> reviving via up.sh"
+      bash scripts/up.sh >/tmp/up-watchdog.log 2>&1
+      fails=0
+      sleep 30   # cooldown: let the fresh session settle before probing again
+    fi
   fi
   sleep 15
 done
