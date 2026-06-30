@@ -27,6 +27,7 @@ export function Canvas({ session }: { session: string | null }) {
   const [aspectBy, setAspectBy] = useLocal<Record<string, number>>('aspectBy', {});
   const [hudBy, setHudBy] = useState<Record<string, { mem?: number; cpu?: number | null }>>({});
   const [actMode, setActMode] = useState(false); // P1·act puts the hero seat into interaction
+  const [pinnedKey, setPinnedKey] = useState(''); // the HERO seat (explicit pin, not center)
   const prevCpu = useRef<Record<string, { c: number; t: number }>>({});
 
   useEffect(() => {
@@ -103,25 +104,22 @@ export function Canvas({ session }: { session: string | null }) {
     laid.push({ c, x, y, w });
     x += w + GAP;
   }
-  // 2) FOVEATED aperture (the peer's call): one serialized BiDi socket can't
-  // stream N tabs equally, so spend it where attention is — the on-screen seat
-  // nearest the viewport CENTER is the HERO (full fps); the rest are ambient
-  // (cheap ~0.5fps stills). See everything; see the focus well. No starvation.
-  const ccx = vpRect ? vpRect.width / 2 : 0, ccy = vpRect ? vpRect.height / 2 : 0;
-  let heroKey = '', heroDist = Infinity;
-  const screened = laid.map((L) => {
-    const vis = onScreen(L.x, L.y, L.w, H);
-    const scx = cam.x + (L.x + L.w / 2) * cam.z, scy = cam.y + (L.y + H / 2) * cam.z;
-    const dist = Math.hypot(scx - ccx, scy - ccy);
-    if (vis && dist < heroDist) { heroDist = dist; heroKey = L.c.key; }
-    return { ...L, vis };
-  });
+  // 2) FOVEATED aperture: one serialized BiDi socket can't stream N tabs equally,
+  // so spend it on the HERO (full fps live /stream); the rest are ambient stills.
+  // The hero is the EXPLICITLY PINNED seat — NOT the viewport center (peer: center
+  // is a heuristic, a click is an intention; PANNING is navigation, not selection,
+  // so it must not flip which seat is live). Default to the first seat so one is
+  // always live; click a seat's title to re-pin. on-screen still gates the
+  // aperture (off-screen seats freeze their last frame).
+  const heroKey = (pinnedKey && cells.some((c) => c.key === pinnedKey)) ? pinnedKey : (cells[0]?.key || '');
+  const screened = laid.map((L) => ({ ...L, vis: onScreen(L.x, L.y, L.w, H) }));
   const seatPanes: PaneRect[] = screened.map((L) => {
     const hero = L.c.key === heroKey;
     return {
       id: 'seat-' + L.c.key, x: L.x, y: L.y, w: L.w, h: H, gravity: hero,
       node: <Viewport session={L.c.session} context={L.c.context} title={L.c.title}
-        visible={L.vis} fps={hero ? 6 : 0.2} act={actMode && hero}
+        visible={L.vis} fps={hero ? 6 : 0.2} act={actMode && hero} pinned={hero}
+        onPin={() => setPinnedKey(L.c.key)}
         onAspect={(r) => setAspectBy((p) => (Math.abs((p[L.c.key] || 0) - r) > 0.01 ? { ...p, [L.c.key]: r } : p))}
         hud={L.c.url ? hudBy[L.c.url] : undefined} />,
     };

@@ -10,9 +10,9 @@ type Seeing = 'pixels' | 'channel' | 'request';
 // live stream stops being a mirror and becomes hands: a click on the <img> maps
 // to the target's pixels and fires /act (tap), keystrokes fire /act (type). Same
 // surface drives a Firefox tab (BiDi) OR a real device (Appium) — one wire.
-export function Viewport({ session, title, context: fixedCtx, onAspect, hud, visible, fps: fpsProp, act: actMode }:
+export function Viewport({ session, title, context: fixedCtx, onAspect, hud, visible, fps: fpsProp, act: actMode, pinned, onPin }:
   { session: string | null; title?: string; context?: string;
-    onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; fps?: number; act?: boolean }) {
+    onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; fps?: number; act?: boolean; pinned?: boolean; onPin?: () => void }) {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [ctx, setCtx] = useState(fixedCtx || '');
   const [reqSeat, setReqSeat] = useState('');
@@ -106,17 +106,24 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
     ? `${BASE}/stream?session=${encodeURIComponent(session)}${ctx ? `&context=${encodeURIComponent(ctx)}` : ''}&fps=${effFps}`
     : '';
   useEffect(() => {
-    if (!session || !streaming || persistent) return;
+    if (!session || !streaming) return;
     let alive = true;
     const cq = ctx ? `&context=${encodeURIComponent(ctx)}` : '';
     const tick = async () => {
-      try { const j = await (await fetch(`${BASE}/shot?session=${encodeURIComponent(session)}${cq}`)).json(); if (alive && j.data) { setShot(j.data); setErr(false); } } catch { if (alive) setErr(true); }
+      try { const j = await (await fetch(`${BASE}/shot?session=${encodeURIComponent(session)}${cq}`)).json(); if (alive && j.data) { setShot(j.data); if (!persistent) setErr(false); } } catch { if (alive && !persistent) setErr(true); }
     };
     tick();
-    const id = window.setInterval(tick, Math.max(600, Math.round(1000 / effFps)));
+    // periphery polls at its display rate; the HERO polls SLOWLY (5s) only to seed a
+    // freeze-frame fallback for when it pans off-screen — its display stays the live
+    // stream, but the cached still means it never blanks either.
+    const id = window.setInterval(tick, persistent ? 5000 : Math.max(600, Math.round(1000 / effFps)));
     return () => { alive = false; clearInterval(id); };
   }, [session, ctx, streaming, persistent, effFps]);
-  const frameSrc = persistent ? streamSrc : (streaming ? shot : '');
+  // FIGMA/FIGJAM behaviour: when a seat is off-screen we stop FETCHING (the poll
+  // effect gates on `streaming`, the live stream unmounts) — but we keep showing
+  // its LAST frame frozen, so panning the board shows what's there, not blanks.
+  // No capture cost off-screen; the rendered still is just a cached data-URL.
+  const frameSrc = persistent ? streamSrc : (shot || '');
 
   // the hand: POST one /act to this session's target (context only matters for a
   // multi-tab browser; a device session ignores it).
@@ -174,7 +181,7 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
   return (
     <section className="panel viewport">
       <div className="panel-h">
-        {title || 'viewport'} {err ? '· ✗' : streaming ? '· ●' : '· ◌'}
+        <span className={`vp-title${pinned ? ' pinned' : ''}`} onClick={onPin} title={onPin ? 'pin as hero (live)' : undefined}>{pinned ? '★ ' : ''}{title || 'viewport'}</span> {err ? '· ✗' : streaming ? '· ●' : '· ◌'}
         <span className="seeing-tabs">
           {(['pixels', 'channel', 'request'] as Seeing[]).map((s) => (
             <button key={s} className={seeing === s ? 'on' : ''} onClick={() => setSeeing(s)} title={s === 'pixels' ? 'live stream' : s === 'channel' ? 'BiDi DOM' : 'classic source'}>{s}</button>

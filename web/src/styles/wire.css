@@ -351,3 +351,6 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .world { user-select: none; }
 .world img { -webkit-user-drag: none; user-drag: none; }
 .fps-foveal{font-size:10px;color:var(--fg-faint);padding:1px 6px;}
+.vp-title { cursor: pointer; }
+.vp-title:hover { color: var(--fg); }
+.vp-title.pinned { color: var(--purple); font-weight: 700; }
