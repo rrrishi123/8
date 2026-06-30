@@ -360,3 +360,29 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .mm-seat { fill: var(--purple); opacity: .3; }
 .mm-hero { fill: var(--purple); opacity: .85; }
 .mm-view { fill: #8fbf6f22; stroke: var(--green); stroke-width: 2; }
+
+/* ── solitaire decks + add-tab (Canvas) ───────────────────────────────────── */
+.deck-head { position: absolute; height: 36px; display: flex; align-items: center; gap: 10px; padding: 0 4px; z-index: 40; pointer-events: auto; }
+.deck-name { font-size: 18px; font-weight: 600; letter-spacing: .03em; text-transform: lowercase; }
+.deck-name.chrome { color: #6cb6ff; }
+.deck-name.firefox { color: #ff9a52; }
+.deck-name.seat { color: var(--fg-dim); }
+.deck-count { font-size: 13px; color: var(--fg-faint); }
+.deck-btn { background: var(--bg2); color: var(--fg-dim); border: 1px solid var(--border); border-radius: 6px; padding: 3px 11px; font: inherit; font-size: 13px; cursor: pointer; }
+.deck-btn:hover { border-color: var(--purple); color: var(--fg); }
+.deck-btn.add { color: var(--fg); }
+
+/* ── recording deck — captured commands live, IN the canvas ────────────────── */
+.rec-deck { flex: 1; display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--panel); box-shadow: 0 6px 30px #000b; }
+.rec-deck-body { flex: 1; overflow-y: auto; padding: 7px; display: flex; flex-direction: column; gap: 5px; }
+.cap-card { display: flex; align-items: center; gap: 9px; padding: 5px 9px; background: var(--bg2); border: 1px solid var(--border); border-left-width: 2px; border-radius: 7px; font-size: 12px; }
+.cap-card.channel { border-left-color: var(--purple); }
+.cap-card.call { border-left-color: #6cb6ff; }
+.cap-seq { color: var(--fg-faint); min-width: 22px; text-align: right; }
+.cap-phys { color: var(--fg-dim); }
+.cap-method { font-weight: 600; color: var(--fg); max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cap-url { color: var(--fg-dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cap-seat { color: var(--purple); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.cap-status { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--fg-faint); }
+.cap-status.s2 { color: #4cc98a; }
+.cap-status.s4, .cap-status.s5 { color: var(--red); }

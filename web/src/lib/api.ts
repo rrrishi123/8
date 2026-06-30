@@ -90,13 +90,29 @@ export async function procinfo(session = 'fox'): Promise<ProcInfo | null> {
 
 // ── record → replay series (control driven through the wire, seat-attributed) ──
 export interface SeriesInfo { name: string; frames: number; seats: string[]; modes: string[]; }
-export async function recordCtl(action: 'start' | 'stop' | '', name = '', seat = 'operator'): Promise<{ recording: boolean; name?: string; frames?: number; saved?: string }> {
+// CapFrame — one captured command, shown live IN the canvas (the recording deck)
+// instead of only on the default feed page.
+export interface CapFrame { seq: number; ts: string; physics: string; seat?: string; session?: string; method: string; url: string; status: number; }
+export async function recordCtl(action: 'start' | 'stop' | '', name = '', seat = 'operator'): Promise<{ recording: boolean; name?: string; frames?: number; saved?: string; captured?: CapFrame[] }> {
   const q = new URLSearchParams();
   if (action) q.set('action', action);
   if (name) q.set('name', name);
   if (seat) q.set('seat', seat);
   const r = await fetch(`${BASE}/record?${q.toString()}`);
   return r.json();
+}
+// addTab — open a new tab in a browser seat, protocol-aware. Firefox (BiDi)
+// creates a context then navigates; Chrome (CDP) creates a target at the url.
+// This is how the end user adds a tab to drive/record automation in.
+export async function addTab(session: string, url: string, isCDP: boolean): Promise<void> {
+  const u = url && !/^[a-z]+:\/\//i.test(url) ? `https://${url}` : url;
+  if (isCDP) {
+    await run(session, 'Target.createTarget', { url: u || 'about:blank' });
+  } else {
+    const r = (await run(session, 'browsingContext.create', { type: 'tab' })) as { result?: { context?: string } };
+    const ctx = r?.result?.context;
+    if (ctx && u) await run(session, 'browsingContext.navigate', { context: ctx, url: u, wait: 'complete' });
+  }
 }
 export async function listSeries(): Promise<SeriesInfo[]> {
   try { const r = await fetch(`${BASE}/series`); return (await r.json()).series || []; } catch { return []; }

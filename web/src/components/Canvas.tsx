@@ -3,42 +3,41 @@ import { Viewport } from './Viewport';
 import { Resources } from './Resources';
 import { PasteCurl } from './PasteCurl';
 import { useLocal } from './Dock';
-import { procinfo, recordCtl, listSeries, replaySeries, type SeriesInfo } from '../lib/api';
+import { procinfo, recordCtl, listSeries, replaySeries, addTab, type SeriesInfo, type CapFrame } from '../lib/api';
 
 const BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
 
-// pretext spatial cockpit: every live target gets its OWN viewport — each Firefox
-// TAB and each real DEVICE is a seat, SIZED TO ITS SOURCE (a portrait phone is
-// tall-narrow, a landscape tab is wide-short — aspect read from the live frame),
-// laid out in a world you pan/zoom like a map. Each seat wears its own mem/cpu/fps
-// HUD pinned top-left, the way a game pins its counters.
+// pretext spatial cockpit: every live target is a card SIZED TO ITS SOURCE, laid
+// out in a world you pan/zoom like a map. A browser's tabs are a SOLITAIRE DECK —
+// stacked cards you fan out to see together; a device/request seat is a lone card.
+// Everything you do — driving a tab, ADDING a tab, RECORDING a case — happens IN
+// this canvas (pretext's whole point: it doesn't escape to another page).
 interface Seat { id: string; physics: string; hub: string; status: string; stream?: string }
 interface Tab { context: string; url: string }
-interface Cell { key: string; session: string; context?: string; url?: string; title: string; device?: boolean; gravity?: boolean }
-interface PaneRect { id: string; x: number; y: number; w: number; h: number; node: ReactNode; gravity?: boolean }
+interface Cell { key: string; session: string; context?: string; url?: string; title: string; device?: boolean }
+interface Stack { key: string; session: string; isBrowser: boolean; isCDP: boolean; label: string; cells: Cell[] }
+interface PaneRect { id: string; x: number; y: number; w: number; h: number; z?: number; node: ReactNode; gravity?: boolean }
 
 export function Canvas({ session }: { session: string | null }) {
   const wrap = useRef<HTMLDivElement>(null);
   const [cam, setCam] = useLocal<{ x: number; y: number; z: number }>('cam', { x: 60, y: 30, z: 0.42 });
   const [seats, setSeats] = useState<Seat[]>([]);
   const [tabsBy, setTabsBy] = useState<Record<string, Tab[]>>({});
-  // aspects persist: a seat's measured w/h is remembered, so a late first frame
-  // doesn't reflow the whole layout out from under you (the "canvas jumps" bug).
   const [aspectBy, setAspectBy] = useLocal<Record<string, number>>('aspectBy', {});
   const [hudBy, setHudBy] = useState<Record<string, { mem?: number; cpu?: number | null }>>({});
-  const [actMode, setActMode] = useState(false); // P1·act puts the hero seat into interaction
-  const [pinnedKey, setPinnedKey] = useState(''); // the HERO seat (explicit pin, not center)
+  const [pinnedKey, setPinnedKey] = useState(''); // the HERO card (explicit pin, not center)
+  const [spreadBy, setSpreadBy] = useLocal<Record<string, boolean>>('spreadBy', {}); // fanned decks
   const prevCpu = useRef<Record<string, { c: number; t: number }>>({});
-  // RECORD → REPLAY: the seer turns non-deterministic manual driving into a
-  // deterministic, replayable series. Every /act you do on a live seat is captured
-  // (seat-attributed) while recording; the live frame count shows it accumulating;
-  // replay re-fires the whole series. (record/replay = the spine — 137 mentions.)
-  const [rec, setRec] = useState<{ recording: boolean; name?: string; frames?: number }>({ recording: false });
+  // RECORD → REPLAY, shown IN the canvas: every /act you drive on a live seat is
+  // captured (seat-attributed); the captured commands appear as a live deck right
+  // here, not on the default feed page — replay re-fires the whole series.
+  const [rec, setRec] = useState<{ recording: boolean; name?: string; frames?: number; captured?: CapFrame[] }>({ recording: false });
   const [series, setSeries] = useState<SeriesInfo[]>([]);
   const [recName, setRecName] = useState('canvas-1');
   useEffect(() => {
-    const t = window.setInterval(() => { if (!document.hidden) { recordCtl('').then(setRec); listSeries().then(setSeries); } }, 1500);
-    recordCtl('').then(setRec); listSeries().then(setSeries);
+    const tick = () => { if (!document.hidden) { recordCtl('').then(setRec); listSeries().then(setSeries); } };
+    tick();
+    const t = window.setInterval(tick, 1200);
     return () => clearInterval(t);
   }, []);
   const toggleRec = async () => {
@@ -60,8 +59,7 @@ export function Canvas({ session }: { session: string | null }) {
           } catch { tb[s.id] = []; }
         }));
         setTabsBy(tb);
-        // per-tab mem/cpu → HUD map keyed by url (the same data the Resources pane reads)
-        const fox = live.find((s) => s.physics === 'channel');
+        const fox = live.find((s) => s.physics === 'channel' && s.stream !== 'cdp');
         if (fox) {
           const p = await procinfo(fox.id);
           if (p) {
@@ -83,76 +81,109 @@ export function Canvas({ session }: { session: string | null }) {
     return () => clearInterval(t);
   }, []);
 
-  const host = (u: string) => { try { return new URL(u).host; } catch { return u || 'tab'; } };
+  const host = (u: string) => { try { return new URL(u).host.replace(/^www\./, ''); } catch { return u || 'tab'; } };
 
-  const cells: Cell[] = [];
+  // ── group seats into solitaire decks ─────────────────────────────────────────
+  const stacks: Stack[] = [];
   for (const s of seats) {
     if (s.physics === 'channel') {
-      for (const tab of tabsBy[s.id] || []) cells.push({ key: s.id + tab.context, session: s.id, context: tab.context, url: tab.url, title: `tab · ${host(tab.url)}` });
+      const cells: Cell[] = (tabsBy[s.id] || []).map((tab) => ({ key: s.id + tab.context, session: s.id, context: tab.context, url: tab.url, title: host(tab.url) }));
+      const label = s.stream === 'cdp' ? 'chrome' : s.id === 'fox' ? 'firefox' : s.id;
+      stacks.push({ key: s.id, session: s.id, isBrowser: true, isCDP: s.stream === 'cdp', label, cells });
     } else {
       const device = !!s.stream;
-      cells.push({ key: s.id, session: s.id, device, title: `${device ? 'device · appium' : s.hub?.includes('4444') ? 'firefox · request' : 'seat'} · ${s.id.slice(0, 8)}` });
+      const label = device ? 'device' : s.hub?.includes('4444') ? 'firefox · request' : 'seat';
+      stacks.push({ key: s.id, session: s.id, isBrowser: false, isCDP: false, label, cells: [{ key: s.id, session: s.id, device, title: `${label} · ${s.id.slice(0, 8)}` }] });
     }
   }
-  cells.forEach((c, i) => { c.gravity = i === 0; });
+  const cells: Cell[] = stacks.flatMap((st) => st.cells);
+  const heroKey = (pinnedKey && cells.some((c) => c.key === pinnedKey)) ? pinnedKey : (cells[0]?.key || '');
 
-  // DYNAMIC SIZE: uniform seat height, width = height × the source's aspect ratio
-  // (devices default portrait until the first frame measures their true ratio;
-  // tabs default landscape). Flow-wrap into a world like tiles on a map.
-  const H = 680, GAP = 48, X0 = 120, Y0 = 150, WORLD_W = 2600;
-  // APERTURE: a seat streams only when its on-screen rect (after cam transform)
-  // overlaps the visible canvas — computed here from geometry because an
-  // IntersectionObserver is blind to CSS-transform pan/zoom. Margin avoids edge
-  // flicker. This is what stops N screenshot loops ballooning Firefox memory.
+  // ── layout ───────────────────────────────────────────────────────────────────
+  const H = 680, GAP = 72, X0 = 120, Y0 = 175, WORLD_W = 2800, HEADER = 44, OFFX = 32, OFFY = 36;
   const vpRect = wrap.current?.getBoundingClientRect();
   const onScreen = (x: number, y: number, w: number, h: number) => {
     if (!vpRect) return true;
     const sx = cam.x + x * cam.z, sy = cam.y + y * cam.z, sw = w * cam.z, sh = h * cam.z, m = 120;
     return sx + sw > -m && sx < vpRect.width + m && sy + sh > -m && sy < vpRect.height + m;
   };
-  // 1) lay seats out (uniform height, width by aspect, flow-wrap)
-  const laid: { c: Cell; x: number; y: number; w: number }[] = [];
+  const cardW = (c: Cell) => Math.round(H * (aspectBy[c.key] || (c.device ? 0.46 : 1.6)));
+
+  interface Laid { c: Cell; x: number; y: number; w: number; z: number; top: boolean }
+  const laid: Laid[] = [];
+  const decks: { st: Stack; x: number; y: number; w: number; spread: boolean }[] = [];
   let x = X0, y = Y0;
-  for (const c of cells) {
-    const aspect = aspectBy[c.key] || (c.device ? 0.46 : 1.6);
-    const w = Math.round(H * aspect);
-    if (x > X0 && x + w > X0 + WORLD_W) { x = X0; y += H + GAP; }
-    laid.push({ c, x, y, w });
-    x += w + GAP;
+  const rowH = H + HEADER + OFFY * 5 + GAP;
+  for (const st of stacks) {
+    const spread = !!spreadBy[st.key] || st.cells.length <= 1;
+    const w0 = cardW(st.cells[0] || ({ key: '', session: '' } as Cell)) || 300;
+    const fpW = spread ? Math.max(w0, st.cells.reduce((a, c) => a + cardW(c) + 16, -16)) : w0 + OFFX * (st.cells.length - 1);
+    if (x > X0 && x + fpW > X0 + WORLD_W) { x = X0; y += rowH; }
+    const ox = x, oy = y + HEADER;
+    const topKey = st.cells.some((c) => c.key === heroKey) ? heroKey : st.cells[0]?.key;
+    const others = st.cells.filter((c) => c.key !== topKey);
+    let sx = ox;
+    st.cells.forEach((c) => {
+      if (spread) { laid.push({ c, x: sx, y: oy, w: cardW(c), z: 1, top: c.key === topKey }); sx += cardW(c) + 16; }
+      else {
+        const isTop = c.key === topKey;
+        const oi = isTop ? 0 : others.indexOf(c) + 1;
+        const z = isTop ? others.length + 2 : others.length - others.indexOf(c);
+        laid.push({ c, x: ox + OFFX * oi, y: oy + OFFY * oi, w: w0, z, top: isTop });
+      }
+    });
+    decks.push({ st, x: ox, y, w: fpW, spread });
+    x = ox + fpW + GAP;
   }
-  // 2) FOVEATED aperture: one serialized BiDi socket can't stream N tabs equally,
-  // so spend it on the HERO (full fps live /stream); the rest are ambient stills.
-  // The hero is the EXPLICITLY PINNED seat — NOT the viewport center (peer: center
-  // is a heuristic, a click is an intention; PANNING is navigation, not selection,
-  // so it must not flip which seat is live). Default to the first seat so one is
-  // always live; click a seat's title to re-pin. on-screen still gates the
-  // aperture (off-screen seats freeze their last frame).
-  const heroKey = (pinnedKey && cells.some((c) => c.key === pinnedKey)) ? pinnedKey : (cells[0]?.key || '');
+
   const screened = laid.map((L) => ({ ...L, vis: onScreen(L.x, L.y, L.w, H) }));
   const seatPanes: PaneRect[] = screened.map((L) => {
     const hero = L.c.key === heroKey;
+    const streams = L.top && L.vis; // only the deck's TOP card spends the socket
     return {
-      id: 'seat-' + L.c.key, x: L.x, y: L.y, w: L.w, h: H, gravity: hero,
+      id: 'seat-' + L.c.key, x: L.x, y: L.y, w: L.w, h: H, z: L.z, gravity: hero,
       node: <Viewport session={L.c.session} context={L.c.context} title={L.c.title}
-        visible={L.vis} fps={hero ? 3 : 0.1} pinned={hero}
+        visible={streams} fps={hero ? 3 : (streams ? 0.4 : 0)} pinned={hero}
         onPin={() => setPinnedKey(L.c.key)}
         onAspect={(r) => setAspectBy((p) => (Math.abs((p[L.c.key] || 0) - r) > 0.01 ? { ...p, [L.c.key]: r } : p))}
         hud={L.c.url ? hudBy[L.c.url] : undefined} />,
     };
   });
-  const yBelow = y + H + GAP + 20;
+
+  const yBelow = y + rowH + 10;
+  // the RECORDING DECK — captured commands live, in place (not the default feed).
+  const recPane: PaneRect = {
+    id: 'recording', x: X0, y: yBelow, w: 640, h: 470, node: (
+      <div className="rec-deck">
+        <div className="panel-h">recording {rec.recording ? `· ● ${rec.name} · ${rec.frames ?? 0} cmds` : `· ○ idle`}</div>
+        <div className="rec-deck-body">
+          {!(rec.captured && rec.captured.length) && <div className="empty">{rec.recording ? 'drive a live card — each command lands here as you go' : 'press ● record, then drive a card; the case builds here'}</div>}
+          {(rec.captured || []).slice().reverse().map((f) => (
+            <div key={f.seq} className={`cap-card ${f.physics}`} title={f.url}>
+              <span className="cap-seq">{f.seq}</span>
+              <span className={`cap-phys ${f.physics}`}>{f.physics === 'channel' ? '⟂' : '→'}</span>
+              <span className="cap-method">{f.method}</span>
+              <span className="cap-url">{host(f.url)}</span>
+              {f.seat && <span className="cap-seat">{f.seat}</span>}
+              <span className={`cap-status s${Math.floor((f.status || 0) / 100)}`}>{f.status || '·'}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    ),
+  };
   const panes: PaneRect[] = [
     ...seatPanes,
-    { id: 'resources', x: X0, y: yBelow, w: 620, h: 430, node: <Resources session={session} /> },
-    { id: 'compose', x: X0 + 660, y: yBelow, w: 620, h: 430, node: <PasteCurl /> },
+    recPane,
+    { id: 'resources', x: X0 + 680, y: yBelow, w: 560, h: 470, node: <Resources session={session} /> },
+    { id: 'compose', x: X0 + 1260, y: yBelow, w: 560, h: 470, node: <PasteCurl /> },
   ];
-  const worldW = Math.max(2600, X0 + WORLD_W);
-  const worldH = yBelow + 520;
+  const worldW = Math.max(2800, x);
+  const worldH = yBelow + 540;
 
   useEffect(() => {
     const el = wrap.current; if (!el) return;
     const onWheel = (e: WheelEvent) => {
-      // a wheel over a LIVE (interactive) seat scrolls the TARGET, not the canvas
       if ((e.target as HTMLElement).closest('.vp-interactive')) return;
       e.preventDefault();
       if (e.ctrlKey || e.metaKey) {
@@ -163,7 +194,7 @@ export function Canvas({ session }: { session: string | null }) {
       }
     };
     const onDown = (e: PointerEvent) => {
-      if ((e.target as HTMLElement).closest('button, input, select, textarea, a, .seeing-tabs, .tab-pick, .series-row, .rec-btn, .curl-in, .persp-bar, .vp-interactive')) return;
+      if ((e.target as HTMLElement).closest('button, input, select, textarea, a, .seeing-tabs, .tab-pick, .series-row, .rec-btn, .curl-in, .persp-bar, .deck-head, .cap-card, .vp-interactive')) return;
       el.style.cursor = 'grabbing';
       let lx = e.clientX, ly = e.clientY;
       const move = (ev: PointerEvent) => { setCam((c) => ({ ...c, x: c.x + (ev.clientX - lx), y: c.y + (ev.clientY - ly) })); lx = ev.clientX; ly = ev.clientY; };
@@ -174,47 +205,60 @@ export function Canvas({ session }: { session: string | null }) {
     el.addEventListener('pointerdown', onDown);
     return () => { el.removeEventListener('wheel', onWheel); el.removeEventListener('pointerdown', onDown); };
   }, [setCam]);
+
   const goto = (rx: number, ry: number, rw: number, rh: number, z: number) => { const r = wrap.current!.getBoundingClientRect(); setCam({ z, x: r.width / 2 - (rx + rw / 2) * z, y: r.height / 2 - (ry + rh / 2) * z }); };
   const persp = {
-    p1: () => { setActMode(true); const g = seatPanes.find((p) => p.gravity) || seatPanes[0]; if (g) goto(g.x, g.y, g.w, g.h, 0.9); },
-    p2: () => { setActMode(false); goto(X0, Y0, WORLD_W, H, 0.45); },
-    bird: () => { setActMode(false); goto(0, 100, worldW, worldH, 0.3); },
+    p1: () => { const g = seatPanes.find((p) => p.gravity) || seatPanes[0]; if (g) goto(g.x, g.y, g.w, g.h, 0.9); },
+    p2: () => goto(X0, Y0, WORLD_W, H + HEADER, 0.45),
+    bird: () => goto(0, 100, worldW, worldH, 0.3),
+  };
+
+  const newTab = async (st: Stack) => {
+    const url = window.prompt(`new tab in ${st.label} — url or task target (e.g. airbnb.com, amazon.com):`, 'https://www.airbnb.com');
+    if (url == null) return;
+    await addTab(st.session, url.trim(), st.isCDP);
   };
 
   return (
     <div className="canvas-wrap" ref={wrap}>
       <div className="world" style={{ transform: `translate(${cam.x}px,${cam.y}px) scale(${cam.z})` }}>
+        {/* deck headers — name · tab count · fan · add tab */}
+        {decks.map((d) => (
+          <div key={'h-' + d.st.key} className="deck-head" style={{ left: d.x, top: d.y, width: d.w }}>
+            <span className={`deck-name ${d.st.isCDP ? 'chrome' : d.st.isBrowser ? 'firefox' : 'seat'}`}>{d.st.label}</span>
+            {d.st.isBrowser && <span className="deck-count">{d.st.cells.length} tab{d.st.cells.length === 1 ? '' : 's'}</span>}
+            {d.st.isBrowser && d.st.cells.length > 1 && (
+              <button className="deck-btn" title={d.spread ? 'stack the deck' : 'fan the deck out — see all tabs'}
+                onClick={() => setSpreadBy((p) => ({ ...p, [d.st.key]: !p[d.st.key] }))}>{d.spread ? '▣ stack' : '⊞ fan'}</button>
+            )}
+            {d.st.isBrowser && <button className="deck-btn add" title="open a new tab in this browser to drive/record" onClick={() => newTab(d.st)}>+ tab</button>}
+          </div>
+        ))}
         {panes.map((p) => (
-          <div key={p.id} className={`cbox${p.gravity ? ' gravity' : ''}`} style={{ left: p.x, top: p.y, width: p.w, height: p.h }}>
+          <div key={p.id} className={`cbox${p.gravity ? ' gravity' : ''}`} style={{ left: p.x, top: p.y, width: p.w, height: p.h, zIndex: p.z ?? 'auto' }}>
             {p.node}
           </div>
         ))}
       </div>
-      {/* RECORD → REPLAY, first-class on the canvas: drive a live seat, every
-          command is captured + counted here; replay re-fires the series. This is
-          how the seer turns manual (non-deterministic) driving into deterministic. */}
+      {/* RECORD → REPLAY control (the deck itself lives in the world above) */}
       <div className="rec-bar">
-        <button className={`rec-btn${rec.recording ? ' on' : ''}`} onClick={toggleRec} title="record every /act you drive on a live seat; replay re-fires them — deterministic">
+        <button className={`rec-btn${rec.recording ? ' on' : ''}`} onClick={toggleRec} title="record every /act you drive on a live card; replay re-fires them — deterministic">
           {rec.recording ? `● REC ${rec.name} · ${rec.frames ?? 0} cmds` : '○ record'}
         </button>
-        {!rec.recording && <input className="rec-in" value={recName} onChange={(e) => setRecName(e.target.value)} title="series name" />}
+        {!rec.recording && <input className="rec-in" value={recName} onChange={(e) => setRecName(e.target.value)} title="case name" />}
         {series.length > 0 && (
-          <select className="rec-in" value="" onChange={(e) => { if (e.target.value) replaySeries(e.target.value); e.currentTarget.value = ''; }} title="replay a saved series">
+          <select className="rec-in" value="" onChange={(e) => { if (e.target.value) replaySeries(e.target.value); e.currentTarget.value = ''; }} title="replay a saved case">
             <option value="">▶ replay…</option>
             {series.map((s) => <option key={s.name} value={s.name}>{s.name} · {s.frames} cmds</option>)}
           </select>
         )}
       </div>
       <div className="persp-bar">
-        <button onClick={persp.p1} title="one seat">P1 · act</button>
-        <button onClick={persp.p2} title="all seats, side by side">P2 · seats</button>
+        <button onClick={persp.p1} title="one card">P1 · act</button>
+        <button onClick={persp.p2} title="all decks, side by side">P2 · decks</button>
         <button onClick={persp.bird} title="see everything">◇ bird's-eye</button>
-        <span className="persp-z">{cells.length} seats · {Math.round(cam.z * 100)}%</span>
+        <span className="persp-z">{stacks.length} decks · {cells.length} cards · {Math.round(cam.z * 100)}%</span>
       </div>
-      {/* MINIMAP — the elegant solve to the infinite mirror (peer + you): a
-          SCHEMATIC drawn from LAYOUT DATA, not a screenshot, so it never recurses.
-          8's self isn't a seat, it's the canvas; the moving green viewport rect is
-          the witness watching its own ATTENTION — a map, not a mirror. Click to jump. */}
       {vpRect && worldW > 0 && (
         <svg className="minimap" viewBox={`0 0 ${worldW} ${worldH}`}
           style={{ width: 220, height: Math.round(Math.min(170, 220 * worldH / worldW)) }}
@@ -229,10 +273,6 @@ export function Canvas({ session }: { session: string | null }) {
               className={L.c.key === heroKey ? 'mm-hero' : 'mm-seat'} />
           ))}
           {(() => {
-            // CLAMP the viewport rect to the world: at low zoom your view spills far
-            // past the territory (x can be negative, w can exceed worldW), which SVG
-            // then clips so it "covers everything." Clamping shows the honest slice of
-            // the world you're actually seeing — full when zoomed out, small when in.
             const vx = Math.max(0, -cam.x / cam.z), vy = Math.max(0, -cam.y / cam.z);
             const vx2 = Math.min(worldW, (vpRect.width - cam.x) / cam.z), vy2 = Math.min(worldH, (vpRect.height - cam.y) / cam.z);
             return <rect x={vx} y={vy} width={Math.max(0, vx2 - vx)} height={Math.max(0, vy2 - vy)} className="mm-view" vectorEffect="non-scaling-stroke" />;

@@ -591,23 +591,47 @@ func (c *collector) handleTabs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"unknown session"}`, http.StatusNotFound)
 		return
 	}
+	// BiDi first; if the broker errors on it, this is a CDP (Chrome) channel —
+	// enumerate its page targets instead, so Chrome's tabs show in the canvas
+	// (and stack as a solitaire deck) exactly like Firefox's. Probe beats prior.
+	tabs := make([]map[string]string, 0, 8)
 	tr, err := c.command(b, `{"method":"browsingContext.getTree","params":{}}`)
-	if err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
-		return
-	}
-	var t struct {
-		Result struct {
-			Contexts []struct {
-				Context string `json:"context"`
-				URL     string `json:"url"`
-			} `json:"contexts"`
-		} `json:"result"`
-	}
-	json.Unmarshal(tr, &t)
-	tabs := make([]map[string]string, 0, len(t.Result.Contexts))
-	for _, ctx := range t.Result.Contexts {
-		tabs = append(tabs, map[string]string{"context": ctx.Context, "url": ctx.URL})
+	if err == nil && strings.Contains(string(tr), `"contexts"`) {
+		var t struct {
+			Result struct {
+				Contexts []struct {
+					Context string `json:"context"`
+					URL     string `json:"url"`
+				} `json:"contexts"`
+			} `json:"result"`
+		}
+		json.Unmarshal(tr, &t)
+		for _, ctx := range t.Result.Contexts {
+			tabs = append(tabs, map[string]string{"context": ctx.Context, "url": ctx.URL})
+		}
+	} else {
+		cr, cerr := c.command(b, `{"method":"Target.getTargets","params":{}}`)
+		if cerr != nil {
+			http.Error(w, `{"error":"`+cerr.Error()+`"}`, http.StatusBadGateway)
+			return
+		}
+		var ct struct {
+			Result struct {
+				TargetInfos []struct {
+					TargetID string `json:"targetId"`
+					Type     string `json:"type"`
+					URL      string `json:"url"`
+					Title    string `json:"title"`
+				} `json:"targetInfos"`
+			} `json:"result"`
+		}
+		json.Unmarshal(cr, &ct)
+		for _, ti := range ct.Result.TargetInfos {
+			if ti.Type != "page" {
+				continue
+			}
+			tabs = append(tabs, map[string]string{"context": ti.TargetID, "url": ti.URL, "title": ti.Title})
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"tabs": tabs})
@@ -1667,10 +1691,32 @@ func (c *collector) handleRecord(w http.ResponseWriter, r *http.Request) {
 		}
 		json.NewEncoder(w).Encode(map[string]any{"recording": false, "saved": name, "frames": len(buf)})
 	default:
+		// status — and a COMPACT LIVE VIEW of what's been captured, so the canvas
+		// can show the recording IN PLACE (a deck of captured command-cards) instead
+		// of banishing it to the default feed page. Last 50, newest last; bounded.
 		c.rmu.Lock()
 		on, name, n := c.recOn, c.recName, len(c.recBuf)
+		type capFrame struct {
+			Seq     int    `json:"seq"`
+			TS      string `json:"ts"`
+			Physics string `json:"physics"`
+			Seat    string `json:"seat,omitempty"`
+			Session string `json:"session,omitempty"`
+			Method  string `json:"method"`
+			URL     string `json:"url"`
+			Status  int    `json:"status"`
+		}
+		start := 0
+		if n > 50 {
+			start = n - 50
+		}
+		caps := make([]capFrame, 0, n-start)
+		for i := start; i < n; i++ {
+			f := c.recBuf[i]
+			caps = append(caps, capFrame{Seq: i + 1, TS: f.TS, Physics: f.Physics, Seat: f.Seat, Session: f.Session, Method: f.Method, URL: f.URL, Status: f.Status})
+		}
 		c.rmu.Unlock()
-		json.NewEncoder(w).Encode(map[string]any{"recording": on, "name": name, "frames": n})
+		json.NewEncoder(w).Encode(map[string]any{"recording": on, "name": name, "frames": n, "captured": caps})
 	}
 }
 
