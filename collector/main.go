@@ -29,6 +29,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
@@ -1747,11 +1748,46 @@ func (c *collector) handleReplay(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"replayed": id, "new_id": nid, "status": status, "latency_us": lat, "resp_bytes": len(body), "response": string(body[:min(len(body), 8192)])})
 }
 
-// cors lets the cockpit (another origin) read /feed and drive /run, /fetch.
-func cors(h http.Handler) http.Handler {
+// auth gates every control endpoint when a shared secret is configured. "Trust
+// the wire" means trust PROOF on it: a token in X-8-Token (or Authorization:
+// Bearer). When no token is set (-token/$EIGHT_TOKEN empty) auth is OFF — the
+// local-dev default that preserves the unauthed loopback flow, so this change is
+// non-breaking until you choose to lock the surface. /health and OPTIONS stay
+// open (liveness + CORS preflight need no secret). Constant-time compare so the
+// gate doesn't leak the token by timing.
+func auth(token string, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if token == "" || r.Method == http.MethodOptions || r.URL.Path == "/health" {
+			h.ServeHTTP(w, r)
+			return
+		}
+		got := r.Header.Get("X-8-Token")
+		if got == "" {
+			if b := r.Header.Get("Authorization"); strings.HasPrefix(b, "Bearer ") {
+				got = strings.TrimPrefix(b, "Bearer ")
+			}
+		}
+		if subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
+// cors lets the cockpit (another origin) read /feed and drive /run, /fetch.
+// Origin is SCOPED when an allowlist is set: only matching origins are reflected
+// (no blanket "*" once you care). Empty allowlist = "*" (local-dev fallback).
+func cors(allow map[string]bool, h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if len(allow) == 0 {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		} else if origin != "" && allow[origin] {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Add("Vary", "Origin")
+		}
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-8-Token, Authorization")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -1765,6 +1801,8 @@ func main() {
 	listen := flag.String("listen", ":7070", "HTTP address the cockpit reaches the collector on")
 	spec := flag.String("brokers", "", "comma list of session=brokerURL (e.g. fox=http://127.0.0.1:4445)")
 	gecko := flag.String("gecko", "", "geckodriver session base (http://127.0.0.1:4444/session/<id>) — enables /procinfo per-tab mem/CPU")
+	token := flag.String("token", os.Getenv("EIGHT_TOKEN"), "shared secret required on every endpoint via X-8-Token/Bearer (empty = auth off, local-dev default)")
+	origins := flag.String("origins", os.Getenv("EIGHT_ORIGINS"), "comma CORS origin allowlist, e.g. http://localhost:8088 (empty = *, local-dev)")
 	flag.Parse()
 
 	var brokers []broker
@@ -1820,6 +1858,20 @@ func main() {
 	mux.HandleFunc("/benches", c.handleBenches)
 	mux.HandleFunc("/health", c.handleHealth)
 
-	log.Printf("collector: %d session(s), serving on %s (GET /feed, POST /run, /fetch, /broadcast)", len(brokers), *listen)
-	log.Fatal(http.ListenAndServe(*listen, cors(mux)))
+	allow := map[string]bool{}
+	for _, o := range strings.Split(*origins, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			allow[o] = true
+		}
+	}
+	authState := "OFF (local-dev)"
+	if *token != "" {
+		authState = "ON (X-8-Token/Bearer)"
+	}
+	originState := "* (local-dev)"
+	if len(allow) > 0 {
+		originState = *origins
+	}
+	log.Printf("collector: %d session(s), serving on %s — auth %s, cors origins %s", len(brokers), *listen, authState, originState)
+	log.Fatal(http.ListenAndServe(*listen, cors(allow, auth(*token, mux))))
 }
