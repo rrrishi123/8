@@ -247,6 +247,13 @@ func (c *collector) handleProcInfo(w http.ResponseWriter, r *http.Request) {
 // the peer's "the leak is the BiDi base64-hold, drawSnapshot bypasses it" holds.
 const drawProbeScript = `const cb=arguments[arguments.length-1];(async()=>{try{const wins=gBrowser.browsers.filter(b=>b.browsingContext&&b.browsingContext.currentWindowGlobal);const tgt=wins.find(b=>/youtube|excalidraw|example|lambdatest|deepseek/.test(b.currentURI.spec))||wins[0];const wg=tgt.browsingContext.currentWindowGlobal;const m0=(await ChromeUtils.requestProcInfo()).memory;let n=0,errs=0,lastErr='';for(let i=0;i<250;i++){try{const bmp=await wg.drawSnapshot(null,1.0,'white');if(bmp&&bmp.close)bmp.close();n++;}catch(e){errs++;lastErr=''+e;if(errs>2)break;}}try{if(typeof Cu!=='undefined'&&Cu.forceGC){Cu.forceGC();Cu.forceCC&&Cu.forceCC();}}catch(e){}const m1=(await ChromeUtils.requestProcInfo()).memory;cb(JSON.stringify({frames:n,errs:errs,lastErr:lastErr.slice(0,140),url:tgt.currentURI.spec.slice(0,60),parent_mb_before:Math.round(m0/1048576),parent_mb_after:Math.round(m1/1048576),delta_mb:Math.round((m1-m0)/1048576)}));}catch(e){cb('ERR:'+e);}})();`
 
+// streamProbeScript tests the TRANSFER: create a HiddenFrame (content window with
+// a DOM), then try to draw the parent's drawSnapshot ImageBitmap DIRECTLY into a
+// canvas in it + canvas.captureStream. If directDrawSameProcess is true, the whole
+// encode pipeline can live in the HiddenFrame with NO JSWindowActor cross-process
+// transfer — a big simplification. If false, the peer's JSWindowActor path is needed.
+const streamProbeScript = `const cb=arguments[arguments.length-1];(async()=>{try{const {HiddenFrame}=ChromeUtils.importESModule('resource://gre/modules/HiddenFrame.sys.mjs');const hf=new HiddenFrame();const win=await hf.get();const hasMR=typeof win.MediaRecorder!=='undefined';const tgt=gBrowser.browsers.find(b=>/youtube|excalidraw|example|lambdatest/.test(b.currentURI.spec))||gBrowser.browsers[0];const wg=tgt.browsingContext.currentWindowGlobal;const bmp=await wg.drawSnapshot(null,1,'white');const w=bmp.width,h=bmp.height;let directDraw=false,capStream=false,detail='';try{const doc=win.document;const canvas=doc.createElement('canvas');canvas.width=w;canvas.height=h;const ctx=canvas.getContext('2d');ctx.drawImage(bmp,0,0);directDraw=true;const st=canvas.captureStream(5);capStream=st.getVideoTracks().length>0;detail='tracks='+st.getVideoTracks().length;}catch(e){detail='draw/capture-failed: '+e;}if(bmp.close)bmp.close();cb(JSON.stringify({hiddenFrameOK:!!win,winHasMediaRecorder:hasMR,snapW:w,snapH:h,directDrawSameProcess:directDraw,captureStreamOK:capStream,detail:(''+detail).slice(0,160)}));}catch(e){cb('ERR:'+e);}})();`
+
 func (c *collector) handleDrawProbe(w http.ResponseWriter, r *http.Request) {
 	if c.gecko == "" {
 		http.Error(w, `{"error":"disabled: collector started without -gecko"}`, http.StatusServiceUnavailable)
@@ -268,7 +275,11 @@ func (c *collector) handleDrawProbe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer post("/moz/context", `{"context":"content"}`)
-	body, _ := json.Marshal(map[string]any{"script": drawProbeScript, "args": []any{}})
+	script := drawProbeScript
+	if r.URL.Query().Get("p") == "stream" {
+		script = streamProbeScript
+	}
+	body, _ := json.Marshal(map[string]any{"script": script, "args": []any{}})
 	out, err := post("/execute/async", string(body))
 	if err != nil {
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
