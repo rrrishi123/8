@@ -25,8 +25,8 @@ while true; do
     # session restored from the tab-store. "8 acts first by observing." (The 37h
     # rescue, but pre-emptive instead of post-crash.)
     mem=$(curl -s -m4 "http://127.0.0.1:7070/procinfo?session=fox" | jq -r '.parent_mem_mb // 0' 2>/dev/null)
-    if [ "${mem:-0}" -gt "${RECYCLE_MB:-3000}" ] 2>/dev/null; then
-      echo "[watchdog $(date +%H:%M:%S)] Firefox parent ${mem}MB > ${RECYCLE_MB:-3000}MB -> proactive recycle (FLOW 10)"
+    if [ "${mem:-0}" -gt "${RECYCLE_MB:-4500}" ] 2>/dev/null; then
+      echo "[watchdog $(date +%H:%M:%S)] Firefox parent ${mem}MB > ${RECYCLE_MB:-4500}MB -> proactive recycle (FLOW 10)"
       pkill -f "firefox.*ltqa-firefox-deepseek" 2>/dev/null; sleep 2
       bash scripts/up.sh >/tmp/up-watchdog.log 2>&1
       sleep 30

@@ -134,7 +134,7 @@ export function Canvas({ session }: { session: string | null }) {
     return {
       id: 'seat-' + L.c.key, x: L.x, y: L.y, w: L.w, h: H, gravity: hero,
       node: <Viewport session={L.c.session} context={L.c.context} title={L.c.title}
-        visible={L.vis} fps={hero ? 6 : 0.2} pinned={hero}
+        visible={L.vis} fps={hero ? 3 : 0.1} pinned={hero}
         onPin={() => setPinnedKey(L.c.key)}
         onAspect={(r) => setAspectBy((p) => (Math.abs((p[L.c.key] || 0) - r) > 0.01 ? { ...p, [L.c.key]: r } : p))}
         hud={L.c.url ? hudBy[L.c.url] : undefined} />,
