@@ -117,7 +117,7 @@ fi
 # 8's own cockpit always comes back, even if it wasn't in the last snapshot
 case " ${URLS[*]} " in *":8088"*) ;; *) URLS=("http://localhost:8088/" "${URLS[@]}");; esac
 
-first=1; DS=""
+first=1; DS=""; COCKPIT=""
 for u in "${URLS[@]}"; do
   case "$u" in about:*|chrome:*|"") continue;; esac
   if [ "$first" = 1 ]; then target="$CTX"; first=0
@@ -125,13 +125,19 @@ for u in "${URLS[@]}"; do
   cmd "{\"method\":\"browsingContext.navigate\",\"params\":{\"context\":\"$target\",\"url\":\"$u\",\"wait\":\"complete\"}}" 60 >/dev/null
   echo "tab:        $target -> $u"
   case "$u" in *deepseek.com*) DS="$target";; esac
+  # track the COCKPIT's actual context — it is NOT necessarily the first tab, so
+  # activating $CTX (the first context) would land on excalidraw, not 8. (This is
+  # exactly why "Firefox doesn't come back to 8 after a recycle".)
+  case "$u" in *localhost:8088*|*127.0.0.1:8088*) COCKPIT="$target";; esac
 done
 echo "restored ${#URLS[@]} tab(s) from $TABS_FILE"
 
-# 8 IS the control surface AND the reflexive self-witness: foreground its tab so
-# you land on 8 and its streams run (they pause when its tab is hidden).
-cmd "{\"method\":\"browsingContext.activate\",\"params\":{\"context\":\"$CTX\"}}" >/dev/null
-echo "activated:  8's cockpit tab is foreground ($CTX) — reflexive, sees itself"
+# 8 IS the control surface AND the reflexive self-witness: foreground ITS tab (the
+# real cockpit context, not just the first tab) so you ALWAYS land back on 8 after
+# a recycle, and its streams run (they pause when its tab is hidden).
+FG="${COCKPIT:-$CTX}"
+cmd "{\"method\":\"browsingContext.activate\",\"params\":{\"context\":\"$FG\"}}" >/dev/null
+echo "activated:  8's cockpit tab is foreground ($FG) — reflexive, sees itself"
 
 # 8. login check: is DeepSeek authenticated? (textarea present = yes)
 [ -z "$DS" ] && DS="$CTX"

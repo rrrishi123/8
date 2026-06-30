@@ -307,10 +307,20 @@ export function Canvas({ session }: { session: string | null }) {
       {vpRect && worldW > 0 && (
         <svg className="minimap" viewBox={`0 0 ${worldW} ${worldH}`}
           style={{ width: 220, height: Math.round(Math.min(170, 220 * worldH / worldW)) }}
-          onClick={(e) => {
-            const r = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
-            const wx = (e.clientX - r.left) / r.width * worldW, wy = (e.clientY - r.top) / r.height * worldH;
-            setCam((c) => ({ ...c, x: vpRect.width / 2 - wx * c.z, y: vpRect.height / 2 - wy * c.z }));
+          onPointerDown={(e) => {
+            // DRAG to scrub the camera across the WHOLE world (not the canvas's
+            // 4-way wheel pan): the cursor on the minimap IS where the view centers,
+            // so dragging sweeps the entire board. Click = a single scrub.
+            const svg = e.currentTarget as SVGSVGElement;
+            const to = (cx: number, cy: number) => {
+              const r = svg.getBoundingClientRect();
+              const wx = (cx - r.left) / r.width * worldW, wy = (cy - r.top) / r.height * worldH;
+              setCam((c) => ({ ...c, x: vpRect.width / 2 - wx * c.z, y: vpRect.height / 2 - wy * c.z }));
+            };
+            to(e.clientX, e.clientY);
+            const mv = (ev: PointerEvent) => to(ev.clientX, ev.clientY);
+            const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); };
+            window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up);
           }}>
           <rect x={0} y={0} width={worldW} height={worldH} className="mm-bg" />
           {screened.map((L) => (

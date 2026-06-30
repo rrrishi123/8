@@ -108,13 +108,17 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
     ? `${BASE}/stream?session=${encodeURIComponent(session)}${ctx ? `&context=${encodeURIComponent(ctx)}` : ''}&fps=${effFps}`
     : '';
   useEffect(() => {
-    if (!session || !streaming) return;
+    if (!session) return;
     let alive = true;
     const cq = ctx ? `&context=${encodeURIComponent(ctx)}` : '';
     const tick = async () => {
       try { const j = await (await fetch(`${BASE}/shot?session=${encodeURIComponent(session)}${cq}`)).json(); if (alive && j.data) { setShot(j.data); if (!persistent) setErr(false); } } catch { if (alive && !persistent) setErr(true); }
     };
+    // SEED one still ALWAYS — even off-screen — so zooming out / bird's-eye shows
+    // every card's LAST FRAME instead of a blank "paused" placeholder. You asked:
+    // "if you zoom out full can you see all the tabs" — now yes, as cached stills.
     tick();
+    if (!streaming) return () => { alive = false; }; // off-screen: seed only, no poll cost
     // periphery polls at its display rate; the HERO polls SLOWLY (5s) only to seed a
     // freeze-frame fallback for when it pans off-screen — its display stays the live
     // stream, but the cached still means it never blanks either.

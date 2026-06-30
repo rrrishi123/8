@@ -34,6 +34,9 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"io"
 	"log"
 	"math"
@@ -76,10 +79,10 @@ type collector struct {
 	bseq    int64
 
 	rmu     sync.Mutex
-	recOn   bool      // a recording is in progress
-	recName string    // name of the active recording
-	recSeat string    // seat the recorded control is attributed to (operator|pilot|adapter|ai)
-	recBuf  []reqRec  // frames captured this recording → saved as a replayable series
+	recOn   bool     // a recording is in progress
+	recName string   // name of the active recording
+	recSeat string   // seat the recorded control is attributed to (operator|pilot|adapter|ai)
+	recBuf  []reqRec // frames captured this recording → saved as a replayable series
 
 	dmu      sync.Mutex
 	dprCache map[string]float64 // context -> devicePixelRatio (act coord scaling)
@@ -97,6 +100,42 @@ func (c *collector) setFocus(session, context string) {
 	c.focusMu.Lock()
 	c.focusSession, c.focusContext, c.focusSeq = session, context, c.focusSeq+1
 	c.focusMu.Unlock()
+}
+
+// activateCockpit brings Firefox HOME to 8 on startup: it finds the cockpit tab
+// (the :8088 context) on the fox channel and activates it, so every collector
+// (re)start returns the view to the seer instead of leaving Firefox on whatever
+// tab was foreground. Retries while the broker settles.
+func (c *collector) activateCockpit() {
+	b := c.find("fox")
+	if b == nil {
+		return
+	}
+	for i := 0; i < 12; i++ {
+		time.Sleep(time.Second)
+		tr, err := c.command(b, `{"method":"browsingContext.getTree","params":{}}`)
+		if err != nil {
+			continue
+		}
+		var t struct {
+			Result struct {
+				Contexts []struct {
+					Context string `json:"context"`
+					URL     string `json:"url"`
+				} `json:"contexts"`
+			} `json:"result"`
+		}
+		if json.Unmarshal(tr, &t) != nil {
+			continue
+		}
+		for _, ctx := range t.Result.Contexts {
+			if strings.Contains(ctx.URL, ":8088") {
+				c.command(b, fmt.Sprintf(`{"method":"browsingContext.activate","params":{"context":%q}}`, ctx.Context))
+				log.Printf("brought Firefox home to 8 (activated cockpit %s)", ctx.Context)
+				return
+			}
+		}
+	}
 }
 
 func (c *collector) handleFocus(w http.ResponseWriter, r *http.Request) {
@@ -551,6 +590,48 @@ func (c *collector) commandS(b *broker, body string) ([]byte, int, error) {
 // handleShot grabs one screenshot of a session's tab — the "viewport" frame.
 // BiDi has no screencast stream, so the cockpit polls this (~1 fps is plenty
 // for a live-ish mirror). Defaults to the session's first top-level context.
+// shrink2x halves a base64 JPEG's dimensions with a 2x2 box average (stdlib only).
+// Captures come back at devicePixelRatio (retina 2x) — far more pixels than the
+// cockpit ever displays — so this cuts the cockpit's decode + GPU-texture memory
+// ~4x (the seeded stills for every card were holding 3592x3046 each). Returns the
+// input unchanged on any decode issue, so it can never break a frame.
+func shrink2x(b64 string) string {
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil || len(raw) == 0 {
+		return b64
+	}
+	src, err := jpeg.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return b64
+	}
+	b := src.Bounds()
+	w, h := b.Dx()/2, b.Dy()/2
+	if w < 2 || h < 2 {
+		return b64
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			sx, sy := b.Min.X+x*2, b.Min.Y+y*2
+			r0, g0, l0, _ := src.At(sx, sy).RGBA()
+			r1, g1, l1, _ := src.At(sx+1, sy).RGBA()
+			r2, g2, l2, _ := src.At(sx, sy+1).RGBA()
+			r3, g3, l3, _ := src.At(sx+1, sy+1).RGBA()
+			dst.SetRGBA(x, y, color.RGBA{
+				uint8(((r0 + r1 + r2 + r3) / 4) >> 8),
+				uint8(((g0 + g1 + g2 + g3) / 4) >> 8),
+				uint8(((l0 + l1 + l2 + l3) / 4) >> 8),
+				255,
+			})
+		}
+	}
+	var out bytes.Buffer
+	if jpeg.Encode(&out, dst, &jpeg.Options{Quality: 62}) != nil {
+		return b64
+	}
+	return base64.StdEncoding.EncodeToString(out.Bytes())
+}
+
 func (c *collector) handleShot(w http.ResponseWriter, r *http.Request) {
 	sid := r.URL.Query().Get("session")
 
@@ -637,7 +718,7 @@ func (c *collector) handleShot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"context": ctx,
-		"data":    "data:image/jpeg;base64," + s.Result.Data,
+		"data":    "data:image/jpeg;base64," + shrink2x(s.Result.Data),
 	})
 }
 
@@ -721,8 +802,8 @@ func rewriteRegistry(calls []sessionRec) {
 type sessionRec struct {
 	ID      string `json:"id"`
 	Hub     string `json:"hub"`
-	Kind    string `json:"kind"`    // local | cloud
-	Physics string `json:"physics"` // call | channel
+	Kind    string `json:"kind"`             // local | cloud
+	Physics string `json:"physics"`          // call | channel
 	Stream  string `json:"stream,omitempty"` // live MJPEG source URL, if any
 	Status  string `json:"status,omitempty"` // live | disconnected (computed at /sessions time, not persisted)
 	Created string `json:"created_at,omitempty"`
@@ -1336,8 +1417,10 @@ func summarize(xs []float64) stat {
 
 // handleBench is 8's IP made measurable: over n trials it times the wire
 // round-trip to KNOW a session's UI state two ways —
-//   READ : script.evaluate returns the exact state (the channel, the value)
-//   SEE  : browsingContext.captureScreenshot returns pixels (what "seeing" is)
+//
+//	READ : script.evaluate returns the exact state (the channel, the value)
+//	SEE  : browsingContext.captureScreenshot returns pixels (what "seeing" is)
+//
 // — timed in Go nanoseconds. This is why the timing lives HERE and not in the
 // page: the browser's performance.now() is privacy-clamped (reads 0 sub-ms); 8,
 // in Go, is the unclamped outside witness. Reports p50..p99.9, byte cost, and
@@ -1487,16 +1570,16 @@ func (c *collector) handleBench(w http.ResponseWriter, r *http.Request) {
 // cockpit can show it (headers, JSON body) and REPLAY it byte-for-byte. This is
 // what only 8 can do: it sits on the wire and remembers the whole call.
 type reqRec struct {
-	ID       int64             `json:"id"`
-	TS       string            `json:"ts"`
-	Physics  string            `json:"physics"` // call (HTTP) | channel (BiDi/CDP)
-	Session  string            `json:"session,omitempty"`
-	Method   string            `json:"method"` // HTTP verb, or the BiDi/CDP method
-	URL      string            `json:"url"`
-	Headers  map[string]string `json:"headers,omitempty"`
-	Body     string            `json:"body,omitempty"`
-	Status   int               `json:"status"`
-	LatUS    float64           `json:"latency_us"`
+	ID         int64             `json:"id"`
+	TS         string            `json:"ts"`
+	Physics    string            `json:"physics"` // call (HTTP) | channel (BiDi/CDP)
+	Session    string            `json:"session,omitempty"`
+	Method     string            `json:"method"` // HTTP verb, or the BiDi/CDP method
+	URL        string            `json:"url"`
+	Headers    map[string]string `json:"headers,omitempty"`
+	Body       string            `json:"body,omitempty"`
+	Status     int               `json:"status"`
+	LatUS      float64           `json:"latency_us"`
 	RespLen    int               `json:"resp_bytes"`
 	RespHead   string            `json:"resp_preview,omitempty"`
 	Replayable bool              `json:"replayable"`
@@ -1540,9 +1623,9 @@ const (
 	benchWindow  = 500
 )
 
-func dotDir() string        { return os.ExpandEnv("$HOME/.8") }
-func requestsFile() string  { return dotDir() + "/requests.ndjson" }
-func benchesFile() string   { return dotDir() + "/benches.ndjson" }
+func dotDir() string       { return os.ExpandEnv("$HOME/.8") }
+func requestsFile() string { return dotDir() + "/requests.ndjson" }
+func benchesFile() string  { return dotDir() + "/benches.ndjson" }
 
 func appendNDJSON(path string, v any) {
 	os.MkdirAll(dotDir(), 0o755)
@@ -1689,7 +1772,9 @@ func seriesDir() string {
 	os.MkdirAll(d, 0o755)
 	return d
 }
-func seriesPath(name string) string { return seriesDir() + "/" + strings.ReplaceAll(name, "/", "_") + ".json" }
+func seriesPath(name string) string {
+	return seriesDir() + "/" + strings.ReplaceAll(name, "/", "_") + ".json"
+}
 func writeSeries(name string, frames []reqRec) error {
 	b, _ := json.MarshalIndent(frames, "", " ")
 	return os.WriteFile(seriesPath(name), b, 0o644)
@@ -2004,6 +2089,7 @@ func main() {
 	for _, b := range c.brokers {
 		go c.pump(ctx, b)
 	}
+	go c.activateCockpit() // every (re)start returns Firefox to 8's tab
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/feed", c.handleFeed)
