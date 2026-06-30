@@ -1106,9 +1106,13 @@ func (c *collector) handleStream(w http.ResponseWriter, r *http.Request) {
 	// rate is bounded by the BiDi round-trip (a few fps) — enough to SEE a video
 	// tab move, where /shot's slow poll only showed stills. fps/quality tunable.
 	if b := c.find(sid); b != nil {
+		// Detect physics by probing: browsingContext.getTree is BiDi-only. A CDP
+		// (Chrome) broker errors on it -> capture with Page.captureScreenshot and
+		// no context (the held ws IS the page). Probe verdict beats a naming prior.
 		ctx := r.URL.Query().Get("context")
-		if ctx == "" {
-			if tr, err := c.command(b, `{"method":"browsingContext.getTree","params":{}}`); err == nil {
+		isCDP := false
+		if tr, err := c.command(b, `{"method":"browsingContext.getTree","params":{}}`); err == nil && strings.Contains(string(tr), `"contexts"`) {
+			if ctx == "" {
 				var t struct {
 					Result struct {
 						Contexts []struct {
@@ -1121,8 +1125,10 @@ func (c *collector) handleStream(w http.ResponseWriter, r *http.Request) {
 					ctx = t.Result.Contexts[0].Context
 				}
 			}
+		} else {
+			isCDP = true // Chrome: the held CDP ws is the page, no context to resolve
 		}
-		if ctx == "" {
+		if !isCDP && ctx == "" {
 			http.Error(w, `{"error":"no context"}`, http.StatusBadGateway)
 			return
 		}
@@ -1135,6 +1141,11 @@ func (c *collector) handleStream(w http.ResponseWriter, r *http.Request) {
 			quality = v
 		}
 		shot := fmt.Sprintf(`{"method":"browsingContext.captureScreenshot","params":{"context":%q,"origin":"viewport","format":{"type":"image/jpeg","quality":%g}}}`, ctx, quality)
+		if isCDP {
+			// Chrome CDP: Page.captureScreenshot returns the same result.data base64
+			// JPEG the loop below already decodes. quality is 0-100 (BiDi uses 0-1).
+			shot = fmt.Sprintf(`{"method":"Page.captureScreenshot","params":{"format":"jpeg","quality":%d}}`, int(quality*100))
+		}
 		w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary=frame")
 		w.Header().Set("Cache-Control", "no-cache")
 		flusher, _ := w.(http.Flusher)
