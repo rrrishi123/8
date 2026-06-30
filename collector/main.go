@@ -80,10 +80,46 @@ type collector struct {
 	recName string    // name of the active recording
 	recSeat string    // seat the recorded control is attributed to (operator|pilot|adapter|ai)
 	recBuf  []reqRec  // frames captured this recording → saved as a replayable series
+
+	dmu      sync.Mutex
+	dprCache map[string]float64 // context -> devicePixelRatio (act coord scaling)
 }
 
 func newCollector(brokers []broker) *collector {
-	return &collector{brokers: brokers, client: &http.Client{}, subs: map[int]chan string{}, frames: map[string]chan []byte{}}
+	return &collector{brokers: brokers, client: &http.Client{}, subs: map[int]chan string{}, frames: map[string]chan []byte{}, dprCache: map[string]float64{}}
+}
+
+// chanDPR is a tab's devicePixelRatio (cached per context). The /stream screenshot
+// is dpr-scaled — a 1796-CSS-px viewport at dpr=2 is a 3592px image — but BiDi
+// input.performActions wants CSS pixels. Act coords arrive in screenshot space
+// (the cockpit maps clicks to the frame's naturalWidth), so they must be divided
+// by this or every click/scroll lands ~dpr× off ("controls on Firefox tabs don't
+// work"). Cached: only the first act on a tab pays the extra round-trip.
+func (c *collector) chanDPR(b *broker, ctx string) float64 {
+	c.dmu.Lock()
+	if d, ok := c.dprCache[ctx]; ok {
+		c.dmu.Unlock()
+		return d
+	}
+	c.dmu.Unlock()
+	d := 1.0
+	cmd := fmt.Sprintf(`{"method":"script.evaluate","params":{"awaitPromise":true,"target":{"context":%q},"expression":"window.devicePixelRatio"}}`, ctx)
+	if tr, err := c.command(b, cmd); err == nil {
+		var rr struct {
+			Result struct {
+				Result struct {
+					Value float64 `json:"value"`
+				} `json:"result"`
+			} `json:"result"`
+		}
+		if json.Unmarshal(tr, &rr) == nil && rr.Result.Result.Value > 0 {
+			d = rr.Result.Result.Value
+		}
+	}
+	c.dmu.Lock()
+	c.dprCache[ctx] = d
+	c.dmu.Unlock()
+	return d
 }
 
 // procInfoScript reads per-tab memory + CPU from Firefox via ChromeUtils
@@ -869,6 +905,13 @@ func (c *collector) actChannel(w http.ResponseWriter, r *http.Request, b *broker
 	if ctx == "" {
 		http.Error(w, `{"error":"no tab context"}`, http.StatusBadGateway)
 		return
+	}
+	// screenshot-space (dpr-scaled) -> CSS pixels that input.performActions expects.
+	if dpr := c.chanDPR(b, ctx); dpr > 1 {
+		in.X = int(math.Round(float64(in.X) / dpr))
+		in.Y = int(math.Round(float64(in.Y) / dpr))
+		in.X2 = int(math.Round(float64(in.X2) / dpr))
+		in.Y2 = int(math.Round(float64(in.Y2) / dpr))
 	}
 	pointer := func(acts string) string {
 		return fmt.Sprintf(`{"method":"input.performActions","params":{"context":%q,"actions":[{"type":"pointer","id":"m","parameters":{"pointerType":"mouse"},"actions":[%s]}]}}`, ctx, acts)
