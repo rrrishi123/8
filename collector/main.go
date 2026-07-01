@@ -94,6 +94,24 @@ type collector struct {
 	focusSession string
 	focusContext string
 	focusSeq     int64
+
+	// FIREFOX STREAM (the efficient, leak-free path): the HiddenFrame driver POSTs
+	// WebM clusters to /fxchunk; the collector relays them to the cockpit's MSE via
+	// /fxstream. 8 only relays — capture lives in adapters/browser/firefox-stream.js.
+	fxMu     sync.Mutex
+	fxRecv   map[string]*fxStream // session -> received WebM relay state
+	fxDriver string               // path to adapters/browser/firefox-stream.js
+}
+
+// fxStream is one Firefox tab's live WebM relay: the init segment (first cluster,
+// re-sent to every new /fxstream consumer so MSE can decode) + the live subscribers.
+type fxStream struct {
+	mu     sync.Mutex
+	init   []byte
+	subs   map[int]chan []byte
+	nextID int
+	chunks int
+	bytes  int
 }
 
 func (c *collector) setFocus(session, context string) {
@@ -147,7 +165,7 @@ func (c *collector) handleFocus(w http.ResponseWriter, r *http.Request) {
 }
 
 func newCollector(brokers []broker) *collector {
-	return &collector{brokers: brokers, client: &http.Client{}, subs: map[int]chan string{}, frames: map[string]chan []byte{}, dprCache: map[string]float64{}}
+	return &collector{brokers: brokers, client: &http.Client{}, subs: map[int]chan string{}, frames: map[string]chan []byte{}, dprCache: map[string]float64{}, fxRecv: map[string]*fxStream{}}
 }
 
 // chanDPR is a tab's devicePixelRatio (cached per context). The /stream screenshot
@@ -254,11 +272,11 @@ const drawProbeScript = `const cb=arguments[arguments.length-1];(async()=>{try{c
 // transfer — a big simplification. If false, the peer's JSWindowActor path is needed.
 const streamProbeScript = `const cb=arguments[arguments.length-1];(async()=>{try{const {HiddenFrame}=ChromeUtils.importESModule('resource://gre/modules/HiddenFrame.sys.mjs');const hf=new HiddenFrame();const win=await hf.get();const hasMR=typeof win.MediaRecorder!=='undefined';const tgt=gBrowser.browsers.find(b=>/youtube|excalidraw|example|lambdatest/.test(b.currentURI.spec))||gBrowser.browsers[0];const wg=tgt.browsingContext.currentWindowGlobal;const bmp=await wg.drawSnapshot(null,1,'white');const w=bmp.width,h=bmp.height;let directDraw=false,capStream=false,detail='';try{const doc=win.document;const canvas=doc.createElement('canvas');canvas.width=w;canvas.height=h;const ctx=canvas.getContext('2d');ctx.drawImage(bmp,0,0);directDraw=true;const st=canvas.captureStream(5);capStream=st.getVideoTracks().length>0;detail='tracks='+st.getVideoTracks().length;}catch(e){detail='draw/capture-failed: '+e;}if(bmp.close)bmp.close();cb(JSON.stringify({hiddenFrameOK:!!win,winHasMediaRecorder:hasMR,snapW:w,snapH:h,directDrawSameProcess:directDraw,captureStreamOK:capStream,detail:(''+detail).slice(0,160)}));}catch(e){cb('ERR:'+e);}})();`
 
-func (c *collector) handleDrawProbe(w http.ResponseWriter, r *http.Request) {
-	if c.gecko == "" {
-		http.Error(w, `{"error":"disabled: collector started without -gecko"}`, http.StatusServiceUnavailable)
-		return
-	}
+// runChrome switches the geckodriver session to the chrome/parent context, runs
+// one /execute/async script (the privileged path drawSnapshot + ChromeUtils need),
+// returns to content, and writes the callback result. Shared by /procinfo-style
+// probes and the Firefox stream driver injection.
+func (c *collector) runChrome(w http.ResponseWriter, script []byte, args []any) {
 	post := func(path, body string) ([]byte, error) {
 		req, _ := http.NewRequest("POST", c.gecko+path, strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -275,11 +293,7 @@ func (c *collector) handleDrawProbe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer post("/moz/context", `{"context":"content"}`)
-	script := drawProbeScript
-	if r.URL.Query().Get("p") == "stream" {
-		script = streamProbeScript
-	}
-	body, _ := json.Marshal(map[string]any{"script": script, "args": []any{}})
+	body, _ := json.Marshal(map[string]any{"script": string(script), "args": args})
 	out, err := post("/execute/async", string(body))
 	if err != nil {
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
@@ -289,17 +303,189 @@ func (c *collector) handleDrawProbe(w http.ResponseWriter, r *http.Request) {
 		Value json.RawMessage `json:"value"`
 	}
 	json.Unmarshal(out, &v)
-	var inner string
 	w.Header().Set("Content-Type", "application/json")
+	var inner string
 	if json.Unmarshal(v.Value, &inner) == nil {
-		if strings.HasPrefix(inner, "ERR:") {
-			w.Write([]byte(`{"error":` + strconv.Quote(strings.TrimPrefix(inner, "ERR:")) + `}`))
+		if strings.HasPrefix(inner, "ERR") {
+			w.Write([]byte(`{"error":` + strconv.Quote(inner) + `}`))
 			return
 		}
 		w.Write([]byte(inner))
 		return
 	}
 	w.Write(v.Value)
+}
+
+// handleFxChunk receives one WebM cluster from the HiddenFrame driver (POST body =
+// raw bytes) and fans it to the session's /fxstream consumers. The FIRST cluster is
+// the init segment (EBML header + tracks) — kept and re-sent to every new consumer.
+func (c *collector) handleFxChunk(w http.ResponseWriter, r *http.Request) {
+	sid := r.URL.Query().Get("session")
+	if sid == "" {
+		sid = "fox"
+	}
+	buf, _ := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+	if len(buf) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	c.fxMu.Lock()
+	if c.fxRecv == nil {
+		c.fxRecv = map[string]*fxStream{}
+	}
+	s := c.fxRecv[sid]
+	if s == nil {
+		s = &fxStream{subs: map[int]chan []byte{}}
+		c.fxRecv[sid] = s
+	}
+	c.fxMu.Unlock()
+	s.mu.Lock()
+	if s.init == nil {
+		s.init = append([]byte(nil), buf...) // first cluster carries the init segment
+	}
+	s.chunks++
+	s.bytes += len(buf)
+	for _, ch := range s.subs {
+		select {
+		case ch <- buf:
+		default:
+		}
+	}
+	s.mu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleFxStream serves a session's live WebM to the cockpit: the init segment
+// first, then every subsequent cluster. The cockpit appends these to an MSE
+// SourceBuffer (mode=sequence). Chunked transfer; runs until the client leaves.
+func (c *collector) handleFxStream(w http.ResponseWriter, r *http.Request) {
+	sid := r.URL.Query().Get("session")
+	if sid == "" {
+		sid = "fox"
+	}
+	c.fxMu.Lock()
+	s := c.fxRecv[sid]
+	c.fxMu.Unlock()
+	if s == nil {
+		http.Error(w, `{"error":"no fx stream for session"}`, http.StatusNotFound)
+		return
+	}
+	ch := make(chan []byte, 64)
+	s.mu.Lock()
+	id := s.nextID
+	s.nextID++
+	s.subs[id] = ch
+	init := s.init
+	s.mu.Unlock()
+	defer func() { s.mu.Lock(); delete(s.subs, id); s.mu.Unlock() }()
+	w.Header().Set("Content-Type", "video/webm")
+	w.Header().Set("Cache-Control", "no-cache")
+	flusher, _ := w.(http.Flusher)
+	if len(init) > 0 {
+		w.Write(init)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case buf := <-ch:
+			if _, err := w.Write(buf); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}
+}
+
+// handleFxStart injects the Firefox capture driver (adapters/browser/firefox-
+// stream.js) into the chrome context for one tab, so it POSTs WebM to /fxchunk.
+// The capture MECHANISM lives in adapters; 8 only orchestrates + relays.
+func (c *collector) handleFxStart(w http.ResponseWriter, r *http.Request) {
+	if c.gecko == "" {
+		http.Error(w, `{"error":"disabled: collector started without -gecko"}`, http.StatusServiceUnavailable)
+		return
+	}
+	driver, err := os.ReadFile(c.fxDriver)
+	if err != nil {
+		http.Error(w, `{"error":"driver not readable at `+c.fxDriver+`: `+err.Error()+`"}`, http.StatusInternalServerError)
+		return
+	}
+	needle := r.URL.Query().Get("needle")
+	if needle == "" {
+		needle = "excalidraw"
+	}
+	fps := 5.0
+	if v, e := strconv.ParseFloat(r.URL.Query().Get("fps"), 64); e == nil && v > 0 {
+		fps = v
+	}
+	sid := r.URL.Query().Get("session")
+	if sid == "" {
+		sid = "fox"
+	}
+	// reset the relay buffer for a fresh stream (drop the stale init segment)
+	c.fxMu.Lock()
+	delete(c.fxRecv, sid)
+	c.fxMu.Unlock()
+	chunkURL := fmt.Sprintf("http://127.0.0.1:7070/fxchunk?session=%s", sid)
+	c.runChrome(w, driver, []any{chunkURL, needle, fps})
+}
+
+// handleFxStop stops the running pipeline (releases the MediaRecorder/HiddenFrame).
+func (c *collector) handleFxStop(w http.ResponseWriter, r *http.Request) {
+	if c.gecko == "" {
+		http.Error(w, `{"error":"disabled: collector started without -gecko"}`, http.StatusServiceUnavailable)
+		return
+	}
+	stop := `const cb=arguments[arguments.length-1];try{const w=Services.wm.getMostRecentWindow('navigator:browser');if(w.__eightFx){w.__eightFx.stop();cb('stopped');}else{cb('none');}}catch(e){cb('ERR:'+e);}`
+	c.runChrome(w, []byte(stop), []any{})
+}
+
+// handleFxStats reports the relay counters for a session (for the standalone test).
+func (c *collector) handleFxStats(w http.ResponseWriter, r *http.Request) {
+	sid := r.URL.Query().Get("session")
+	if sid == "" {
+		sid = "fox"
+	}
+	c.fxMu.Lock()
+	s := c.fxRecv[sid]
+	c.fxMu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	if s == nil {
+		w.Write([]byte(`{"chunks":0,"bytes":0,"init":false}`))
+		return
+	}
+	s.mu.Lock()
+	chunks, bytes, hasInit, subs := s.chunks, s.bytes, len(s.init) > 0, len(s.subs)
+	s.mu.Unlock()
+	json.NewEncoder(w).Encode(map[string]any{"chunks": chunks, "bytes": bytes, "init": hasInit, "subscribers": subs})
+}
+
+// handleFxDiag reads the DRIVER's own counters (ondataavailable fires + fetch
+// errors) from inside Firefox — distinguishes "no frames produced" from "POST failing".
+func (c *collector) handleFxDiag(w http.ResponseWriter, r *http.Request) {
+	if c.gecko == "" {
+		http.Error(w, `{"error":"disabled: collector started without -gecko"}`, http.StatusServiceUnavailable)
+		return
+	}
+	s := `const cb=arguments[arguments.length-1];try{const w=gBrowser.ownerDocument.defaultView;cb(w.__eightFx?JSON.stringify(w.__eightFx.stats()):'no-pipeline');}catch(e){cb('ERR:'+e);}`
+	c.runChrome(w, []byte(s), []any{})
+}
+
+func (c *collector) handleDrawProbe(w http.ResponseWriter, r *http.Request) {
+	if c.gecko == "" {
+		http.Error(w, `{"error":"disabled: collector started without -gecko"}`, http.StatusServiceUnavailable)
+		return
+	}
+	script := drawProbeScript
+	if r.URL.Query().Get("p") == "stream" {
+		script = streamProbeScript
+	}
+	c.runChrome(w, []byte(script), []any{})
 }
 
 func (c *collector) find(id string) *broker {
@@ -2195,6 +2381,7 @@ func main() {
 	listen := flag.String("listen", ":7070", "HTTP address the cockpit reaches the collector on")
 	spec := flag.String("brokers", "", "comma list of session=brokerURL (e.g. fox=http://127.0.0.1:4445)")
 	gecko := flag.String("gecko", "", "geckodriver session base (http://127.0.0.1:4444/session/<id>) — enables /procinfo per-tab mem/CPU")
+	fxdriver := flag.String("fxdriver", os.ExpandEnv("$HOME/Desktop/repos/adapters/browser/firefox-stream.js"), "path to the Firefox capture driver (adapters/browser/firefox-stream.js)")
 	token := flag.String("token", os.Getenv("EIGHT_TOKEN"), "shared secret required on every endpoint via X-8-Token/Bearer (empty = auth off, local-dev default)")
 	origins := flag.String("origins", os.Getenv("EIGHT_ORIGINS"), "comma CORS origin allowlist, e.g. http://localhost:8088 (empty = *, local-dev)")
 	flag.Parse()
@@ -2216,6 +2403,7 @@ func main() {
 
 	c := newCollector(brokers)
 	c.gecko = strings.TrimRight(*gecko, "/")
+	c.fxDriver = *fxdriver
 	// register a REQUEST seat for the SAME Firefox: -gecko is the classic
 	// WebDriver session — the call-physics view of the very browser the channel
 	// (broker) drives. So 8's rail shows fox (channel) AND this seat (request),
@@ -2241,6 +2429,12 @@ func main() {
 	mux.HandleFunc("/tabs", c.handleTabs)
 	mux.HandleFunc("/procinfo", c.handleProcInfo)
 	mux.HandleFunc("/drawprobe", c.handleDrawProbe)
+	mux.HandleFunc("/fxchunk", c.handleFxChunk)   // HiddenFrame driver POSTs WebM here
+	mux.HandleFunc("/fxstream", c.handleFxStream) // cockpit MSE consumes WebM here
+	mux.HandleFunc("/fxstart", c.handleFxStart)   // inject the capture driver for a tab
+	mux.HandleFunc("/fxstop", c.handleFxStop)
+	mux.HandleFunc("/fxstats", c.handleFxStats)
+	mux.HandleFunc("/fxdiag", c.handleFxDiag)
 	mux.HandleFunc("/sessions", c.handleSessions)
 	mux.HandleFunc("/source", c.handleSource)
 	mux.HandleFunc("/act", c.handleAct)
