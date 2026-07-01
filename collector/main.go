@@ -59,9 +59,10 @@ type broker struct {
 }
 
 type collector struct {
-	brokers []broker
-	client  *http.Client
-	gecko   string // geckodriver session base (http://host:port/session/<id>) — enables /procinfo
+	brokers     []broker
+	client      *http.Client
+	geckoClient *http.Client // bounded timeout for geckodriver calls — a dead socket during a recycle can't hang chromeMu (the long-lived SSE pump keeps using client, which must have no timeout)
+	gecko       string       // geckodriver session base (http://host:port/session/<id>) — enables /procinfo
 
 	gmu         sync.Mutex  // guards gecko (swapped on session recovery)
 	geckoRoot   string      // "http://host:port" prefix, for rebuilding the base on recovery
@@ -176,7 +177,7 @@ func (c *collector) handleFocus(w http.ResponseWriter, r *http.Request) {
 }
 
 func newCollector(brokers []broker) *collector {
-	return &collector{brokers: brokers, client: &http.Client{}, subs: map[int]chan string{}, frames: map[string]chan []byte{}, dprCache: map[string]float64{}, vpCache: map[string][2]float64{}, fxRecv: map[string]*fxStream{}}
+	return &collector{brokers: brokers, client: &http.Client{}, geckoClient: &http.Client{Timeout: 25 * time.Second}, subs: map[int]chan string{}, frames: map[string]chan []byte{}, dprCache: map[string]float64{}, vpCache: map[string][2]float64{}, fxRecv: map[string]*fxStream{}}
 }
 
 // chanDPR is a tab's devicePixelRatio (cached per context). The /stream screenshot
@@ -261,10 +262,13 @@ const procInfoScript = `const cb=arguments[arguments.length-1];ChromeUtils.reque
 // a target. Requires the session launched with -remote-allow-system-access (see
 // scripts/up.sh) and the collector started with -gecko.
 func (c *collector) handleProcInfo(w http.ResponseWriter, r *http.Request) {
-	if c.gecko == "" {
+	if c.geckoBase() == "" {
 		http.Error(w, `{"error":"procinfo disabled: collector started without -gecko"}`, http.StatusServiceUnavailable)
 		return
 	}
+	c.chromeMu.Lock()         // procinfo toggles /moz/context too — serialize with drawshot/aperture
+	defer c.chromeMu.Unlock() // runs LAST (after the content-reset defer below)
+	c.paceChrome()
 	post := func(path, body string) ([]byte, error) {
 		return c.geckoPost("POST", path, body) // auto-recovers the session on recycle
 	}
@@ -398,7 +402,7 @@ func (c *collector) recoverGecko() bool {
 			continue // file still points at the session we know is stale — wait for up.sh
 		}
 		req, _ := http.NewRequest("GET", base+"/url", nil)
-		resp, err := c.client.Do(req)
+		resp, err := c.geckoClient.Do(req)
 		if err != nil {
 			continue
 		}
@@ -430,7 +434,7 @@ func (c *collector) geckoPost(method, path, body string) ([]byte, error) {
 		}
 		req, _ := http.NewRequest(method, c.geckoBase()+path, r)
 		req.Header.Set("Content-Type", "application/json")
-		resp, err := c.client.Do(req)
+		resp, err := c.geckoClient.Do(req)
 		if err != nil {
 			return nil, err
 		}
@@ -520,7 +524,7 @@ func (c *collector) execChrome(script string) (string, error) {
 // backstop). Gated on RECENT capture (nothing accumulating if idle) and a COOLDOWN (a
 // flush is a GC pause — don't thrash). Publishes the act so 8 sees its own efferent.
 func (c *collector) memoryAperture(softMB int) {
-	if c.gecko == "" || softMB <= 0 {
+	if c.geckoBase() == "" || softMB <= 0 {
 		return
 	}
 	const cooldown = 5 * time.Minute
@@ -646,7 +650,7 @@ func (c *collector) handleFxStream(w http.ResponseWriter, r *http.Request) {
 // stream.js) into the chrome context for one tab, so it POSTs WebM to /fxchunk.
 // The capture MECHANISM lives in adapters; 8 only orchestrates + relays.
 func (c *collector) handleFxStart(w http.ResponseWriter, r *http.Request) {
-	if c.gecko == "" {
+	if c.geckoBase() == "" {
 		http.Error(w, `{"error":"disabled: collector started without -gecko"}`, http.StatusServiceUnavailable)
 		return
 	}
@@ -683,7 +687,7 @@ func (c *collector) handleFxStart(w http.ResponseWriter, r *http.Request) {
 // engine-agnostic. Poll this at a LOW cadence (the hero stream is the only high-rate
 // source); ?w= sets the target width (LOD), ?q= the JPEG quality.
 func (c *collector) handleDrawShot(w http.ResponseWriter, r *http.Request) {
-	if c.gecko == "" {
+	if c.geckoBase() == "" {
 		http.Error(w, `{"error":"disabled: collector started without -gecko"}`, http.StatusServiceUnavailable)
 		return
 	}
@@ -710,7 +714,7 @@ func (c *collector) handleDrawShot(w http.ResponseWriter, r *http.Request) {
 
 // handleFxStop stops the running pipeline (releases the MediaRecorder/HiddenFrame).
 func (c *collector) handleFxStop(w http.ResponseWriter, r *http.Request) {
-	if c.gecko == "" {
+	if c.geckoBase() == "" {
 		http.Error(w, `{"error":"disabled: collector started without -gecko"}`, http.StatusServiceUnavailable)
 		return
 	}
@@ -746,7 +750,7 @@ func (c *collector) handleFxStats(w http.ResponseWriter, r *http.Request) {
 // handleFxDiag reads the DRIVER's own counters (ondataavailable fires + fetch
 // errors) from inside Firefox — distinguishes "no frames produced" from "POST failing".
 func (c *collector) handleFxDiag(w http.ResponseWriter, r *http.Request) {
-	if c.gecko == "" {
+	if c.geckoBase() == "" {
 		http.Error(w, `{"error":"disabled: collector started without -gecko"}`, http.StatusServiceUnavailable)
 		return
 	}
@@ -755,7 +759,7 @@ func (c *collector) handleFxDiag(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *collector) handleDrawProbe(w http.ResponseWriter, r *http.Request) {
-	if c.gecko == "" {
+	if c.geckoBase() == "" {
 		http.Error(w, `{"error":"disabled: collector started without -gecko"}`, http.StatusServiceUnavailable)
 		return
 	}
