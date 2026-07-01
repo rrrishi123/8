@@ -10,9 +10,9 @@ type Seeing = 'pixels' | 'channel' | 'request';
 // live stream stops being a mirror and becomes hands: a click on the <img> maps
 // to the target's pixels and fires /act (tap), keystrokes fire /act (type). Same
 // surface drives a Firefox tab (BiDi) OR a real device (Appium) — one wire.
-export function Viewport({ session, title, context: fixedCtx, onAspect, hud, visible, fps: fpsProp, act: actMode, pinned, onPin, lodW }:
+export function Viewport({ session, title, context: fixedCtx, onAspect, hud, visible, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle }:
   { session: string | null; title?: string; context?: string;
-    onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; fps?: number; act?: boolean; pinned?: boolean; onPin?: () => void; lodW?: number }) {
+    onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; fps?: number; act?: boolean; pinned?: boolean; onPin?: () => void; lodW?: number; fx?: boolean; fxNeedle?: string }) {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [ctx, setCtx] = useState(fixedCtx || '');
   const [reqSeat, setReqSeat] = useState('');
@@ -185,6 +185,49 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
     return () => { img.removeEventListener('wheel', onWheel); if (timer) clearTimeout(timer); };
   }, [interact, persistent, session, ctx, frameSrc]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // FIREFOX drawSnapshot STREAM via MSE — the LEAK-FREE replacement for the
+  // captureScreenshot <img>, for the hero Firefox seat. Starts the pipeline
+  // (/fxstart injects the HiddenFrame driver for this tab) and appends the WebM
+  // clusters to a SourceBuffer (mode='sequence', trim old buffer — the peer's
+  // recipe). Only the hero streams this way; the aperture still pays for one tab.
+  const useFx = !!fx && persistent && seeing === 'pixels';
+  const videoRef = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    if (!useFx || !videoRef.current) return;
+    const video = videoRef.current;
+    let cancelled = false, reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    fetch(`${BASE}/fxstart?needle=${encodeURIComponent(fxNeedle || '')}&fps=6`).catch(() => {});
+    const ms = new MediaSource();
+    video.src = URL.createObjectURL(ms);
+    ms.addEventListener('sourceopen', async () => {
+      if (cancelled) return;
+      let sb: SourceBuffer;
+      try { sb = ms.addSourceBuffer('video/webm;codecs=vp8'); sb.mode = 'sequence'; }
+      catch { return; }
+      const queue: Uint8Array[] = [];
+      const pump = () => { if (!sb.updating && queue.length) { const c = queue.shift(); if (c) try { sb.appendBuffer(c as unknown as BufferSource); } catch { /* wait */ } } };
+      sb.addEventListener('updateend', pump);
+      try {
+        const resp = await fetch(`${BASE}/fxstream?session=${encodeURIComponent(session || 'fox')}`);
+        reader = resp.body!.getReader();
+        video.play().catch(() => {});
+        while (!cancelled) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value && value.length) { queue.push(value); pump(); }
+          // trim to bound latency (keep ~15s), the peer's guard against accumulation
+          try { if (!sb.updating && video.buffered.length && video.currentTime - video.buffered.start(0) > 20) sb.remove(0, video.currentTime - 15); } catch { /* */ }
+        }
+      } catch { setErr(true); }
+    });
+    return () => {
+      cancelled = true;
+      try { reader?.cancel(); } catch { /* */ }
+      fetch(`${BASE}/fxstop`).catch(() => {});
+      try { if (ms.readyState === 'open') ms.endOfStream(); } catch { /* */ }
+    };
+  }, [useFx, fxNeedle, session]);
+
   return (
     <section className="panel viewport">
       <div className="panel-h">
@@ -209,18 +252,20 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
         )}
       </div>
       {seeing === 'pixels'
-        ? (frameSrc
+        ? ((frameSrc || useFx)
             ? <div className="vp-stage">
                 {/* pinned game-HUD: mem · cpu · fps · resolution — top-left, always on */}
                 <div className="vp-hud">
                   {hud?.mem != null && <span className="hud-mem">{hud.mem} MB</span>}
                   {hud?.cpu != null && <span className="hud-cpu">{hud.cpu.toFixed(0)}% cpu</span>}
-                  <span className="hud-fps">{effFps} fps</span>
+                  <span className="hud-fps">{useFx ? 'webm' : `${effFps} fps`}</span>
                   {dims && <span className="hud-dim">{dims.w}×{dims.h}</span>}
                 </div>
-                <img ref={imgRef} key={persistent ? streamSrc : 'poll'} className={`vp-img${interact ? ' vp-interactive' : ''}`} src={frameSrc} alt="live"
-                  tabIndex={interact ? 0 : undefined} onClick={onTap} onKeyDown={onKey}
-                  onError={() => setErr(true)} onLoad={onFrameLoad} />
+                {useFx
+                  ? <video ref={videoRef} className="vp-img vp-video" autoPlay muted playsInline onError={() => setErr(true)} />
+                  : <img ref={imgRef} key={persistent ? streamSrc : 'poll'} className={`vp-img${interact ? ' vp-interactive' : ''}`} src={frameSrc} alt="live"
+                      tabIndex={interact ? 0 : undefined} onClick={onTap} onKeyDown={onKey}
+                      onError={() => setErr(true)} onLoad={onFrameLoad} />}
               </div>
             : <div className="empty">{!session ? 'no session' : 'paused · off-screen (aperture)'}</div>)
         : <pre className="vp-text">{text || 'reading…'}</pre>}

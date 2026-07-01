@@ -195,6 +195,7 @@ export function Canvas({ session }: { session: string | null }) {
       node: <Viewport session={L.c.session} context={L.c.context} title={L.c.title}
         visible={streams} fps={hero ? 3 : (streams ? 0.4 : 0)} pinned={hero}
         lodW={lodBucket(L.w * cam.z)}
+        fx={L.c.session === 'fox' && !!L.c.context} fxNeedle={L.c.url ? host(L.c.url) : ''}
         onPin={() => setPinnedKey(L.c.key)}
         onAspect={(r) => setAspectBy((p) => (Math.abs((p[L.c.key] || 0) - r) > 0.01 ? { ...p, [L.c.key]: r } : p))}
         hud={L.c.url ? hudBy[L.c.url] : undefined} />,
