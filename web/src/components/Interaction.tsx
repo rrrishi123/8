@@ -15,20 +15,33 @@ export function Interaction({ session, onClose }: { session: Session; onClose: (
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
+  const [tabs, setTabs] = useState<{ context: string; url: string }[]>([]);
+  const [ctx, setCtx] = useState('');
+
+  // which tab to inspect/control (browser/channel sessions expose many)
+  useEffect(() => {
+    fetch(`${BASE}/tabs?session=${encodeURIComponent(session.id)}`)
+      .then((r) => (r.ok ? r.json() : null)).then((j) => {
+        const t = (j && j.tabs) || [];
+        setTabs(t);
+        setCtx((cur) => cur || (t[0] ? t[0].context : ''));
+      }).catch(() => {});
+  }, [session.id]);
 
   async function refresh() {
     setBusy(true); setNote('');
     try {
+      const cq = ctx ? `&context=${encodeURIComponent(ctx)}` : '';
       const [s, srcResp] = await Promise.all([
-        shot(session.id).catch(() => ''),
-        fetch(`${BASE}/source?session=${encodeURIComponent(session.id)}`).then((r) => r.ok ? r.json() : null).catch(() => null),
+        shot(session.id, ctx).catch(() => ''),
+        fetch(`${BASE}/source?session=${encodeURIComponent(session.id)}${cq}`).then((r) => r.ok ? r.json() : null).catch(() => null),
       ]);
       if (s) setImg(s);
       if (srcResp && srcResp.value) setEls(parseSource(srcResp.value));
-      else setNote('source not available for this physics yet (BiDi DOM pending)');
+      else setNote('source not available for this session');
     } finally { setBusy(false); }
   }
-  useEffect(() => { setSel(null); setCollapsed(new Set()); refresh(); /* eslint-disable-next-line */ }, [session.id]);
+  useEffect(() => { setSel(null); setCollapsed(new Set()); refresh(); /* eslint-disable-next-line */ }, [session.id, ctx]);
 
   const root = els.find((e) => e.bounds);
   const devW = root?.bounds ? root.bounds.x + root.bounds.w : 1080;
@@ -53,7 +66,7 @@ export function Interaction({ session, onClose }: { session: Session; onClose: (
   async function act(body: Record<string, unknown>) {
     await fetch(`${BASE}/act?session=${encodeURIComponent(session.id)}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ ...body, context: ctx }),
     }).catch(() => {});
     if (!streamUrl) setTimeout(refresh, 700); // poll mode re-shots; a live stream already shows it
   }
@@ -81,6 +94,15 @@ export function Interaction({ session, onClose }: { session: Session; onClose: (
     <section className="panel interaction-view">
       <div className="panel-h">
         interaction · {session.id} · {session.kind}·{session.physics}
+        {tabs.length > 0 && (
+          <select className="tab-pick" value={ctx} onChange={(e) => setCtx(e.target.value)} title="which tab to inspect / control">
+            {tabs.map((t) => {
+              let host = t.url || t.context;
+              try { host = new URL(t.url).host || t.context; } catch { /* keep */ }
+              return <option key={t.context} value={t.context}>{host}</option>;
+            })}
+          </select>
+        )}
         <button className="ix-btn" onClick={refresh} disabled={busy}>{busy ? '…' : '↻'}</button>
         <button className="ix-btn ix-close" onClick={onClose}>✕ stream</button>
       </div>

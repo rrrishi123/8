@@ -43,7 +43,10 @@ export function mapFrame(ev: FeedEvent): CaptureRow | null {
   // session's device/browser; a BiDi event → the tab it came from.
   const sm = anyUrl.match(/\/session\/([\w-]+)/);
   const shot = sm ? { session: sm[1] } : (origin === 'BIDI' && tab ? { session: ev.session, context: tab } : undefined);
-  return { id: ++seq, origin, physics, session: ev.session, method, detail: detail.slice(0, 200), at: Date.now(), raw: f.params ?? f, tab, shot };
+  const ledgerId = typeof p.ledger_id === 'number' ? p.ledger_id : undefined;
+  const latencyMs = typeof p.latency_ms === 'number' ? p.latency_ms
+    : (typeof p.latency_us === 'number' ? p.latency_us / 1000 : undefined);
+  return { id: ++seq, origin, physics, session: ev.session, method, detail: detail.slice(0, 200), at: Date.now(), raw: f.params ?? f, tab, shot, ledgerId, latencyMs };
 }
 
 // Subscribe to the collector's /feed. Returns an unsubscribe fn.

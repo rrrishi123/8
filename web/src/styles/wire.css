@@ -180,3 +180,236 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .ix-loc-row .by { width: 90px; flex: none; color: var(--cyan); font-size: 11px; }
 .ix-loc-row .val { color: var(--fg); word-break: break-all; font-size: 11px; }
 .ix-detail .fire { margin-top: 10px; }
+
+/* ---- the Lab: benchmark batches (clubbed) + the replayable request ledger ---- */
+.lab { flex: 1; overflow: auto; }
+.lab-tabs { display: flex; gap: 1px; align-items: center; border-bottom: 1px solid var(--border); background: var(--bg2); }
+.lab-tabs button { background: transparent; color: var(--fg-dim); border: 0; border-bottom: 2px solid transparent; padding: 6px 14px; font: inherit; cursor: pointer; }
+.lab-tabs button.on { color: var(--fg); border-bottom-color: var(--purple); }
+.lab-tabs button b { color: var(--green); }
+.lab-note { margin-left: auto; padding-right: 12px; color: var(--fg-faint); font-size: 11px; }
+.lab-body { padding: 8px 12px; overflow: auto; }
+.lab-filter { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; color: var(--fg-faint); font-size: 11px; }
+.lab-filter span { text-transform: uppercase; letter-spacing: .08em; }
+.lab-filter button { background: var(--bg2); color: var(--fg-dim); border: 1px solid var(--border); padding: 2px 9px; font: inherit; font-size: 11px; cursor: pointer; }
+.lab-filter button.on { color: var(--bg); background: var(--purple); border-color: var(--purple); font-weight: 700; }
+
+.club { margin-bottom: 16px; }
+.club-head { color: var(--fg-dim); padding: 4px 0 6px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.club-head b { color: var(--fg); }
+.hot { color: var(--yellow); font-weight: 700; }
+
+.metrics { width: 100%; border-collapse: collapse; font-size: 12px; }
+.metrics th { text-align: right; color: var(--fg-faint); font-weight: 400; padding: 2px 10px; border-bottom: 1px solid var(--border); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+.metrics th:first-child, .metrics td:first-child { text-align: left; }
+.metrics td { text-align: right; padding: 2px 10px; color: var(--fg); white-space: nowrap; }
+.metrics tr:hover td { background: var(--cursorline); }
+.metrics.reqs td { text-align: left; }
+.metrics.reqs td.url { color: var(--fg-dim); max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
+.metrics.reqs .phys { color: var(--purple); }
+.metrics.reqs tr.phys-call .phys { color: var(--blue); }
+.metrics.reqs td.bad { color: var(--red); }
+.metrics.reqs .no { color: var(--fg-faint); }
+.replay { background: var(--bg2); color: var(--green); border: 1px solid var(--border); padding: 1px 8px; font: inherit; font-size: 11px; cursor: pointer; }
+.replay:hover { border-color: var(--green); }
+.lab-toggle { cursor: pointer; color: var(--purple); font-weight: 700; }
+.metrics .dim { color: var(--fg-faint); font-size: 11px; }
+.physics p.dim { color: var(--fg-dim); font-size: 12px; max-width: 92ch; line-height: 1.6; margin: 6px 0 0; }
+.physics p.dim b { color: var(--fg); }
+.physics .club { margin-bottom: 20px; }
+
+/* ---- view-1: filter bar + time + inline replay ---- */
+.stream-filter { display: flex; gap: 8px; align-items: center; padding: 4px 10px; border-bottom: 1px solid var(--border); background: var(--bg2); }
+.filt-in { flex: 1; min-width: 0; background: var(--bg); color: var(--fg); border: 1px solid var(--border); font: inherit; font-size: 12px; padding: 3px 8px; }
+.filt-in:focus { outline: none; border-color: var(--blue); }
+.filt-x { background: var(--bg); color: var(--fg-dim); border: 1px solid var(--border); font: inherit; font-size: 11px; padding: 3px 8px; cursor: pointer; }
+.filt-cnt { color: var(--fg-faint); font-size: 11px; flex: none; }
+.cap-row .t, .cap-head .t { width: 92px; flex: none; color: var(--fg-faint); font-size: 11px; }
+.cap-row .rp, .cap-head .rp { width: 124px; flex: none; }
+.cap-row .rp .no { color: var(--fg-faint); }
+.cap-row .rp .replay { background: var(--bg2); color: var(--green); border: 1px solid var(--border); font: inherit; font-size: 10px; padding: 0 7px; cursor: pointer; }
+.cap-row .rp .replay:hover { border-color: var(--green); }
+
+/* ── dock: evident splitter bars + movable / pinnable / collapsible panes ── */
+.rail-wrap { display: flex; min-height: 0; overflow: hidden; }
+.rail-wrap > .rail { width: 100%; }
+.side { min-width: 0; overflow: hidden; }
+
+.splitter { flex: none; background: var(--border); display: flex; align-items: center; justify-content: center; touch-action: none; }
+.splitter-v { width: 6px; cursor: col-resize; }
+.splitter-h { height: 6px; cursor: row-resize; }
+.splitter:hover { background: var(--purple); }
+.splitter .grip { background: var(--fg-faint); border-radius: 2px; pointer-events: none; }
+.splitter-v .grip { width: 2px; height: 28px; }
+.splitter-h .grip { height: 2px; width: 28px; }
+.splitter:hover .grip { background: var(--bg); }
+
+.sidestack { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; gap: 1px; background: var(--border); }
+.dpane { background: var(--panel); display: flex; flex-direction: column; min-height: 0; overflow: hidden; position: relative; }
+.dpane.flex { flex: 1; }
+.dpane.collapsed { flex: none; }
+.dpane.dragging { outline: 1px solid var(--purple); opacity: .9; }
+.pane-h { display: flex; align-items: center; gap: 6px; padding: 3px 8px; background: var(--bg2); border-bottom: 1px solid var(--border); cursor: grab; user-select: none; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--fg-dim); flex: none; touch-action: none; }
+.pane-h:active { cursor: grabbing; }
+.pane-grip { color: var(--fg-faint); }
+.pane-title { flex: 1; }
+.pane-btn { background: transparent; border: 0; color: var(--fg-faint); cursor: pointer; font-size: 12px; padding: 0 3px; line-height: 1; }
+.pane-btn:hover { color: var(--fg); }
+.pane-btn.on { color: var(--purple); }
+.pane-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.pane-body > .panel { flex: 1; min-height: 0; border: 0; }
+/* dock supplies the title chrome; the inner panel header stays subtle (it still
+   carries live controls like the viewport's tab picker) */
+.dpane .pane-body > .panel > .panel-h { font-size: 10px; opacity: .75; }
+
+/* ── resources pane: per-tab mem/cpu, 8 watching itself ── */
+.resources { min-height: 0; }
+.res-body { flex: 1; min-height: 0; overflow: auto; }
+.res-tab { width: 100%; border-collapse: collapse; font-size: 11px; }
+.res-tab th { text-align: left; color: var(--fg-faint); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; padding: 3px 8px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); }
+.res-tab td { padding: 3px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.res-tab td.tname { max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+.res-tab td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.res-tab td.dim { color: var(--fg-faint); }
+.res-tab tr.self td { color: var(--green); font-weight: 600; }
+.res-tab tr.gpu td { color: #d8a657; }
+.res-tab tr.parent td { color: var(--fg-dim); }
+.res-tab .shared { color: #d8a657; font-size: 10px; margin-left: 4px; }
+.res-note { padding: 5px 8px; color: var(--fg-faint); font-size: 10px; line-height: 1.4; }
+
+/* ── background-color picker (bottom-right) ── */
+.theme-pick { position: fixed; right: 12px; bottom: 30px; z-index: 1000; }
+.theme-btn { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--border); cursor: pointer; box-shadow: 0 1px 6px #000a; padding: 0; }
+.theme-pop { position: absolute; right: 0; bottom: 30px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 9px; display: flex; flex-direction: column; gap: 9px; box-shadow: 0 6px 20px #000c; }
+.sw-row { display: flex; gap: 6px; }
+.sw { width: 22px; height: 22px; border-radius: 5px; border: 1px solid var(--border); cursor: pointer; padding: 0; }
+.sw.on { outline: 2px solid var(--green); outline-offset: 1px; }
+.theme-custom { font-size: 11px; color: var(--fg-dim); display: flex; align-items: center; gap: 6px; }
+.theme-custom input { width: 28px; height: 20px; background: none; border: 1px solid var(--border); cursor: pointer; }
+
+/* solo'd pane fills the stack; the rest sit as header-only strips */
+.dpane.solo { flex: 1; }
+.dpane.soloed-out { flex: none; }
+
+/* ── compose: record → replay series ── */
+.rec-bar { display: flex; gap: 6px; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.rec-btn { background: var(--bg2); color: var(--fg-dim); border: 1px solid var(--border); border-radius: 4px; padding: 3px 10px; font: inherit; font-size: 11px; cursor: pointer; }
+.rec-btn.on { color: var(--red); border-color: var(--red); }
+.rec-in { background: var(--bg); color: var(--fg); border: 1px solid var(--border); font: inherit; font-size: 11px; padding: 2px 5px; max-width: 110px; }
+.series-list { overflow: auto; padding: 4px 0; min-height: 28px; }
+.series-row { display: flex; align-items: center; gap: 8px; padding: 3px 8px; font-size: 11px; }
+.series-row:hover { background: var(--cursorline); }
+.series-play { background: transparent; border: 1px solid var(--border); color: var(--green); border-radius: 4px; cursor: pointer; padding: 0 7px; }
+.series-name { color: var(--fg); }
+.series-meta { margin-left: auto; color: var(--fg-faint); }
+.manual { padding: 4px 8px; color: var(--fg-faint); font-size: 11px; }
+.manual summary { cursor: pointer; }
+.compose-res { font-size: 11px; padding: 1px 8px; }
+
+/* ── pretext canvas: pannable/zoomable spatial cockpit ── */
+.canvas-wrap { position: relative; flex: 1; overflow: hidden; background: var(--bg); cursor: grab; touch-action: none; }
+.canvas-wrap:active { cursor: grabbing; }
+.world { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+.cpane { position: absolute; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 6px 28px #000a; }
+.cpane.gravity { border-color: color-mix(in srgb, var(--purple) 45%, var(--border)); box-shadow: 0 8px 40px #000c, 0 0 0 1px color-mix(in srgb,var(--purple) 30%,transparent); }
+.cpane-h { padding: 6px 12px; background: var(--bg2); border-bottom: 1px solid var(--border); font-size: 13px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: .06em; cursor: grab; }
+.cpane-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.cpane-body > .panel { flex: 1; min-height: 0; border: 0; }
+.persp-bar { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; gap: 8px; align-items: center; background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; z-index: 20; box-shadow: 0 6px 20px #000c; }
+.persp-bar button { background: var(--bg2); color: var(--fg); border: 1px solid var(--border); border-radius: 999px; padding: 4px 13px; font: inherit; font-size: 11px; cursor: pointer; }
+.persp-bar button:hover { border-color: var(--purple); color: var(--fg); }
+.persp-z { color: var(--fg-faint); font-size: 11px; padding: 0 4px; }
+.canvas-toggle { cursor: pointer; color: var(--purple); font-weight: 700; }
+
+/* ── viewport: real target, fills the pane, three seeings ── */
+.viewport .vp-img { flex: 1; min-height: 0; max-height: 100%; max-width: 100%; width: 100%; object-fit: contain; margin: 0; background: #000; }
+/* the live stage: the frame fills the box (which the Canvas already sized to the
+   source's aspect ratio, so object-fit:contain leaves ~no letterbox). */
+.vp-stage { position: relative; flex: 1; min-height: 0; display: flex; background: #000; }
+.vp-stage .vp-img { flex: 1; min-height: 0; width: 100%; height: 100%; object-fit: contain; margin: 0; border: none; background: #000; }
+.vp-stage .vp-img.vp-interactive { cursor: crosshair; }
+/* pinned game-HUD — mem · cpu · fps · resolution, top-left, always on */
+.vp-hud { position: absolute; top: 6px; left: 6px; z-index: 3; display: flex; flex-wrap: wrap; gap: 5px; pointer-events: none; font: 11px/1 var(--mono); }
+.vp-hud span { background: #000a; padding: 2px 6px; border-radius: 4px; border: 1px solid #ffffff1a; backdrop-filter: blur(3px); letter-spacing: .03em; }
+.vp-hud .hud-mem { color: #8fbaff; }
+.vp-hud .hud-cpu { color: #ffc46b; }
+.vp-hud .hud-fps { color: #7cfca0; font-weight: 700; }
+.vp-hud .hud-dim { color: #9aa0aa; }
+.vp-text { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 8px 10px; font: 11px/1.45 var(--mono); white-space: pre-wrap; word-break: break-word; color: var(--fg-dim); }
+.seeing-tabs { display: inline-flex; gap: 2px; margin-left: 8px; }
+.seeing-tabs button { background: var(--bg2); color: var(--fg-faint); border: 1px solid var(--border); font: inherit; font-size: 10px; padding: 1px 8px; cursor: pointer; }
+.seeing-tabs button.on { color: var(--bg); background: var(--purple); border-color: var(--purple); font-weight: 700; }
+
+/* ── pretext: each element IS its own box — a free panel in space, not boxed
+   inside another box. .cbox is a transparent position layer; the .panel is the box. */
+.cbox { position: absolute; display: flex; }
+.cbox > .panel { flex: 1; min-height: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; box-shadow: 0 6px 30px #000b; background: var(--panel); }
+.cbox.gravity > .panel { border-color: color-mix(in srgb, var(--purple) 50%, var(--border)); box-shadow: 0 10px 44px #000d, 0 0 0 1px color-mix(in srgb,var(--purple) 28%,transparent); }
+
+/* pretext interaction: kill native scroll/zoom/img-drag so pan+pinch own the canvas */
+.canvas-wrap { touch-action: none; overscroll-behavior: none; }
+.world { user-select: none; }
+.world img { -webkit-user-drag: none; user-drag: none; }
+.fps-foveal{font-size:10px;color:var(--fg-faint);padding:1px 6px;}
+.vp-title { cursor: pointer; }
+.vp-title:hover { color: var(--fg); }
+.vp-title.pinned { color: var(--purple); font-weight: 700; }
+/* minimap: schematic "you are here" — drawn from layout, never a screenshot */
+.minimap { position: absolute; right: 12px; bottom: 54px; z-index: 5; background: #000a; border: 1px solid var(--border); border-radius: 6px; backdrop-filter: blur(3px); cursor: pointer; }
+.mm-bg { fill: #ffffff0a; }
+.mm-seat { fill: var(--purple); opacity: .3; }
+.mm-hero { fill: var(--purple); opacity: .85; }
+.mm-view { fill: #8fbf6f22; stroke: var(--green); stroke-width: 2; }
+
+/* ── solitaire decks + add-tab (Canvas) ───────────────────────────────────── */
+.deck-head { position: absolute; height: 36px; display: flex; align-items: center; gap: 10px; padding: 0 4px; z-index: 40; pointer-events: auto; }
+.deck-name { font-size: 18px; font-weight: 600; letter-spacing: .03em; text-transform: lowercase; }
+.deck-name.chrome { color: #6cb6ff; }
+.deck-name.firefox { color: #ff9a52; }
+.deck-name.seat { color: var(--fg-dim); }
+.deck-count { font-size: 13px; color: var(--fg-faint); }
+.deck-btn { background: var(--bg2); color: var(--fg-dim); border: 1px solid var(--border); border-radius: 6px; padding: 3px 11px; font: inherit; font-size: 13px; cursor: pointer; }
+.deck-btn:hover { border-color: var(--purple); color: var(--fg); }
+.deck-btn.add { color: var(--fg); }
+
+/* ── recording deck — captured commands live, IN the canvas ────────────────── */
+.rec-deck { flex: 1; display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--panel); box-shadow: 0 6px 30px #000b; }
+.rec-deck-body { flex: 1; overflow-y: auto; padding: 7px; display: flex; flex-direction: column; gap: 5px; }
+.cap-card { display: flex; align-items: center; gap: 9px; padding: 5px 9px; background: var(--bg2); border: 1px solid var(--border); border-left-width: 2px; border-radius: 7px; font-size: 12px; }
+.cap-card.channel { border-left-color: var(--purple); }
+.cap-card.call { border-left-color: #6cb6ff; }
+.cap-seq { color: var(--fg-faint); min-width: 22px; text-align: right; }
+.cap-phys { color: var(--fg-dim); }
+.cap-method { font-weight: 600; color: var(--fg); max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cap-url { color: var(--fg-dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cap-seat { color: var(--purple); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.cap-status { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--fg-faint); }
+.cap-status.s2 { color: #4cc98a; }
+.cap-status.s4, .cap-status.s5 { color: var(--red); }
+
+/* WireLog — the visible EFFERENT strip (origin=WIRE __cmd frames from /feed).
+   Fixed bottom-left, above the perspective bar; collapsible so it never clutters. */
+.wire-log { position: fixed; left: 12px; bottom: 92px; width: 340px; max-width: 42vw;
+  background: var(--panel); border: 1px solid var(--border); z-index: 40;
+  font-size: 11px; box-shadow: 0 4px 18px rgba(0,0,0,.45); }
+.wire-log.collapsed { width: auto; }
+.wire-log-head { display: flex; align-items: center; gap: 7px; width: 100%;
+  background: transparent; color: var(--fg-dim); border: 0; border-bottom: 1px solid var(--border);
+  padding: 5px 10px; font: inherit; font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+  cursor: pointer; }
+.wire-log.collapsed .wire-log-head { border-bottom: 0; }
+.wire-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px var(--green); }
+.wire-count { margin-left: auto; color: var(--fg); }
+.wire-caret { color: var(--fg-faint); }
+.wire-log-body { max-height: 190px; overflow-y: auto; }
+.wire-row { display: flex; align-items: baseline; gap: 8px; padding: 3px 10px; border-bottom: 1px solid rgba(255,255,255,.04); }
+.wire-row:first-child { background: rgba(120,200,120,.07); }
+.wire-mode { font-size: 9px; font-weight: 700; letter-spacing: .05em; padding: 0 4px; border: 1px solid var(--border); color: var(--fg-faint); flex: none; }
+.wire-mode.channel { color: var(--blue, #6caeff); border-color: currentColor; }
+.wire-mode.call { color: var(--yellow); border-color: currentColor; }
+.wire-method { color: var(--fg); flex: none; }
+.wire-target { color: var(--fg-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* inline "+ tab" url input (replaces the WebDriver-dismissed native prompt) */
+.deck-add-in { background: var(--bg); color: var(--fg); border: 1px solid var(--green);
+  font: inherit; font-size: 11px; padding: 1px 6px; width: 170px; outline: none; }

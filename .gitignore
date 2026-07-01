@@ -12,3 +12,9 @@ web/.vite/
 # misc
 .DS_Store
 *.log
+
+# Aṣṭādhyāyī assembly — WIP, sourced-but-unverified, DO NOT PUSH
+/astadhyayi_parts/
+/Aṣṭādhyāyī.md
+Aṣṭādhyāyī.md
+/astadhyayi.html
