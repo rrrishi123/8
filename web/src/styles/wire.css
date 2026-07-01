@@ -386,3 +386,30 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .cap-status { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--fg-faint); }
 .cap-status.s2 { color: #4cc98a; }
 .cap-status.s4, .cap-status.s5 { color: var(--red); }
+
+/* WireLog — the visible EFFERENT strip (origin=WIRE __cmd frames from /feed).
+   Fixed bottom-left, above the perspective bar; collapsible so it never clutters. */
+.wire-log { position: fixed; left: 12px; bottom: 92px; width: 340px; max-width: 42vw;
+  background: var(--panel); border: 1px solid var(--border); z-index: 40;
+  font-size: 11px; box-shadow: 0 4px 18px rgba(0,0,0,.45); }
+.wire-log.collapsed { width: auto; }
+.wire-log-head { display: flex; align-items: center; gap: 7px; width: 100%;
+  background: transparent; color: var(--fg-dim); border: 0; border-bottom: 1px solid var(--border);
+  padding: 5px 10px; font: inherit; font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+  cursor: pointer; }
+.wire-log.collapsed .wire-log-head { border-bottom: 0; }
+.wire-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px var(--green); }
+.wire-count { margin-left: auto; color: var(--fg); }
+.wire-caret { color: var(--fg-faint); }
+.wire-log-body { max-height: 190px; overflow-y: auto; }
+.wire-row { display: flex; align-items: baseline; gap: 8px; padding: 3px 10px; border-bottom: 1px solid rgba(255,255,255,.04); }
+.wire-row:first-child { background: rgba(120,200,120,.07); }
+.wire-mode { font-size: 9px; font-weight: 700; letter-spacing: .05em; padding: 0 4px; border: 1px solid var(--border); color: var(--fg-faint); flex: none; }
+.wire-mode.channel { color: var(--blue, #6caeff); border-color: currentColor; }
+.wire-mode.call { color: var(--yellow); border-color: currentColor; }
+.wire-method { color: var(--fg); flex: none; }
+.wire-target { color: var(--fg-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* inline "+ tab" url input (replaces the WebDriver-dismissed native prompt) */
+.deck-add-in { background: var(--bg); color: var(--fg); border: 1px solid var(--green);
+  font: inherit; font-size: 11px; padding: 1px 6px; width: 170px; outline: none; }

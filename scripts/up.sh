@@ -45,6 +45,14 @@ SID=$(echo "$RESP" | jq -r '.value.sessionId // empty')
 echo "firefox:    session $SID"
 echo "            ws=$WS"
 
+# publish the SID so the collector can AUTO-RECOVER its session after a recycle
+# (feature B) without a manual restart. Atomic write (temp + rename) so a concurrent
+# reader never sees a half-written file. Pilot will eventually own this registry.
+mkdir -p "$HOME/.8"
+printf '{"session_id":"%s","ws":"%s","ts":"%s"}\n' "$SID" "$WS" "$(date -u +%FT%TZ)" > "$HOME/.8/gecko.json.tmp" \
+  && mv -f "$HOME/.8/gecko.json.tmp" "$HOME/.8/gecko.json"
+echo "            published SID -> ~/.8/gecko.json"
+
 # 3. broker -> the fresh ws (replace any stale broker).
 lsof -ti :4445 | xargs kill 2>/dev/null || true; sleep 1
 nohup "$CHANNEL" -ws "$WS" -listen :4445 >/tmp/broker.log 2>&1 &

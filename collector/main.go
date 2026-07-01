@@ -63,6 +63,11 @@ type collector struct {
 	client  *http.Client
 	gecko   string // geckodriver session base (http://host:port/session/<id>) — enables /procinfo
 
+	gmu         sync.Mutex  // guards gecko (swapped on session recovery)
+	geckoRoot   string      // "http://host:port" prefix, for rebuilding the base on recovery
+	sessionFile string      // ~/.8/gecko.json — where up.sh publishes the current SID
+	recovering  atomic.Bool // debounce: only one session recovery runs at a time
+
 	mu      sync.Mutex
 	subs    map[int]chan string
 	nextSub int64
@@ -85,7 +90,8 @@ type collector struct {
 	recBuf  []reqRec // frames captured this recording → saved as a replayable series
 
 	dmu      sync.Mutex
-	dprCache map[string]float64 // context -> devicePixelRatio (act coord scaling)
+	dprCache map[string]float64    // context -> devicePixelRatio (act coord scaling)
+	vpCache  map[string][2]float64 // context -> [innerWidth, innerHeight] CSS px (ratio act coords)
 
 	// ATTENTION FOLLOWS ACTION: the last seat anything acted on. 8 polls /focus and
 	// auto-foveates (pin + fan + zoom) to it, so driving a tab from the wire makes
@@ -101,6 +107,11 @@ type collector struct {
 	fxMu     sync.Mutex
 	fxRecv   map[string]*fxStream // session -> received WebM relay state
 	fxDriver string               // path to adapters/browser/firefox-stream.js
+	fxShot   string               // path to adapters/browser/firefox-drawshot.js (leak-free periphery still)
+
+	lastCapture atomic.Int64 // unixnano of the last capture served (drawshot/shot/fxchunk) — gates the memory aperture
+	chromeMu     sync.Mutex // serializes /moz/context chrome<->content toggles so concurrent chrome-exec (drawshot/procinfo/aperture) don't corrupt each other's context state
+	lastChromeOp time.Time  // guarded by chromeMu — for pacing chrome ops (feature A rate-limit)
 }
 
 // fxStream is one Firefox tab's live WebM relay: the init segment (first cluster,
@@ -165,7 +176,7 @@ func (c *collector) handleFocus(w http.ResponseWriter, r *http.Request) {
 }
 
 func newCollector(brokers []broker) *collector {
-	return &collector{brokers: brokers, client: &http.Client{}, subs: map[int]chan string{}, frames: map[string]chan []byte{}, dprCache: map[string]float64{}, fxRecv: map[string]*fxStream{}}
+	return &collector{brokers: brokers, client: &http.Client{}, subs: map[int]chan string{}, frames: map[string]chan []byte{}, dprCache: map[string]float64{}, vpCache: map[string][2]float64{}, fxRecv: map[string]*fxStream{}}
 }
 
 // chanDPR is a tab's devicePixelRatio (cached per context). The /stream screenshot
@@ -201,6 +212,41 @@ func (c *collector) chanDPR(b *broker, ctx string) float64 {
 	return d
 }
 
+// chanViewport returns the tab's CSS viewport [innerWidth, innerHeight], cached like
+// chanDPR. Used to resolve resolution-independent act ratios (0..1) to CSS px — this
+// is what makes clicks correct regardless of the /drawshot frame's LOD scale.
+func (c *collector) chanViewport(b *broker, ctx string) (float64, float64) {
+	c.dmu.Lock()
+	if v, ok := c.vpCache[ctx]; ok {
+		c.dmu.Unlock()
+		return v[0], v[1]
+	}
+	c.dmu.Unlock()
+	vw, vh := 0.0, 0.0
+	cmd := fmt.Sprintf(`{"method":"script.evaluate","params":{"awaitPromise":true,"target":{"context":%q},"expression":"window.innerWidth+'x'+window.innerHeight"}}`, ctx)
+	if tr, err := c.command(b, cmd); err == nil {
+		var rr struct {
+			Result struct {
+				Result struct {
+					Value string `json:"value"`
+				} `json:"result"`
+			} `json:"result"`
+		}
+		if json.Unmarshal(tr, &rr) == nil {
+			if p := strings.Split(rr.Result.Result.Value, "x"); len(p) == 2 {
+				vw, _ = strconv.ParseFloat(p[0], 64)
+				vh, _ = strconv.ParseFloat(p[1], 64)
+			}
+		}
+	}
+	if vw > 0 && vh > 0 {
+		c.dmu.Lock()
+		c.vpCache[ctx] = [2]float64{vw, vh}
+		c.dmu.Unlock()
+	}
+	return vw, vh
+}
+
 // procInfoScript reads per-tab memory + CPU from Firefox via ChromeUtils
 // .requestProcInfo (only reachable from the chrome context). One row PER TAB
 // (per window). mem/cpu are per content-process: Firefox exposes no window-level
@@ -220,14 +266,7 @@ func (c *collector) handleProcInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	post := func(path, body string) ([]byte, error) {
-		req, _ := http.NewRequest("POST", c.gecko+path, strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := c.client.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		defer resp.Body.Close()
-		return io.ReadAll(resp.Body)
+		return c.geckoPost("POST", path, body) // auto-recovers the session on recycle
 	}
 	if _, err := post("/moz/context", `{"context":"chrome"}`); err != nil {
 		http.Error(w, `{"error":"chrome context: `+err.Error()+`"}`, http.StatusBadGateway)
@@ -276,9 +315,120 @@ const streamProbeScript = `const cb=arguments[arguments.length-1];(async()=>{try
 // one /execute/async script (the privileged path drawSnapshot + ChromeUtils need),
 // returns to content, and writes the callback result. Shared by /procinfo-style
 // probes and the Firefox stream driver injection.
-func (c *collector) runChrome(w http.ResponseWriter, script []byte, args []any) {
-	post := func(path, body string) ([]byte, error) {
-		req, _ := http.NewRequest("POST", c.gecko+path, strings.NewReader(body))
+// waitReady holds the collector's Firefox-touching goroutines until Firefox is up
+// after a (re)start — a getTree probe through the broker, with backoff. Barraging a
+// still-starting Firefox crashes it (feature A). Bounded so we never hang forever.
+func (c *collector) waitReady() {
+	b := c.find("fox")
+	if b == nil {
+		return
+	}
+	backoff := time.Second
+	for i := 0; i < 12; i++ {
+		if tr, err := c.command(b, `{"method":"browsingContext.getTree","params":{"maxDepth":0}}`); err == nil && bytes.Contains(tr, []byte(`"context"`)) {
+			log.Printf("collector: firefox ready (getTree probe ok after %v)", time.Duration(i)*time.Second)
+			return
+		}
+		time.Sleep(backoff)
+		backoff = min(backoff*2, 8*time.Second)
+	}
+	log.Printf("collector: firefox readiness probe gave up — starting goroutines anyway")
+}
+
+// paceChrome enforces a minimum interval between chrome-context ops (feature A
+// rate-limit). Called under chromeMu, so all chrome exec (drawshot/procinfo/aperture)
+// is spaced out — even serialized, high-frequency ops load a fragile Firefox.
+func (c *collector) paceChrome() {
+	const minGap = 100 * time.Millisecond
+	if !c.lastChromeOp.IsZero() {
+		if d := time.Since(c.lastChromeOp); d < minGap {
+			time.Sleep(minGap - d)
+		}
+	}
+	c.lastChromeOp = time.Now()
+}
+
+// geckoBase returns the current geckodriver session base under lock (recovery may
+// swap it out from under a caller when Firefox recycles).
+func (c *collector) geckoBase() string {
+	c.gmu.Lock()
+	defer c.gmu.Unlock()
+	return c.gecko
+}
+
+// readGeckoSession reads the SID up.sh publishes to ~/.8/gecko.json. The write is
+// atomic (temp + rename), so a plain read always sees a complete file.
+func (c *collector) readGeckoSession() string {
+	if c.sessionFile == "" {
+		return ""
+	}
+	b, err := os.ReadFile(c.sessionFile)
+	if err != nil {
+		return ""
+	}
+	var v struct {
+		SessionID string `json:"session_id"`
+	}
+	json.Unmarshal(b, &v)
+	return v.SessionID
+}
+
+// recoverGecko re-derives the collector's geckodriver session after a Firefox recycle
+// (SESSION AUTO-RECOVERY, feature B). It DISCOVERS the current SID from the file up.sh
+// publishes — it never CREATES a session (that would orphan sessions and fight up.sh /
+// pilot for ownership). Validated before use (probe /url); if the discovered session is
+// itself already dead, it retries with backoff (up.sh may still be re-establishing).
+// Globally debounced so only one recovery runs at a time. Returns true if it swapped in
+// a live session.
+func (c *collector) recoverGecko() bool {
+	if !c.recovering.CompareAndSwap(false, true) {
+		return false // another recovery already in flight
+	}
+	defer c.recovering.Store(false)
+	for _, backoff := range []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second} {
+		if backoff > 0 {
+			time.Sleep(backoff)
+		}
+		sid := c.readGeckoSession()
+		if sid == "" {
+			continue
+		}
+		base := c.geckoRoot + "/session/" + sid
+		if base == c.geckoBase() {
+			continue // file still points at the session we know is stale — wait for up.sh
+		}
+		req, _ := http.NewRequest("GET", base+"/url", nil)
+		resp, err := c.client.Do(req)
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == 200 && !bytes.Contains(body, []byte("invalid session")) {
+			c.gmu.Lock()
+			c.gecko = base
+			c.gmu.Unlock()
+			c.dmu.Lock() // context ids changed with the new session — drop the caches
+			c.dprCache = map[string]float64{}
+			c.vpCache = map[string][2]float64{}
+			c.dmu.Unlock()
+			log.Printf("collector: recovered gecko session -> %s", sid)
+			return true
+		}
+	}
+	log.Printf("collector: gecko recovery failed (file SID stale/unreachable)")
+	return false
+}
+
+// geckoPost sends one request to the current gecko session; on "invalid session id"
+// (Firefox recycled) it recovers the session and retries once on the fresh one.
+func (c *collector) geckoPost(method, path, body string) ([]byte, error) {
+	do := func() ([]byte, error) {
+		var r io.Reader
+		if body != "" {
+			r = strings.NewReader(body)
+		}
+		req, _ := http.NewRequest(method, c.geckoBase()+path, r)
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := c.client.Do(req)
 		if err != nil {
@@ -286,6 +436,20 @@ func (c *collector) runChrome(w http.ResponseWriter, script []byte, args []any) 
 		}
 		defer resp.Body.Close()
 		return io.ReadAll(resp.Body)
+	}
+	out, err := do()
+	if err == nil && bytes.Contains(out, []byte("invalid session id")) && c.recoverGecko() {
+		out, err = do() // retry once on the recovered session
+	}
+	return out, err
+}
+
+func (c *collector) runChrome(w http.ResponseWriter, script []byte, args []any) {
+	c.chromeMu.Lock()         // hold the chrome context for the whole toggle+exec+untoggle
+	defer c.chromeMu.Unlock() // runs LAST (after the content-reset defer below)
+	c.paceChrome()            // rate-limit chrome ops so we don't overload a fragile Firefox
+	post := func(path, body string) ([]byte, error) {
+		return c.geckoPost("POST", path, body)
 	}
 	post("/timeouts", `{"script":60000}`)
 	if _, err := post("/moz/context", `{"context":"chrome"}`); err != nil {
@@ -316,10 +480,86 @@ func (c *collector) runChrome(w http.ResponseWriter, script []byte, args []any) 
 	w.Write(v.Value)
 }
 
+// execChrome runs one chrome-context /execute/async script and returns the callback
+// string — the internal sibling of runChrome (which writes an HTTP response). Used by
+// the memory aperture. geckodriver serializes commands per session, so this is safe
+// alongside concurrent /drawshot / /procinfo calls.
+func (c *collector) execChrome(script string) (string, error) {
+	c.chromeMu.Lock()
+	defer c.chromeMu.Unlock()
+	c.paceChrome()
+	post := func(path, body string) ([]byte, error) {
+		return c.geckoPost("POST", path, body)
+	}
+	post("/timeouts", `{"script":30000}`) // async scripts need a script timeout, or /execute/async returns empty
+	if _, err := post("/moz/context", `{"context":"chrome"}`); err != nil {
+		return "", err
+	}
+	defer post("/moz/context", `{"context":"content"}`)
+	body, _ := json.Marshal(map[string]any{"script": script, "args": []any{}})
+	out, err := post("/execute/async", string(body))
+	if err != nil {
+		return "", err
+	}
+	var v struct {
+		Value json.RawMessage `json:"value"`
+	}
+	json.Unmarshal(out, &v)
+	var s string
+	json.Unmarshal(v.Value, &s)
+	return s, nil
+}
+
+// memoryAperture is the WITNESS's self-regulation (8 recommends → 8 acts on ITSELF's
+// consumption, never the tab). drawSnapshot capture accumulates GRAPHICS-SURFACE
+// memory in Firefox's parent process (NOT JS heap — forceGC reclaims ~0; heap-minimize
+// reclaimed ~66% in validation) that otherwise only frees on ~6min idle. When the
+// parent climbs past a SOFT threshold this fires memory-pressure/heap-minimize (the
+// about:memory "Minimize memory usage" path), flushing that cache so the parent holds
+// a healthy band WITHOUT the watchdog's blunt full recycle at 4500 (kept as a
+// backstop). Gated on RECENT capture (nothing accumulating if idle) and a COOLDOWN (a
+// flush is a GC pause — don't thrash). Publishes the act so 8 sees its own efferent.
+func (c *collector) memoryAperture(softMB int) {
+	if c.gecko == "" || softMB <= 0 {
+		return
+	}
+	const cooldown = 5 * time.Minute
+	memScript := `const cb=arguments[arguments.length-1];ChromeUtils.requestProcInfo().then(i=>cb(''+Math.round(i.memory/1048576))).catch(e=>cb('ERR'));`
+	minScript := `const cb=arguments[arguments.length-1];try{for(let i=0;i<3;i++)Services.obs.notifyObservers(null,"memory-pressure","heap-minimize");cb("ok");}catch(e){cb("ERR:"+e);}`
+	var lastFire time.Time
+	log.Printf("aperture: watching (soft=%dMB, cooldown=%s)", softMB, cooldown)
+	for {
+		time.Sleep(30 * time.Second)
+		if n := c.lastCapture.Load(); n == 0 || time.Since(time.Unix(0, n)) > 90*time.Second {
+			continue // idle — nothing accumulating, nothing to flush
+		}
+		if !lastFire.IsZero() && time.Since(lastFire) < cooldown {
+			continue
+		}
+		out, err := c.execChrome(memScript)
+		if err != nil {
+			continue
+		}
+		before, err := strconv.Atoi(strings.TrimSpace(out))
+		if err != nil || before < softMB {
+			continue
+		}
+		if _, err := c.execChrome(minScript); err != nil {
+			continue
+		}
+		lastFire = time.Now()
+		after, _ := c.execChrome(memScript)
+		amb, _ := strconv.Atoi(strings.TrimSpace(after))
+		c.publish(fmt.Sprintf(`{"session":"fox","origin":"COLLECTOR","frame":{"method":"aperture.heap_minimize","params":{"before_mb":%d,"after_mb":%d,"reclaimed_mb":%d}}}`, before, amb, before-amb))
+		log.Printf("aperture: parent %dMB > %dMB soft -> heap-minimize -> %dMB (reclaimed %dMB)", before, softMB, amb, before-amb)
+	}
+}
+
 // handleFxChunk receives one WebM cluster from the HiddenFrame driver (POST body =
 // raw bytes) and fans it to the session's /fxstream consumers. The FIRST cluster is
 // the init segment (EBML header + tracks) — kept and re-sent to every new consumer.
 func (c *collector) handleFxChunk(w http.ResponseWriter, r *http.Request) {
+	c.lastCapture.Store(time.Now().UnixNano())
 	sid := r.URL.Query().Get("session")
 	if sid == "" {
 		sid = "fox"
@@ -435,13 +675,51 @@ func (c *collector) handleFxStart(w http.ResponseWriter, r *http.Request) {
 	c.runChrome(w, driver, []any{chunkURL, needle, fps})
 }
 
+// handleDrawShot is the LEAK-FREE periphery still: drawSnapshot -> canvas -> JPEG,
+// run from adapters/browser/firefox-drawshot.js. It REPLACES the /shot BiDi
+// captureScreenshot path for Firefox periphery tiles — captureScreenshot holds each
+// frame's base64 in the parent process (the FLOW-10 recycle sawtooth); drawSnapshot
+// does not. The response shape matches /shot ({context,data}) so the tile is
+// engine-agnostic. Poll this at a LOW cadence (the hero stream is the only high-rate
+// source); ?w= sets the target width (LOD), ?q= the JPEG quality.
+func (c *collector) handleDrawShot(w http.ResponseWriter, r *http.Request) {
+	if c.gecko == "" {
+		http.Error(w, `{"error":"disabled: collector started without -gecko"}`, http.StatusServiceUnavailable)
+		return
+	}
+	c.lastCapture.Store(time.Now().UnixNano())
+	script, err := os.ReadFile(c.fxShot)
+	if err != nil {
+		http.Error(w, `{"error":"drawshot driver not readable at `+c.fxShot+`: `+err.Error()+`"}`, http.StatusInternalServerError)
+		return
+	}
+	needle := r.URL.Query().Get("needle")
+	if needle == "" {
+		needle = r.URL.Query().Get("context") // tolerate the /shot-style param name
+	}
+	q := 0.6
+	if v, e := strconv.ParseFloat(r.URL.Query().Get("q"), 64); e == nil && v > 0 {
+		q = v
+	}
+	scale := 0.5 // render scale (0..1) — the cockpit sends small for periphery, larger for hero
+	if v, e := strconv.ParseFloat(r.URL.Query().Get("s"), 64); e == nil && v > 0 {
+		scale = v
+	}
+	c.runChrome(w, script, []any{needle, scale, q})
+}
+
 // handleFxStop stops the running pipeline (releases the MediaRecorder/HiddenFrame).
 func (c *collector) handleFxStop(w http.ResponseWriter, r *http.Request) {
 	if c.gecko == "" {
 		http.Error(w, `{"error":"disabled: collector started without -gecko"}`, http.StatusServiceUnavailable)
 		return
 	}
-	stop := `const cb=arguments[arguments.length-1];try{const w=Services.wm.getMostRecentWindow('navigator:browser');if(w.__eightFx){w.__eightFx.stop();cb('stopped');}else{cb('none');}}catch(e){cb('ERR:'+e);}`
+	// Find the window the SAME way the driver stored the handle
+	// (gBrowser.ownerDocument.defaultView) — Services.wm.getMostRecentWindow can
+	// resolve to a DIFFERENT chrome window than the one __eightFx lives on, so the
+	// stop reported 'none' while the recorder kept running (the 2.7h runaway). Match
+	// the store path and the stop reliably releases the encoder.
+	stop := `const cb=arguments[arguments.length-1];try{const w=gBrowser.ownerDocument.defaultView;if(w.__eightFx){w.__eightFx.stop();cb('stopped');}else{cb('none');}}catch(e){cb('ERR:'+e);}`
 	c.runChrome(w, []byte(stop), []any{})
 }
 
@@ -642,6 +920,38 @@ func (c *collector) pump(ctx context.Context, b broker) {
 				// memory + adds latency (each render triggers more polls). Drop it.
 				if strings.Contains(payload, `"network.`) &&
 					(strings.Contains(payload, ":7070") || strings.Contains(payload, ":8088")) {
+					continue
+				}
+				// WIRE-WITNESS: the broker echoes every command it injects to /events as
+				// {"__cmd":true,"origin":"wire",...}. This is how 8 SEES a context-less
+				// agent driving the raw wire (not just its own /act path). ATTENTION
+				// FOLLOWS ACTION: pull the driven context out of the command and setFocus
+				// it, so the card being commanded rises to the TOP of its stack on 8 —
+				// with ZERO afferent cost (the broker already sent this; we only read it).
+				// origin=witness (8's own polling) is skipped so no self-focus loop forms.
+				if strings.Contains(payload, `"__cmd"`) {
+					var echo struct {
+						Origin string          `json:"origin"`
+						Method string          `json:"method"`
+						Params json.RawMessage `json:"params"`
+					}
+					if json.Unmarshal([]byte(payload), &echo) == nil && echo.Origin == "wire" {
+						var p struct {
+							Context string `json:"context"`
+							Target  struct {
+								Context string `json:"context"`
+							} `json:"target"`
+						}
+						json.Unmarshal(echo.Params, &p)
+						fctx := p.Context
+						if fctx == "" {
+							fctx = p.Target.Context
+						}
+						if fctx != "" {
+							c.setFocus(b.id, fctx) // 8 surfaces the driven card, no fan-out
+						}
+					}
+					c.publish(fmt.Sprintf(`{"session":%q,"origin":"WIRE","frame":%s}`, b.id, payload))
 					continue
 				}
 				c.publish(fmt.Sprintf(`{"session":%q,"origin":"BIDI","frame":%s}`, b.id, payload))
@@ -955,6 +1265,7 @@ func lodWidth(r *http.Request) int {
 }
 
 func (c *collector) handleShot(w http.ResponseWriter, r *http.Request) {
+	c.lastCapture.Store(time.Now().UnixNano())
 	sid := r.URL.Query().Get("session")
 
 	// CALL session (WebDriver/Appium): see it through the wire's NATIVE
@@ -1320,6 +1631,7 @@ func (c *collector) actChannel(w http.ResponseWriter, r *http.Request, b *broker
 	var in struct {
 		Action, Text, Context, Seat string
 		X, Y, X2, Y2, Ms            int
+		Xr, Yr                      float64 // 0..1 ratio of the frame (resolution-independent)
 	}
 	json.NewDecoder(r.Body).Decode(&in)
 	ctx := in.Context
@@ -1331,8 +1643,19 @@ func (c *collector) actChannel(w http.ResponseWriter, r *http.Request, b *broker
 		http.Error(w, `{"error":"no tab context"}`, http.StatusBadGateway)
 		return
 	}
-	// screenshot-space (dpr-scaled) -> CSS pixels that input.performActions expects.
-	if dpr := c.chanDPR(b, ctx); dpr > 1 {
+	// RESOLUTION-INDEPENDENT coords: the cockpit sends 0..1 ratios of where in the frame
+	// you clicked (the /drawshot frame's LOD scale is irrelevant). Resolve to the CSS px
+	// input.performActions expects via the tab's REAL viewport. This replaces the old
+	// dpr-divide, which assumed coords arrived at the frame's NATIVE device resolution —
+	// true for full-res captureScreenshot, WRONG once capture moved to LOD stills. x2/y2
+	// stay raw (scroll deltas in CSS px). Legacy device-px coords (old replays, no ratio)
+	// still take the dpr path.
+	if in.Xr > 0 || in.Yr > 0 {
+		if vw, vh := c.chanViewport(b, ctx); vw > 0 && vh > 0 {
+			in.X = int(math.Round(in.Xr * vw))
+			in.Y = int(math.Round(in.Yr * vh))
+		}
+	} else if dpr := c.chanDPR(b, ctx); dpr > 1 {
 		in.X = int(math.Round(float64(in.X) / dpr))
 		in.Y = int(math.Round(float64(in.Y) / dpr))
 		in.X2 = int(math.Round(float64(in.X2) / dpr))
@@ -1359,8 +1682,12 @@ func (c *collector) actChannel(w http.ResponseWriter, r *http.Request, b *broker
 		}
 		cmd = pointer(fmt.Sprintf(`{"type":"pointerMove","x":%d,"y":%d},{"type":"pointerDown","button":0},{"type":"pause","duration":%d},{"type":"pointerUp","button":0}`, in.X, in.Y, ms))
 	case "scroll":
-		// wheel scroll at a point (X,Y = origin on the page; X2,Y2 = deltaX,deltaY)
-		cmd = fmt.Sprintf(`{"method":"input.performActions","params":{"context":%q,"actions":[{"type":"wheel","id":"w","actions":[{"type":"scroll","x":%d,"y":%d,"deltaX":%d,"deltaY":%d}]}]}}`, ctx, in.X, in.Y, in.X2, in.Y2)
+		// BiDi wheel input reports success but does NOT actually scroll in this Firefox.
+		// Scroll via JS instead: walk up from the element under the origin to the nearest
+		// scrollable ancestor (handles nested scrollers like YouTube's container, not just
+		// the window) and scrollBy the delta. X,Y = origin; X2,Y2 = deltaX,deltaY.
+		fn := `(x,y,dx,dy)=>{let el=document.elementFromPoint(x,y);while(el){const s=getComputedStyle(el);if(el===document.scrollingElement||((el.scrollHeight>el.clientHeight)&&/(auto|scroll)/.test(s.overflowY))){el.scrollBy(dx,dy);return 'el';}el=el.parentElement;}(document.scrollingElement||document.documentElement).scrollBy(dx,dy);return 'win';}`
+		cmd = fmt.Sprintf(`{"method":"script.callFunction","params":{"target":{"context":%q},"functionDeclaration":%q,"awaitPromise":true,"arguments":[{"type":"number","value":%d},{"type":"number","value":%d},{"type":"number","value":%d},{"type":"number","value":%d}]}}`, ctx, fn, in.X, in.Y, in.X2, in.Y2)
 	case "sendkeys", "type":
 		var ka strings.Builder
 		first := true
@@ -2382,6 +2709,9 @@ func main() {
 	spec := flag.String("brokers", "", "comma list of session=brokerURL (e.g. fox=http://127.0.0.1:4445)")
 	gecko := flag.String("gecko", "", "geckodriver session base (http://127.0.0.1:4444/session/<id>) — enables /procinfo per-tab mem/CPU")
 	fxdriver := flag.String("fxdriver", os.ExpandEnv("$HOME/Desktop/repos/adapters/browser/firefox-stream.js"), "path to the Firefox capture driver (adapters/browser/firefox-stream.js)")
+	fxshot := flag.String("fxshot", os.ExpandEnv("$HOME/Desktop/repos/adapters/browser/firefox-drawshot.js"), "path to the Firefox leak-free still driver (adapters/browser/firefox-drawshot.js)")
+	sessionFile := flag.String("session-file", os.ExpandEnv("$HOME/.8/gecko.json"), "file where up.sh publishes the current geckodriver SID; the collector re-reads it to auto-recover the session after a Firefox recycle")
+	apertureMB := flag.Int("aperture-mb", 0, "soft parent-memory threshold (MB): fires Firefox heap-minimize above this. DEFAULT 0 (OFF) — heap-minimize proven NOT to reclaim drawSnapshot compositor surfaces (reclaimed ~0/negative); the real fix is hard foveation (only the hero re-captures). Watchdog 4500 recycle is the backstop.")
 	token := flag.String("token", os.Getenv("EIGHT_TOKEN"), "shared secret required on every endpoint via X-8-Token/Bearer (empty = auth off, local-dev default)")
 	origins := flag.String("origins", os.Getenv("EIGHT_ORIGINS"), "comma CORS origin allowlist, e.g. http://localhost:8088 (empty = *, local-dev)")
 	flag.Parse()
@@ -2404,6 +2734,13 @@ func main() {
 	c := newCollector(brokers)
 	c.gecko = strings.TrimRight(*gecko, "/")
 	c.fxDriver = *fxdriver
+	c.fxShot = *fxshot
+	c.sessionFile = *sessionFile
+	if i := strings.LastIndex(c.gecko, "/session/"); i >= 0 {
+		c.geckoRoot = c.gecko[:i] // for rebuilding the base when the session recovers
+	} else {
+		c.geckoRoot = strings.TrimRight(c.gecko, "/")
+	}
 	// register a REQUEST seat for the SAME Firefox: -gecko is the classic
 	// WebDriver session — the call-physics view of the very browser the channel
 	// (broker) drives. So 8's rail shows fox (channel) AND this seat (request),
@@ -2415,10 +2752,21 @@ func main() {
 	}
 	c.loadLedger() // re-hydrate the bounded window from the durable NDJSON store
 	ctx := context.Background()
-	for _, b := range c.brokers {
-		go c.pump(ctx, b)
-	}
-	go c.activateCockpit() // every (re)start returns Firefox to 8's tab
+	// GENTLE STARTUP (feature A): a collector restart used to barrage a Firefox that
+	// had JUST recycled and was still starting up — crashing it. Serve HTTP immediately
+	// (so /health is up), but hold the Firefox-touching goroutines until a getTree probe
+	// says Firefox is ready, then start them STAGGERED so no wave of requests hits it.
+	go func() {
+		c.waitReady()
+		for _, b := range c.brokers {
+			go c.pump(ctx, b)
+			time.Sleep(100 * time.Millisecond)
+		}
+		time.Sleep(200 * time.Millisecond)
+		go c.activateCockpit() // every (re)start returns Firefox to 8's tab
+		time.Sleep(200 * time.Millisecond)
+		go c.memoryAperture(*apertureMB) // self-regulate parent memory (heap-minimize at the soft threshold)
+	}()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/feed", c.handleFeed)
@@ -2426,6 +2774,7 @@ func main() {
 	mux.HandleFunc("/broadcast", c.handleBroadcast)
 	mux.HandleFunc("/fetch", c.handleFetch)
 	mux.HandleFunc("/shot", c.handleShot)
+	mux.HandleFunc("/drawshot", c.handleDrawShot) // leak-free Firefox periphery still (replaces /shot)
 	mux.HandleFunc("/tabs", c.handleTabs)
 	mux.HandleFunc("/procinfo", c.handleProcInfo)
 	mux.HandleFunc("/drawprobe", c.handleDrawProbe)

@@ -10,9 +10,9 @@ type Seeing = 'pixels' | 'channel' | 'request';
 // live stream stops being a mirror and becomes hands: a click on the <img> maps
 // to the target's pixels and fires /act (tap), keystrokes fire /act (type). Same
 // surface drives a Firefox tab (BiDi) OR a real device (Appium) — one wire.
-export function Viewport({ session, title, context: fixedCtx, onAspect, hud, visible, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle }:
+export function Viewport({ session, title, context: fixedCtx, onAspect, hud, visible, live, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle }:
   { session: string | null; title?: string; context?: string;
-    onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; fps?: number; act?: boolean; pinned?: boolean; onPin?: () => void; lodW?: number; fx?: boolean; fxNeedle?: string }) {
+    onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; live?: boolean; fps?: number; act?: boolean; pinned?: boolean; onPin?: () => void; lodW?: number; fx?: boolean; fxNeedle?: string }) {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [ctx, setCtx] = useState(fixedCtx || '');
   const [reqSeat, setReqSeat] = useState('');
@@ -112,25 +112,48 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
     if (!session) return;
     let alive = true;
     const cq = ctx ? `&context=${encodeURIComponent(ctx)}` : '';
+    // FIREFOX stills go through /drawshot (drawSnapshot->JPEG), NOT /shot. BiDi
+    // captureScreenshot holds each frame's base64 in Firefox's parent process and
+    // never frees it -> the parent climbs ~100MB/min and the watchdog FLOW-10
+    // recycles every ~30min (the sawtooth). drawSnapshot is leak-free (proven
+    // -3MB over 90 draws). The hero already streams leak-free WebM; this makes the
+    // periphery leak-free too, so NO path uses captureScreenshot on Firefox.
+    // FIREFOX: render scale follows the role — the HERO renders larger (crisp driving
+    // view), PERIPHERY renders tiny (thumbnail). drawSnapshot allocates a surface at this
+    // scale, and the parent-process accumulation is ~area — so tiny periphery surfaces let
+    // every tile stay LIVE without the memory climb (vs the old full-surface capture).
+    const fxScale = persistent ? 0.5 : 0.18;
+    const shotUrl = fx
+      ? `${BASE}/drawshot?session=${encodeURIComponent(session)}&needle=${encodeURIComponent(fxNeedle || '')}&s=${fxScale}`
+      : `${BASE}/shot?session=${encodeURIComponent(session)}${cq}${lodq}`;
     const tick = async () => {
-      try { const j = await (await fetch(`${BASE}/shot?session=${encodeURIComponent(session)}${cq}${lodq}`)).json(); if (alive && j.data) { setShot(j.data); if (!persistent) setErr(false); } } catch { if (alive && !persistent) setErr(true); }
+      try { const j = await (await fetch(shotUrl)).json(); if (alive && j.data) { setShot(j.data); if (!persistent) setErr(false); } } catch { if (alive && !persistent) setErr(true); }
     };
     // SEED one still ALWAYS — even off-screen — so zooming out / bird's-eye shows
     // every card's LAST FRAME instead of a blank "paused" placeholder. You asked:
     // "if you zoom out full can you see all the tabs" — now yes, as cached stills.
     tick();
     if (!streaming) return () => { alive = false; }; // off-screen: seed only, no poll cost
-    // periphery polls at its display rate; the HERO polls SLOWLY (5s) only to seed a
-    // freeze-frame fallback for when it pans off-screen — its display stays the live
-    // stream, but the cached still means it never blanks either.
-    const id = window.setInterval(tick, persistent ? 5000 : Math.max(600, Math.round(1000 / effFps)));
+    // FOVEATE: on Firefox only the HERO stays live. MEASURED: drawSnapshot accumulates a
+    // full-res compositor surface PER DISTINCT TAB (output scale doesn't shrink it), and
+    // it only frees on ~6min idle — so live-all-8-tabs climbs ~185MB/min (recycle every
+    // ~20min), while hero-only is ~flat (~3MB/min). Periphery freezes on its seed frame
+    // until focused. The real fix for live-all is content-side capture (Chrome CDP
+    // screencast), which Firefox's drawSnapshot can't do.
+    if (fx && !live) return () => { alive = false; }; // not in the live set -> frozen
+    const period = fx
+      ? (persistent ? Math.max(300, Math.round(1000 / effFps)) : 2000) // hero fluid, live periphery sips
+      : (persistent ? 5000 : Math.max(600, Math.round(1000 / effFps)));
+    const id = window.setInterval(tick, period);
     return () => { alive = false; clearInterval(id); };
-  }, [session, ctx, streaming, persistent, effFps, lodW]);
+  }, [session, ctx, streaming, persistent, effFps, lodW, fx, fxNeedle, live]);
   // FIGMA/FIGJAM behaviour: when a seat is off-screen we stop FETCHING (the poll
   // effect gates on `streaming`, the live stream unmounts) — but we keep showing
   // its LAST frame frozen, so panning the board shows what's there, not blanks.
   // No capture cost off-screen; the rendered still is just a cached data-URL.
-  const frameSrc = persistent ? streamSrc : (shot || '');
+  // Firefox always shows the /drawshot still (leak-free, always renders); other
+  // engines use the persistent MJPEG /stream when hero, else their poll still.
+  const frameSrc = fx ? (shot || '') : (persistent ? streamSrc : (shot || ''));
 
   // the hand: POST one /act to this session's target (context only matters for a
   // multi-tab browser; a device session ignores it).
@@ -144,12 +167,14 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
       setErr(false);
     } catch { setErr(true); }
   };
-  // click on the frame → target pixel coords (ratio × the frame's natural size).
+  // click on the frame → send a RESOLUTION-INDEPENDENT ratio (0..1) of where in the
+  // frame you clicked. The collector resolves it to CSS px via the tab's real
+  // viewport. (We can't use the frame's natural size: /drawshot frames are LOD-scaled,
+  // so naturalWidth is the downscaled width, not the tab's native resolution.)
   const onTap = (e: React.MouseEvent<HTMLImageElement>) => {
     if (!interact) return;
     const img = e.currentTarget, r = img.getBoundingClientRect();
-    const nx = img.naturalWidth || r.width, ny = img.naturalHeight || r.height;
-    act({ action: 'tap', x: Math.round((e.clientX - r.left) / r.width * nx), y: Math.round((e.clientY - r.top) / r.height * ny) });
+    act({ action: 'tap', xr: (e.clientX - r.left) / r.width, yr: (e.clientY - r.top) / r.height });
     img.focus();
   };
   // keystrokes -> /act type. WebDriver special keys: Enter \uE007, Backspace \uE003.
@@ -170,10 +195,10 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
     const flush = () => {
       timer = undefined;
       const r = img.getBoundingClientRect();
-      const nx = img.naturalWidth || r.width, ny = img.naturalHeight || r.height;
+      // origin as a ratio (like onTap); deltas as raw CSS-px wheel amounts.
       act({ action: 'scroll',
-        x: Math.round((cx - r.left) / r.width * nx), y: Math.round((cy - r.top) / r.height * ny),
-        x2: Math.round(ax * nx / r.width), y2: Math.round(ay * ny / r.height) });
+        xr: (cx - r.left) / r.width, yr: (cy - r.top) / r.height,
+        x2: Math.round(ax), y2: Math.round(ay) });
       ax = 0; ay = 0;
     };
     const onWheel = (e: WheelEvent) => {
@@ -190,7 +215,11 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
   // (/fxstart injects the HiddenFrame driver for this tab) and appends the WebM
   // clusters to a SourceBuffer (mode='sequence', trim old buffer — the peer's
   // recipe). Only the hero streams this way; the aperture still pays for one tab.
-  const useFx = !!fx && persistent && seeing === 'pixels';
+  // WebM hero RETIRED: the MSE <video> rendered black (mount flakiness) and the
+  // continuous full-res encode was the heavy half of the parent-memory climb.
+  // Firefox now uses the leak-free /drawshot <img> for hero AND periphery. Kept the
+  // pipeline below (disabled) for a future re-enable once <video> mounting is solid.
+  const useFx = false && !!fx && persistent && seeing === 'pixels';
   const videoRef = useRef<HTMLVideoElement>(null);
   useEffect(() => {
     if (!useFx || !videoRef.current) return;
@@ -199,6 +228,7 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
     fetch(`${BASE}/fxstart?needle=${encodeURIComponent(fxNeedle || '')}&fps=6`).catch(() => {});
     const ms = new MediaSource();
     video.src = URL.createObjectURL(ms);
+    video.load(); // force the element to open the MediaSource -> fires 'sourceopen'
     ms.addEventListener('sourceopen', async () => {
       if (cancelled) return;
       let sb: SourceBuffer;

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Viewport } from './Viewport';
 import { Resources } from './Resources';
 import { PasteCurl } from './PasteCurl';
+import { WireLog } from './WireLog';
 import { useLocal } from './Dock';
 import { procinfo, recordCtl, listSeries, replaySeries, addTab, getFocus, type SeriesInfo, type CapFrame } from '../lib/api';
 
@@ -27,6 +28,10 @@ export function Canvas({ session }: { session: string | null }) {
   const [hudBy, setHudBy] = useState<Record<string, { mem?: number; cpu?: number | null }>>({});
   const [pinnedKey, setPinnedKey] = useState(''); // the HERO card (explicit pin, not center)
   const [spreadBy, setSpreadBy] = useLocal<Record<string, boolean>>('spreadBy', {}); // fanned decks
+  const [addFor, setAddFor] = useState('');       // which deck's "+ tab" input is open
+  const [addUrl, setAddUrl] = useState('https://www.airbnb.com');
+  const [liveKeys, setLiveKeys] = useState<string[]>([]); // recent-set: last 3 focused fox cards stay LIVE
+  const [hoverKey, setHoverKey] = useState('');           // hover promotes a frozen tile to live
   const prevCpu = useRef<Record<string, { c: number; t: number }>>({});
   const rectsRef = useRef<Record<string, { x: number; y: number; w: number }>>({}); // card key -> world rect
   const lastFocusSeq = useRef(-1);
@@ -141,6 +146,14 @@ export function Canvas({ session }: { session: string | null }) {
   }
   const cells: Cell[] = stacks.flatMap((st) => st.cells);
   const heroKey = (pinnedKey && cells.some((c) => c.key === pinnedKey)) ? pinnedKey : (cells[0]?.key || '');
+  // RECENT-SET (the live/memory balance): on Firefox, each live tab accumulates an
+  // unreclaimable compositor surface, so we can only keep a BOUNDED set live. Track the
+  // last 3 FOCUSED cards — those stay live; dormant tabs freeze (their surfaces idle-free).
+  useEffect(() => {
+    if (!heroKey) return;
+    setLiveKeys((prev) => (prev[0] === heroKey ? prev : [heroKey, ...prev.filter((k) => k !== heroKey)].slice(0, 3)));
+  }, [heroKey]);
+  const liveSet = new Set([heroKey, ...liveKeys, hoverKey].filter(Boolean));
 
   // ── layout ───────────────────────────────────────────────────────────────────
   const H = 680, GAP = 72, X0 = 120, Y0 = 175, WORLD_W = 2800, HEADER = 44, OFFX = 32, OFFY = 36;
@@ -189,13 +202,18 @@ export function Canvas({ session }: { session: string | null }) {
   const lodBucket = (px: number) => { for (const v of [160, 240, 360, 540, 768, 1024, 1440]) if (px <= v) return v; return 1600; };
   const seatPanes: PaneRect[] = screened.map((L) => {
     const hero = L.c.key === heroKey;
-    const streams = L.top && L.vis; // only the deck's TOP card spends the socket
+    const isFox = L.c.session === 'fox' && !!L.c.context;
+    const inSet = liveSet.has(L.c.key); // hero + recent-set + hovered
+    // Firefox: a card is LIVE only if it's in the bounded set (else it freezes to bound
+    // memory). Other engines keep the classic "deck's top card streams" rule.
+    const live = isFox ? inSet : (L.top && L.vis);
+    const streams = (isFox ? inSet : L.top) && L.vis;
     return {
       id: 'seat-' + L.c.key, x: L.x, y: L.y, w: L.w, h: H, z: L.z, gravity: hero,
       node: <Viewport session={L.c.session} context={L.c.context} title={L.c.title}
-        visible={streams} fps={hero ? 3 : (streams ? 0.4 : 0)} pinned={hero}
+        visible={streams} live={live} fps={hero ? 3 : (streams ? 0.4 : 0)} pinned={hero}
         lodW={lodBucket(L.w * cam.z)}
-        fx={L.c.session === 'fox' && !!L.c.context} fxNeedle={L.c.url ? host(L.c.url) : ''}
+        fx={isFox} fxNeedle={L.c.url ? host(L.c.url) : ''}
         onPin={() => setPinnedKey(L.c.key)}
         onAspect={(r) => setAspectBy((p) => (Math.abs((p[L.c.key] || 0) - r) > 0.01 ? { ...p, [L.c.key]: r } : p))}
         hud={L.c.url ? hudBy[L.c.url] : undefined} />,
@@ -265,10 +283,14 @@ export function Canvas({ session }: { session: string | null }) {
     bird: () => goto(0, 100, worldW, worldH, 0.3),
   };
 
-  const newTab = async (st: Stack) => {
-    const url = window.prompt(`new tab in ${st.label} — url or task target (e.g. airbnb.com, amazon.com):`, 'https://www.airbnb.com');
-    if (url == null) return;
-    await addTab(st.session, url.trim(), st.isCDP);
+  // NB: no window.prompt — the cockpit runs inside a WebDriver-controlled Firefox,
+  // which auto-DISMISSES native dialogs (default "dismiss and notify" prompt behavior),
+  // so a prompt() silently returned null and "+ tab" did nothing. Use an inline input.
+  const newTab = async (st: Stack, url: string) => {
+    const u = (url || '').trim();
+    if (!u) return;
+    setAddFor('');
+    await addTab(st.session, u, st.isCDP);
   };
 
   return (
@@ -283,14 +305,24 @@ export function Canvas({ session }: { session: string | null }) {
               <button className="deck-btn" title={d.spread ? 'stack the deck' : 'fan the deck out — see all tabs'}
                 onClick={() => setSpreadBy((p) => ({ ...p, [d.st.key]: !p[d.st.key] }))}>{d.spread ? '▣ stack' : '⊞ fan'}</button>
             )}
-            {d.st.isBrowser && <button className="deck-btn add" title="open a new tab in this browser to drive/record" onClick={() => newTab(d.st)}>+ tab</button>}
+            {d.st.isBrowser && (addFor === d.st.key
+              ? <input className="deck-add-in" autoFocus value={addUrl}
+                  onChange={(e) => setAddUrl(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') newTab(d.st, addUrl); else if (e.key === 'Escape') setAddFor(''); }}
+                  placeholder="url + Enter" />
+              : <button className="deck-btn add" title="open a new tab in this browser to drive/record" onClick={() => setAddFor(d.st.key)}>+ tab</button>)}
           </div>
         ))}
-        {panes.map((p) => (
-          <div key={p.id} className={`cbox${p.gravity ? ' gravity' : ''}`} style={{ left: p.x, top: p.y, width: p.w, height: p.h, zIndex: p.z ?? 'auto' }}>
-            {p.node}
-          </div>
-        ))}
+        {panes.map((p) => {
+          const seatKey = p.id.startsWith('seat-') ? p.id.slice(5) : ''; // hover promotes a frozen tile to live
+          return (
+            <div key={p.id} className={`cbox${p.gravity ? ' gravity' : ''}`} style={{ left: p.x, top: p.y, width: p.w, height: p.h, zIndex: p.z ?? 'auto' }}
+              onPointerEnter={seatKey ? () => setHoverKey(seatKey) : undefined}
+              onPointerLeave={seatKey ? () => setHoverKey((h) => (h === seatKey ? '' : h)) : undefined}>
+              {p.node}
+            </div>
+          );
+        })}
       </div>
       {/* RECORD → REPLAY control (the deck itself lives in the world above) */}
       <div className="rec-bar">
@@ -311,6 +343,7 @@ export function Canvas({ session }: { session: string | null }) {
         <button onClick={persp.bird} title="see everything">◇ bird's-eye</button>
         <span className="persp-z">{stacks.length} decks · {cells.length} cards · {Math.round(cam.z * 100)}%</span>
       </div>
+      <WireLog />
       {vpRect && worldW > 0 && (
         <svg className="minimap" viewBox={`0 0 ${worldW} ${worldH}`}
           style={{ width: 220, height: Math.round(Math.min(170, 220 * worldH / worldW)) }}
