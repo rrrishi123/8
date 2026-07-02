@@ -1748,7 +1748,7 @@ func (c *collector) handleSource(w http.ResponseWriter, r *http.Request) {
 	w.Write(rb) // {"value":"<hierarchy>...</hierarchy>"}
 }
 
-// handleAct performs one interaction through the wire — physics-general verbs.
+// handleAct is 8's CONTROL RELAY — it routes an act into the wire on behalf of the pilot, operator, or adapter. 8 NEVER INITIATES acts (the pilot/operator decide); 8 only RELAYS them through the correct physics (call vs channel) and WITNESSES the result. The boundary: control originates outside 8; 8 provides the pipe.
 // call: tap -> W3C actions; click -> element click; sendkeys -> element value.
 func (c *collector) handleAct(w http.ResponseWriter, r *http.Request) {
 	sid := r.URL.Query().Get("session")
