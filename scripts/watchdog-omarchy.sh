@@ -67,15 +67,43 @@ for c in json.load(sys.stdin).get('result',{}).get('contexts',[]):
       if [ -s "$TABS_FILE.tmp" ]; then mv "$TABS_FILE.tmp" "$TABS_FILE"; else rm -f "$TABS_FILE.tmp"; fi
     fi
 
-    # FLOW 10 — proactive mem recycle: 8 watches its OWN parent memory and recycles
-    # BEFORE the OOM. Only fires when procinfo succeeds AND parent exceeds threshold.
+    # FLOW 10 — proactive mem recycle: close non-essential tabs gracefully,
+    # then DeleteSession. NO pkill — a SIGKILL during wl_surface paint trips
+    # Hyprland's sendPreferredScale UAF (identical crash signature across all 5
+    # omarchy safe-mode events: the kill IS the crash vector, not just cleanup).
+    # Under XWayland the UAF is gone, but graceful close is still correct: it
+    # avoids session restore cruft and gives the watchdog a clean restart.
     mem=$(curl -s -m4 "http://127.0.0.1:7070/procinfo?session=fox" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 print(d.get('parent_mem_mb',0))
 " 2>/dev/null)
     if [ "${mem:-0}" -gt "${RECYCLE_MB:-4500}" ] 2>/dev/null; then
-      echo "[peer-watchdog $(date +%H:%M:%S)] Firefox parent ${mem}MB > ${RECYCLE_MB:-4500}MB -> proactive recycle (FLOW 10)"
+      echo "[peer-watchdog $(date +%H:%M:%S)] Firefox parent ${mem}MB > ${RECYCLE_MB:-4500}MB -> graceful recycle (FLOW 10)"
+      # 1. Close all non-cockpit tabs via BiDi
+      resp=$(curl -s -m 10 http://127.0.0.1:4445/command -H 'Content-Type: application/json'         -d '{"method":"browsingContext.getTree","params":{}}' 2>/dev/null)
+      if printf '%s' "$resp" | grep -q '"contexts"'; then
+        printf '%s' "$resp" | python3 -c "
+import json,sys
+for c in json.load(sys.stdin).get('result',{}).get('contexts',[]):
+    u=c.get('url','')
+    ctx=c.get('context','')
+    if u.startswith('http://localhost:8088/') or not ctx:
+        continue  # keep cockpit
+    print(ctx)
+" 2>/dev/null | while read ctx; do
+          curl -s -m 5 http://127.0.0.1:4445/command -H 'Content-Type: application/json'             -d "{"method":"browsingContext.close","params":{"context":"$ctx"}}" >/dev/null 2>&1
+        done
+      fi
+      sleep 2
+      # 2. DeleteSession gracefully (the proper way to end a geckodriver session)
+      SID=$(python3 -c "import json;print(json.load(open('$HOME/.8/gecko.json'))['session_id'])" 2>/dev/null || cat /tmp/claude-1000/sid 2>/dev/null)
+      if [ -n "$SID" ]; then
+        curl -s -m 10 -X DELETE "http://127.0.0.1:4444/session/$SID" >/dev/null 2>&1
+        echo "   -> DeleteSession sent for $SID"
+        sleep 2
+      fi
+      # 3. If Firefox is still somehow alive (hung session), kill as LAST RESORT
       pkill -f "firefox.*firefox-auto" 2>/dev/null; sleep 2
       run_up; sleep 30
       continue

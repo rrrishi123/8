@@ -14,7 +14,7 @@ BROKER=/home/rishi/Work/8/broker.mjs
 COLLECTOR=/home/rishi/Work/8/collector/collector
 ADAPT=/home/rishi/Work/adapters
 TMP=/tmp/claude-1000
-export WAYLAND_DISPLAY=wayland-1 XDG_RUNTIME_DIR=/run/user/1000 MOZ_ENABLE_WAYLAND=1
+export WAYLAND_DISPLAY=wayland-1 XDG_RUNTIME_DIR=/run/user/1000 MOZ_ENABLE_WAYLAND=0
 # node lives in mise, not /usr/bin — needed for broker.mjs when run from systemd
 export PATH="$HOME/.local/share/mise/shims:$PATH"
 
