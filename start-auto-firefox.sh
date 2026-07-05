@@ -15,6 +15,11 @@ COLLECTOR=/home/rishi/Work/8/collector/collector
 ADAPT=/home/rishi/Work/adapters
 TMP=/tmp/claude-1000
 export WAYLAND_DISPLAY=wayland-1 XDG_RUNTIME_DIR=/run/user/1000 MOZ_ENABLE_WAYLAND=0
+# MOZ_ENABLE_WAYLAND=0 runs Firefox under XWayland (X11) — this is the fix for the
+# Hyprland sendPreferredScale UAF that native-Wayland surface churn kept tripping
+# (5 safe-mode crashes, 2026-07-02..05). XWayland needs DISPLAY set or Firefox can't
+# find the X server and silently fails to launch. Xwayland is on :0.
+export DISPLAY=${DISPLAY:-:0}
 # node lives in mise, not /usr/bin — needed for broker.mjs when run from systemd
 export PATH="$HOME/.local/share/mise/shims:$PATH"
 

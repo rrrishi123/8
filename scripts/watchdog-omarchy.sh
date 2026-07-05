@@ -1,61 +1,88 @@
 #!/usr/bin/env bash
 # watchdog-omarchy.sh — keep the kosaten Firefox peer wire alive on omarchy.
-# The omarchy counterpart of watchdog.sh (Mac). Ported: FLOW-10 proactive memory
-# recycling, process-based liveness (not socket — avoid false recycles from a
-# busy BiDi socket under stream load), tab save/restore via ~/.8-tabs.txt,
-# collector-only revive (no Firefox churn), revive serialization lock.
+# CLAUDE's BROKER (2026-07-05): the broker at :4445 now enforces per-agent tab
+# leases. Every agent claims a browsingContext, sends commands tagged with its
+# agent-id, and the broker injects the correct context. The old "everyone drives
+# contexts[0] blind" convention is dead — enforced by broker refusal.
+#
+# THE FILE: ~/.8/leases.json — the single source of truth. Broker writes it on
+# claim/release; this watchdog reads it to know who's alive and which tabs to
+# close on recycle. Same civilisation aesthetic as castle jsonl + presence files.
 #
 # Rule: recycle only when the PROCESS is gone. Under captureScreenshot stream
 # load the single BiDi socket saturates and getTree times out for many seconds —
 # a BUSY socket, NOT a dead Firefox. Recycling on socket-unresponsiveness was a
 # relentless false-recycle storm (and two concurrent up.sh fighting left Firefox
 # down entirely).
-#
-# On start it brings the wire up; then every 15s it probes Firefox process
-# liveness. If Firefox is gone (the EGL/VRAM crash, or any death), it revives
-# the whole wire via up-omarchy.sh. This is the long-running service process.
 set -uo pipefail
 EIGHT=/home/rishi/Work/8
+BROKER=http://127.0.0.1:4445/command
+LEASES_FILE="$HOME/.8/leases.json"
 TABS_FILE="${TABS_FILE:-$HOME/.8-tabs.txt}"
+WATCHDOG_ID="watchdog-omarchy"
 
-echo "[peer-watchdog] started $(date +%H:%M:%S) — process-based liveness — tab store: $TABS_FILE"
+echo "[peer-watchdog] started $(date +%H:%M:%S) — broker lease protocol — leases: $LEASES_FILE"
 
-# never run two up-omarchy.sh at once — concurrent revives kill each other's
-# geckodriver session and leave Firefox down.
+# ---- broker helpers ----
+broker_cmd() {
+  curl -s -m 10 "$BROKER" -H 'Content-Type: application/json' -d "$1"
+}
+
+claim_lease() {
+  local id="$1"
+  broker_cmd "{\"claim\":\"$id\"}" | python3 -c "import json,sys;print(json.load(sys.stdin).get('context',''))" 2>/dev/null
+}
+
+release_lease() {
+  local id="$1"
+  broker_cmd "{\"release\":\"$id\"}" >/dev/null 2>&1
+}
+
+heartbeat_lease() {
+  local id="$1"
+  broker_cmd "{\"heartbeat\":\"$id\"}" >/dev/null 2>&1
+}
+
+# probe Firefox by process, not BiDi socket — only a missing process is a true death.
+probe_process() { pgrep -f 'firefox.*firefox-auto' >/dev/null 2>&1; }
+probe_bidi()    { ss -tlnp 2>/dev/null | grep -q ':9222 '; }
+
+# ---- revive ----
 run_up() {
-  # a healthy up-omarchy.sh finishes in well under 5 minutes; one older than
-  # that is wedged (2026-07-05: one sat 31h in do_wait on vite's npm, and this
-  # guard skipped every revive while Firefox stayed dead). Kill stale, proceed.
   for pid in $(pgrep -f 'bash.*up-omarchy.sh' 2>/dev/null); do
     age=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')
     if [ "${age:-0}" -gt 300 ]; then
       echo "[peer-watchdog $(date +%H:%M:%S)] up-omarchy.sh pid $pid stale (${age}s) — killing wedged revive"
       kill "$pid" 2>/dev/null; sleep 1; kill -9 "$pid" 2>/dev/null
     elif [ -n "$age" ]; then
-      echo "[peer-watchdog $(date +%H:%M:%S)] up-omarchy.sh already running (${age}s) — skip (no concurrent revives)"
+      echo "[peer-watchdog $(date +%H:%M:%S)] up-omarchy.sh already running (${age}s) — skip"
       return
     fi
   done
   bash "$EIGHT/up-omarchy.sh"
 }
 
-# probe Firefox by process, not BiDi socket — only a missing process is a true death.
-# Also check BiDi :9222 port (if Firefox is up but BiDi socket died, that also needs revive).
-probe_process() { pgrep -f 'firefox.*firefox-auto' >/dev/null 2>&1; }
-probe_bidi()    { ss -tlnp 2>/dev/null | grep -q ':9222 '; }
-
 # attempt initial bring-up if nothing is running
 probe_process || bash "$EIGHT/up-omarchy.sh"
 
-fails=0  # consecutive cycles with Firefox PROCESS gone
+# ---- claim the watchdog's own lease ----
+if ! probe_process; then
+  echo "[peer-watchdog $(date +%H:%M:%S)] waiting for Firefox..."
+  sleep 10
+fi
+WATCHDOG_CTX=$(claim_lease "$WATCHDOG_ID")
+echo "[peer-watchdog] lease: $WATCHDOG_ID → $WATCHDOG_CTX"
+
+fails=0
 while true; do
   if probe_process; then
     fails=0
 
-    # ALIVE (process exists). Opportunistically save tabs — a slow/failed getTree
-    # here is just a busy socket, never a recycle trigger.
-    resp=$(curl -s -m 12 http://127.0.0.1:4445/command -H 'Content-Type: application/json' \
-      -d '{"method":"browsingContext.getTree","params":{}}' 2>/dev/null)
+    # HEARTBEAT — keep our lease alive
+    heartbeat_lease "$WATCHDOG_ID"
+
+    # 1. Save tabs opportunistically
+    resp=$(broker_cmd '{"method":"browsingContext.getTree","params":{}}')
     if printf '%s' "$resp" | grep -q '"contexts"'; then
       printf '%s' "$resp" | python3 -c "
 import json,sys
@@ -67,57 +94,95 @@ for c in json.load(sys.stdin).get('result',{}).get('contexts',[]):
       if [ -s "$TABS_FILE.tmp" ]; then mv "$TABS_FILE.tmp" "$TABS_FILE"; else rm -f "$TABS_FILE.tmp"; fi
     fi
 
-    # FLOW 10 — proactive mem recycle: close non-essential tabs gracefully,
-    # then DeleteSession. NO pkill — a SIGKILL during wl_surface paint trips
-    # Hyprland's sendPreferredScale UAF (identical crash signature across all 5
-    # omarchy safe-mode events: the kill IS the crash vector, not just cleanup).
-    # Under XWayland the UAF is gone, but graceful close is still correct: it
-    # avoids session restore cruft and gives the watchdog a clean restart.
+    # 2. CLEAN UP STALE LEASES — any lease with heartbeat >5min old is dead.
+    #    Release stale leases so their tabs close and memory drops.
+    if [ -f "$LEASES_FILE" ]; then
+      now=$(date +%s)
+      python3 -c "
+import json,time
+leases=json.load(open('$LEASES_FILE'))
+for aid,lv in list(leases.items()):
+    dt=lv.get('heartbeat_at','')
+    if dt:
+        age=time.time()-time.mktime(time.strptime(dt.replace('Z',''),'%Y-%m-%dT%H:%M:%S.%f'))
+        if age>300:
+            print(aid)
+" 2>/dev/null | while read aid; do
+        if [ "$aid" != "$WATCHDOG_ID" ]; then
+          echo "[peer-watchdog $(date +%H:%M:%S)] stale lease $aid -> releasing"
+          release_lease "$aid"
+        fi
+      done
+    fi
+
+    # 3. FLOW 10 — proactive mem recycle with lease-aware cleanup.
+    #    Under XWayland (commit 1b9bbff), pkill is safe but still wrong.
+    #    Graceful: close ALL non-cockpit tabs (releasing their leases),
+    #    then DeleteSession. pkill only as last resort.
     mem=$(curl -s -m4 "http://127.0.0.1:7070/procinfo?session=fox" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 print(d.get('parent_mem_mb',0))
 " 2>/dev/null)
     if [ "${mem:-0}" -gt "${RECYCLE_MB:-4500}" ] 2>/dev/null; then
-      echo "[peer-watchdog $(date +%H:%M:%S)] Firefox parent ${mem}MB > ${RECYCLE_MB:-4500}MB -> graceful recycle (FLOW 10)"
-      # 1. Close all non-cockpit tabs via BiDi
-      resp=$(curl -s -m 10 http://127.0.0.1:4445/command -H 'Content-Type: application/json'         -d '{"method":"browsingContext.getTree","params":{}}' 2>/dev/null)
-      if printf '%s' "$resp" | grep -q '"contexts"'; then
-        printf '%s' "$resp" | python3 -c "
+      echo "[peer-watchdog $(date +%H:%M:%S)] Firefox parent ${mem}MB > ${RECYCLE_MB:-4500}MB -> lease-aware recycle"
+
+      # Release all non-watchdog leases to close their tabs
+      if [ -f "$LEASES_FILE" ]; then
+        python3 -c "
+import json
+leases=json.load(open('$LEASES_FILE'))
+for aid in list(leases.keys()):
+    if aid != '$WATCHDOG_ID':
+        print(aid)
+" 2>/dev/null | while read aid; do
+          echo "   releasing lease $aid"
+          release_lease "$aid"
+        done
+      fi
+      sleep 2
+
+      # Close any remaining non-cockpit tabs
+      resp2=$(broker_cmd '{"method":"browsingContext.getTree","params":{}}')
+      if printf '%s' "$resp2" | grep -q '"contexts"'; then
+        printf '%s' "$resp2" | python3 -c "
 import json,sys
 for c in json.load(sys.stdin).get('result',{}).get('contexts',[]):
     u=c.get('url','')
     ctx=c.get('context','')
     if u.startswith('http://localhost:8088/') or not ctx:
-        continue  # keep cockpit
+        continue
     print(ctx)
 " 2>/dev/null | while read ctx; do
-          curl -s -m 5 http://127.0.0.1:4445/command -H 'Content-Type: application/json'             -d "{"method":"browsingContext.close","params":{"context":"$ctx"}}" >/dev/null 2>&1
+          broker_cmd "{\"method\":\"browsingContext.close\",\"params\":{\"context\":\"$ctx\"}}" >/dev/null 2>&1
         done
       fi
       sleep 2
-      # 2. DeleteSession gracefully (the proper way to end a geckodriver session)
+
+      # Graceful DeleteSession
       SID=$(python3 -c "import json;print(json.load(open('$HOME/.8/gecko.json'))['session_id'])" 2>/dev/null || cat /tmp/claude-1000/sid 2>/dev/null)
       if [ -n "$SID" ]; then
         curl -s -m 10 -X DELETE "http://127.0.0.1:4444/session/$SID" >/dev/null 2>&1
         echo "   -> DeleteSession sent for $SID"
-        sleep 2
+      else
+        pkill -f "firefox.*firefox-auto" 2>/dev/null
       fi
-      # 3. If Firefox is still somehow alive (hung session), kill as LAST RESORT
-      pkill -f "firefox.*firefox-auto" 2>/dev/null; sleep 2
-      run_up; sleep 30
-      continue
+      sleep 2
+      run_up; echo "[peer-watchdog] re-claiming lease after recycle"
+      WATCHDOG_CTX=$(claim_lease "$WATCHDOG_ID")
+      sleep 30; continue
     fi
 
-    # BiDi socket died but process still alive? That's a stale state and needs revive.
+    # 4. BiDi socket died but process still alive
     if ! probe_bidi; then
       echo "[peer-watchdog $(date +%H:%M:%S)] Firefox process alive but BiDi :9222 gone -> reviving"
       pkill -f "firefox.*firefox-auto" 2>/dev/null; sleep 2
-      run_up; sleep 30
-      continue
+      run_up; echo "[peer-watchdog] re-claiming lease after BiDi revive"
+      WATCHDOG_CTX=$(claim_lease "$WATCHDOG_ID")
+      sleep 30; continue
     fi
 
-    # COLLECTOR liveness — revive a dead collector WITHOUT Firefox churn.
+    # 5. COLLECTOR liveness
     if ! ss -tlnp 2>/dev/null | grep -q ':7070 '; then
       echo "[peer-watchdog $(date +%H:%M:%S)] collector :7070 down -> reviving (collector-only)"
       SID=$(python3 -c "import json;print(json.load(open('$HOME/.8/gecko.json'))['session_id'])" 2>/dev/null || cat /tmp/claude-1000/sid 2>/dev/null || echo '')
@@ -126,14 +191,14 @@ for c in json.load(sys.stdin).get('result',{}).get('contexts',[]):
     fi
 
   else
-    # Firefox PROCESS is GONE -> genuinely dead. Two consecutive to ride out a
-    # momentary pkill/relaunch window, then revive (serialized by run_up's lock).
+    # Firefox PROCESS is GONE -> genuinely dead
     fails=$((fails + 1))
     echo "[peer-watchdog $(date +%H:%M:%S)] Firefox process gone ($fails/2)"
     if [ "$fails" -ge 2 ]; then
       echo "[peer-watchdog $(date +%H:%M:%S)] Firefox dead -> reviving via up-omarchy.sh"
-      run_up
-      fails=0
+      run_up; fails=0
+      echo "[peer-watchdog] re-claiming lease after full revive"
+      WATCHDOG_CTX=$(claim_lease "$WATCHDOG_ID")
       sleep 30
     fi
   fi
