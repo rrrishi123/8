@@ -22,8 +22,13 @@ if ! flock -w 150 9; then
   echo "another revive holds the lock (>150s) — bailing"
   exit 1
 fi
-if curl -sf --max-time 3 http://localhost:4445/health >/dev/null 2>&1    && ss -tln 2>/dev/null | grep -q ':9222 '; then
-  echo "chain already healthy (revived by lock holder) — no-op"
+if ss -tln 2>/dev/null | grep -q ':9222 ' && \
+   curl -sf --max-time 5 -X POST http://localhost:4445/command \
+     -H 'Content-Type: application/json' \
+     -d '{"method":"browsingContext.getTree","params":{}}' 2>/dev/null \
+   | grep -q '"contexts"'; then
+  # a stale-pinned broker passes /health but fails a real command — require getTree
+  echo "chain already healthy (broker answers getTree on live session) — no-op"
   exit 0
 fi
 
