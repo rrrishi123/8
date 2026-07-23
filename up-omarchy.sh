@@ -72,8 +72,23 @@ for _ in $(seq 1 20); do listening 4445 && break; sleep 0.5; done
 listening 4445 || say "WARN: broker :4445 not up (node missing from PATH?) — tabs will fail"
 say "peer up (BiDi :9222$(listening 4445 && echo ', broker :4445')$(listening 7070 && echo ', collector :7070'))"
 
-# 4. reopen the living tabs (fresh session => none are present yet).
+# 4. reopen the living tabs — IDEMPOTENT. "fresh session => none present" is
+#    false after an XWayland graceful recycle: session-restore revives tabs, and
+#    ~/.8-tabs.txt (saved from the live tree) can carry duplicates — so blind
+#    creates compounded one extra cockpit tab per recycle. Dedupe the wanted
+#    list and only create tabs whose exact URL is not already open.
+OPEN_URLS=$(cmd '{"method":"browsingContext.getTree","params":{}}' | python3 -c "
+import json,sys
+try:
+    for c in json.load(sys.stdin).get('result',{}).get('contexts',[]):
+        print(c.get('url',''))
+except Exception:
+    pass" 2>/dev/null)
+declare -A _SEEN_TAB
 for url in "${TABS[@]}"; do
+  [ -n "${_SEEN_TAB[$url]:-}" ] && continue
+  _SEEN_TAB[$url]=1
+  if printf '%s\n' "$OPEN_URLS" | grep -qxF "$url"; then say "  tab exists: $url"; continue; fi
   ctx=$(cmd '{"method":"browsingContext.create","params":{"type":"tab"}}' | python3 -c "import json,sys;print(json.load(sys.stdin)['result']['context'])" 2>/dev/null)
   [ -z "$ctx" ] && { say "  tab create failed: $url"; continue; }
   cmd "{\"method\":\"browsingContext.navigate\",\"params\":{\"context\":\"$ctx\",\"url\":\"$url\",\"wait\":\"none\"}}" >/dev/null
