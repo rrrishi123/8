@@ -8,6 +8,25 @@
 # Re-applies the persistent creds (creds-store) into the profile on EVERY launch,
 # so the automated browser is always logged in to DeepSeek + Claude, with the
 # 8 cockpit as the first tab. Idempotent: reuses geckodriver/collector if up.
+
+# ── SINGLE-REVIVER GUARD (fix for the 60s mutual-kill loop of 2026-07-24) ──
+# Three revivers (watchdog-omarchy.sh, firefox-chain-health.timer, kosaten-peer
+# .service) each ran this script on any unhealthy instant; a just-launched
+# Firefox has a built-in unhealthy window (:4444 up, :9222 not yet), so each
+# reviver killed the previous one's newborn ("stale geckodriver -> killing").
+# flock serializes all revivers; whoever waited re-checks and no-ops if the
+# winner already healed the chain.
+mkdir -p /tmp/claude-1000
+exec 9>/tmp/claude-1000/start-auto-firefox.lock
+if ! flock -w 150 9; then
+  echo "another revive holds the lock (>150s) — bailing"
+  exit 1
+fi
+if curl -sf --max-time 3 http://localhost:4445/health >/dev/null 2>&1    && ss -tln 2>/dev/null | grep -q ':9222 '; then
+  echo "chain already healthy (revived by lock holder) — no-op"
+  exit 0
+fi
+
 set -uo pipefail
 AC=/home/rishi/Work/kosaten/.auth-cache
 AUTO=$AC/firefox-geckodriver
