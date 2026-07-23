@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # Bring up the authenticated automated Firefox + the 8 channel.
-# Re-applies the persistent creds (creds-store) into firefox-auto on EVERY launch,
+# Uses firefox-geckodriver (NOT firefox-auto) as the persistent profile for
+# the system Firefox 152.0.3 launched via geckodriver. This isolates the
+# Playwright scrape profile (firefox-auto, Firefox 148.0.2 format) from the
+# system Firefox's storage format upgrades — the version-mismatch bug that
+# kept recurring every restart.
+# Re-applies the persistent creds (creds-store) into the profile on EVERY launch,
 # so the automated browser is always logged in to DeepSeek + Claude, with the
 # 8 cockpit as the first tab. Idempotent: reuses geckodriver/collector if up.
 set -uo pipefail
 AC=/home/rishi/Work/kosaten/.auth-cache
-AUTO=$AC/firefox-auto
+AUTO=$AC/firefox-geckodriver
 STORE=$AC/creds-store
 FF=/home/rishi/Work/ff/firefox/firefox
 GECKO=/usr/bin/geckodriver
@@ -98,7 +103,7 @@ if ! ss -tlnp 2>/dev/null | grep -q ':4444 '; then
   for _ in $(seq 1 20); do ss -tlnp 2>/dev/null | grep -q ':4444 ' && break; sleep 0.5; done
 fi
 
-# 4. create a headful session on firefox-auto with BiDi.
+# 4. create a headful session on firefox-geckodriver with BiDi.
 #    -remote-allow-system-access unlocks the chrome context, which is how the
 #    drawshot and procinfo work (gBrowser, ChromeUtils.requestProcInfo) — the
 #    8 cockpit's canvas needs this to render live tab previews.
