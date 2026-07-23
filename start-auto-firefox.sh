@@ -16,12 +16,29 @@
 # reviver killed the previous one's newborn ("stale geckodriver -> killing").
 # flock serializes all revivers; whoever waited re-checks and no-ops if the
 # winner already healed the chain.
+# mkdir-lock (NOT flock: spawned children inherit a flock fd and hold it
+# forever — the 02:12 silent-hang loop). Owned by this script pid, freed on
+# exit; a dead owner is stolen.
 mkdir -p /tmp/claude-1000
-exec 9>/tmp/claude-1000/start-auto-firefox.lock
-if ! flock -w 150 9; then
-  echo "another revive holds the lock (>150s) — bailing"
-  exit 1
+LOCKDIR=/tmp/claude-1000/start-auto-firefox.lockdir
+acquire() { mkdir "$LOCKDIR" 2>/dev/null && echo $$ >"$LOCKDIR/pid"; }
+if ! acquire; then
+  OWNER=$(cat "$LOCKDIR/pid" 2>/dev/null)
+  if [ -n "$OWNER" ] && kill -0 "$OWNER" 2>/dev/null; then
+    for _ in $(seq 1 24); do sleep 5; [ ! -d "$LOCKDIR" ] && break; done
+  fi
+  if [ -d "$LOCKDIR" ]; then
+    OWNER=$(cat "$LOCKDIR/pid" 2>/dev/null)
+    if [ -n "$OWNER" ] && kill -0 "$OWNER" 2>/dev/null; then
+      echo "revive lock held by live pid $OWNER — bailing"
+      exit 1
+    fi
+    echo "stale revive lock (owner ${OWNER:-unknown} dead) — stealing"
+    rm -rf "$LOCKDIR"
+    acquire || { echo "lock steal race lost — bailing"; exit 1; }
+  fi
 fi
+trap 'rm -rf "$LOCKDIR"' EXIT
 if ss -tln 2>/dev/null | grep -q ':9222 ' && \
    curl -sf --max-time 5 -X POST http://localhost:4445/command \
      -H 'Content-Type: application/json' \
