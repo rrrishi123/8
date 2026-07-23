@@ -44,7 +44,7 @@ heartbeat_lease() {
 }
 
 # probe Firefox by process, not BiDi socket — only a missing process is a true death.
-probe_process() { pgrep -f 'firefox.*firefox-auto' >/dev/null 2>&1; }
+probe_process() { pgrep -f 'firefox.*(firefox-auto|firefox-geckodriver)' >/dev/null 2>&1; }  # 3d2bd5d renamed the seat profile
 probe_bidi()    { ss -tlnp 2>/dev/null | grep -q ':9222 '; }
 
 # ---- revive ----
