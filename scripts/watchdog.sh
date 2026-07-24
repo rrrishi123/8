@@ -31,9 +31,20 @@ while true; do
     resp=$(curl -s -m 12 http://127.0.0.1:4445/command -H 'Content-Type: application/json' \
       -d '{"method":"browsingContext.getTree","params":{}}' 2>/dev/null)
     if printf '%s' "$resp" | grep -q '"contexts"'; then
+      # INVARIANT (2026-07-24): tabs are conserved — observation may only ADD to
+      # the ledger, never remove. A snapshot-overwrite forgot tabs two ways:
+      # (a) mid-revive/degraded trees clobbered the ledger down to 2 entries;
+      # (b) PARKED tabs (fair aperture, discardBrowser) drop out of the BiDi
+      #     tree entirely, so every healthy save silently dropped them.
+      # Closing a tab is a deliberate act (human edits the ledger / explicit
+      # close), never an inference from absence.
       printf '%s' "$resp" | jq -r '.result.contexts[].url // empty' 2>/dev/null \
-        | grep -vE '^about:|^chrome:|^$' > "$TABS_FILE.tmp"
-      if [ -s "$TABS_FILE.tmp" ]; then mv "$TABS_FILE.tmp" "$TABS_FILE"; else rm -f "$TABS_FILE.tmp"; fi
+        | grep -vE '^about:|^chrome:|^$' > "$TABS_FILE.obs"
+      if [ -s "$TABS_FILE.obs" ]; then
+        cat "$TABS_FILE" "$TABS_FILE.obs" 2>/dev/null | awk 'NF && !seen[$0]++' > "$TABS_FILE.tmp"
+        mv "$TABS_FILE.tmp" "$TABS_FILE"
+      fi
+      rm -f "$TABS_FILE.obs"
     fi
 
     # FLOW 10 — proactive mem recycle: 8 watches its OWN parent memory and recycles
