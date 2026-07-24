@@ -59,7 +59,7 @@ echo "            ws=$WS"
 echo "            window summoned to front (5s delay)"
 
 # 3. broker -> the fresh ws (replace any stale broker).
-lsof -ti :4445 | xargs kill 2>/dev/null || true; sleep 1
+lsof -ti TCP:4445 -sTCP:LISTEN | xargs kill 2>/dev/null || true; sleep 1
 nohup "$CHANNEL" -ws "$WS" -listen :4445 >/tmp/broker.log 2>&1 &
 wait_up 4445 && echo "broker:     up :4445" \
   || { echo "FAILED broker :4445 — everything after this would silently no-op. $(head -1 /tmp/broker.log)"; exit 1; }
