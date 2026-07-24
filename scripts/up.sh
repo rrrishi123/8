@@ -83,7 +83,7 @@ BROKERS="fox=http://127.0.0.1:4445"
 if curl -s -m2 http://127.0.0.1:9333/json/version >/dev/null 2>&1; then
   CHROME_WS=$(curl -s -m3 http://127.0.0.1:9333/json | jq -r '[.[]|select(.type=="page" and .webSocketDebuggerUrl)][0].webSocketDebuggerUrl // empty')
   if [ -n "$CHROME_WS" ]; then
-    lsof -ti :4446 | xargs kill 2>/dev/null || true; sleep 0.3
+    lsof -ti TCP:4446 -sTCP:LISTEN | xargs kill 2>/dev/null || true; sleep 0.3
     nohup "$CHANNEL" -ws "$CHROME_WS" -listen :4446 >/tmp/broker-chrome.log 2>&1 &
     wait_up 4446 && BROKERS="$BROKERS,chrome=http://127.0.0.1:4446" && echo "browser:    chrome seat on :4446"
   fi
@@ -91,7 +91,7 @@ fi
 # brokers are fixed at collector start, so a NEW chrome seat needs a fresh
 # collector. If one is already up WITHOUT chrome, restart it to pick the seat up.
 if up 7070 && ! curl -s -m2 http://127.0.0.1:7070/health | grep -q '"chrome"' && [ "$BROKERS" != "fox=http://127.0.0.1:4445" ]; then
-  lsof -ti :7070 | xargs kill 2>/dev/null || true; sleep 0.5
+  lsof -ti TCP:7070 -sTCP:LISTEN | xargs kill 2>/dev/null || true; sleep 0.5
 fi
 if up 7070; then echo "collector:  already up :7070"; else
   # a missing binary must NOT kill the wire (8 would poll a dead :7070 forever) —
