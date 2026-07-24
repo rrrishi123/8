@@ -182,7 +182,9 @@ echo "ws=$WS"
 # entire swap consumed; macOS pages instead of OOM-killing so it balloons
 # silently). watchdog.sh recycles at RECYCLE_MB (default 4500) via FLOW 10.
 if ! pgrep -f "scripts/watchdog.sh" >/dev/null 2>&1; then
-  ( cd "$REPO/8" && setsid nohup bash scripts/watchdog.sh >/tmp/watchdog-8.log 2>&1 & )
+  # nohup+background subshell, NOT setsid — setsid does not exist on macOS; the
+  # orphaned child reparents to init and survives this script exiting.
+  ( cd "$REPO/8" && nohup bash scripts/watchdog.sh >/tmp/watchdog-8.log 2>&1 & )
   echo "watchdog:   started (recycle bound ${RECYCLE_MB:-4500}MB, log /tmp/watchdog-8.log)"
 else
   echo "watchdog:   already running"
