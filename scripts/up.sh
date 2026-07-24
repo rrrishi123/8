@@ -14,7 +14,7 @@ set -uo pipefail
 
 REPO=/Users/rishirajs/Desktop/repos
 PROFILE=/Users/rishirajs/.ltqa-firefox-deepseek
-GECKO="$REPO/ltqa-platform/.bin/drivers/firefox/0.37.0/geckodriver"
+BROWSERPACK="$REPO/adapters/browser/browser"
 CHANNEL="$REPO/http-mcp/.bin/channel"
 COLLECTOR="$REPO/8/collector/collector"
 WEB="$REPO/8/web"
@@ -24,39 +24,45 @@ up()   { lsof -ti :"$1" >/dev/null 2>&1; }
 wait_up() { for _ in $(seq 1 40); do up "$1" && return 0; sleep 0.3; done; return 1; }
 cmd()  { curl -s -m "${2:-15}" "$BROKER" -H 'Content-Type: application/json' -d "$1"; }
 
-# 1. geckodriver — restart fresh so no dead/stale session lingers.
-lsof -ti :4444 | xargs kill 2>/dev/null || true; sleep 1
-nohup "$GECKO" --port 4444 --host 127.0.0.1 --allow-hosts localhost 127.0.0.1 --log info >/tmp/geckodriver.log 2>&1 &
-wait_up 4444 && echo "geckodriver: up :4444"
+# 0. Force non-headless so the Firefox window is visible on the desktop.
+# NOTE: Firefox goes headless when MOZ_HEADLESS is set to ANY non-empty value —
+# even "0". The only way to force a visible window is to unset it.
+unset MOZ_HEADLESS
 
-# 2. Firefox BiDi session on the persistent profile (= the saved login).
-#    -remote-allow-system-access unlocks the chrome context, which is how the
-#    WITNESS reads per-tab memory/CPU (ChromeUtils.requestProcInfo) — Firefox
-#    refuses requestProcInfo from a content sandbox. This is the observe-all-tabs
-#    Observation channel's privilege, read-only; it never drives a target.
-RESP=$(curl -s -m 90 http://127.0.0.1:4444/session -H 'Content-Type: application/json' -d @- <<JSON
-{"capabilities":{"alwaysMatch":{"browserName":"firefox","webSocketUrl":true,
-  "moz:firefoxOptions":{"args":["-profile","$PROFILE","-remote-allow-system-access"]}}}}
-JSON
-)
-WS=$(echo "$RESP"  | jq -r '.value.capabilities.webSocketUrl // empty')
-SID=$(echo "$RESP" | jq -r '.value.sessionId // empty')
-[ -z "$WS" ] && { echo "FAILED firefox session:"; echo "$RESP" | head -c 600; exit 1; }
-echo "firefox:    session $SID"
+# 1+2. the firefox SEAT — owned by adapters' browser pack, not this script
+#      (8 never launches browsers; it only watches). The pack launches
+#      geckodriver + Firefox DETACHED (their own process session), so no shell
+#      — including the one running this script — holds the seat's lifetime.
+#      It also publishes ~/.8/gecko.json and passes -remote-allow-system-access
+#      (the WITNESS's chrome-context privilege for per-tab requestProcInfo).
+#      Reuse a live seat; only summon a fresh one when the current one is gone.
+SEAT="$HOME/.8/gecko.json"
+WS=""; SID=""
+if up 4444 && [ -s "$SEAT" ] && pgrep -f "firefox.*ltqa-firefox-deepseek" >/dev/null; then
+  WS=$(jq -r '.ws // empty' "$SEAT"); SID=$(jq -r '.session_id // empty' "$SEAT")
+fi
+if [ -n "$WS" ]; then
+  echo "firefox:    seat reused — session $SID (browser pack owns it)"
+else
+  RR=$("$BROWSERPACK" up --engine firefox --port 4444 --profile "$PROFILE") \
+    || { echo "FAILED firefox seat:"; echo "$RR" | head -c 600; exit 1; }
+  WS=$(echo "$RR" | jq -r '.stream // empty'); SID=$(echo "$RR" | jq -r '.session_id // empty')
+  [ -z "$WS" ] && { echo "FAILED firefox seat:"; echo "$RR" | head -c 600; exit 1; }
+  echo "firefox:    seat up via browser pack — session $SID"
+fi
 echo "            ws=$WS"
 
-# publish the SID so the collector can AUTO-RECOVER its session after a recycle
-# (feature B) without a manual restart. Atomic write (temp + rename) so a concurrent
-# reader never sees a half-written file. Pilot will eventually own this registry.
-mkdir -p "$HOME/.8"
-printf '{"session_id":"%s","ws":"%s","ts":"%s"}\n' "$SID" "$WS" "$(date -u +%FT%TZ)" > "$HOME/.8/gecko.json.tmp" \
-  && mv -f "$HOME/.8/gecko.json.tmp" "$HOME/.8/gecko.json"
-echo "            published SID -> ~/.8/gecko.json"
+# Bring Firefox window to front so it's visible on the desktop.
+# Delayed to let Firefox finish initializing the saved tabs.
+(sleep 5 && osascript -e 'tell application "Firefox" to activate' \
+  -e 'tell application "Firefox" to set bounds of front window to {0, 50, 1440, 980}') &
+echo "            window summoned to front (5s delay)"
 
 # 3. broker -> the fresh ws (replace any stale broker).
 lsof -ti :4445 | xargs kill 2>/dev/null || true; sleep 1
 nohup "$CHANNEL" -ws "$WS" -listen :4445 >/tmp/broker.log 2>&1 &
-wait_up 4445 && echo "broker:     up :4445"
+wait_up 4445 && echo "broker:     up :4445" \
+  || { echo "FAILED broker :4445 — everything after this would silently no-op. $(head -1 /tmp/broker.log)"; exit 1; }
 
 # 4. hide navigator.webdriver (bot-wall) — BiDi preload, applies to every nav.
 cmd '{"method":"script.addPreloadScript","params":{"functionDeclaration":"() => { Object.defineProperty(Navigator.prototype, \"webdriver\", { get: () => false }); }"}}' >/dev/null
@@ -91,8 +97,12 @@ if up 7070; then echo "collector:  already up :7070"; else
   # a missing binary must NOT kill the wire (8 would poll a dead :7070 forever) —
   # build it on demand. This is the gap that left 8 "moving while doing nothing".
   [ -x "$COLLECTOR" ] || { echo "collector:  binary missing -> building"; ( cd "$REPO/8/collector" && go build -o collector . ); }
+  # -session-file: re-read the live seat on every probe, so /procinfo (and the
+  # watchdog's FLOW-10 recycle that depends on it) survives Firefox recycles —
+  # a fixed -gecko session URL goes stale on the first recycle and blinds both.
   nohup "$COLLECTOR" -listen :7070 -brokers "$BROKERS" \
-    -gecko "http://127.0.0.1:4444/session/$SID" >/tmp/collector-8.log 2>&1 &
+    -gecko "http://127.0.0.1:4444/session/$SID" \
+    -session-file "$HOME/.8/gecko.json" >/tmp/collector-8.log 2>&1 &
   wait_up 7070 && echo "collector:  up :7070 (procinfo enabled; brokers: $BROKERS)"
 fi
 
@@ -126,12 +136,23 @@ fi
 case " ${URLS[*]} " in *":8088"*) ;; *) URLS=("http://localhost:8088/" "${URLS[@]}");; esac
 
 first=1; DS=""; COCKPIT=""
+# IDEMPOTENT restore: the seat may be REUSED with its tabs already open (it
+# outlives this script now). Only create what's missing; never navigate an
+# existing tab away, and never double-open a URL.
+OPEN=$(cmd '{"method":"browsingContext.getTree","params":{}}')
+FIRST_URL=$(echo "$OPEN" | jq -r '.result.contexts[0].url // empty')
 for u in "${URLS[@]}"; do
   case "$u" in about:*|chrome:*|"") continue;; esac
-  if [ "$first" = 1 ]; then target="$CTX"; first=0
-  else target=$(cmd '{"method":"browsingContext.create","params":{"type":"tab"}}' | jq -r '.result.context'); fi
-  cmd "{\"method\":\"browsingContext.navigate\",\"params\":{\"context\":\"$target\",\"url\":\"$u\",\"wait\":\"complete\"}}" 60 >/dev/null
-  echo "tab:        $target -> $u"
+  target=$(echo "$OPEN" | jq -r --arg u "$u" '.result.contexts[] | select(.url==$u) | .context' | head -1)
+  if [ -n "$target" ]; then
+    echo "tab:        $target == $u (already open)"
+  else
+    if [ "$first" = 1 ] && [ "$FIRST_URL" = "about:blank" ]; then target="$CTX"
+    else target=$(cmd '{"method":"browsingContext.create","params":{"type":"tab"}}' | jq -r '.result.context'); fi
+    cmd "{\"method\":\"browsingContext.navigate\",\"params\":{\"context\":\"$target\",\"url\":\"$u\",\"wait\":\"complete\"}}" 60 >/dev/null
+    echo "tab:        $target -> $u"
+  fi
+  first=0
   case "$u" in *deepseek.com*) DS="$target";; esac
   # track the COCKPIT's actual context — it is NOT necessarily the first tab, so
   # activating $CTX (the first context) would land on excalidraw, not 8. (This is
@@ -155,3 +176,14 @@ echo "WIRE UP.  cockpit=$CTX  deepseek=$DS"
 echo "deepseek logged in (textarea present): $LOGGEDIN"
 [ "$LOGGEDIN" != "true" ] && echo "  !! not authenticated — profile creds may have expired; re-login needed."
 echo "ws=$WS"
+
+# 9. watchdog — the memory bound. Without it Firefox has NO recycle ceiling on
+# mac: 12 tabs + media autoplay grew the parent to a 49GB footprint (2026-07-24,
+# entire swap consumed; macOS pages instead of OOM-killing so it balloons
+# silently). watchdog.sh recycles at RECYCLE_MB (default 4500) via FLOW 10.
+if ! pgrep -f "scripts/watchdog.sh" >/dev/null 2>&1; then
+  ( cd "$REPO/8" && setsid nohup bash scripts/watchdog.sh >/tmp/watchdog-8.log 2>&1 & )
+  echo "watchdog:   started (recycle bound ${RECYCLE_MB:-4500}MB, log /tmp/watchdog-8.log)"
+else
+  echo "watchdog:   already running"
+fi
