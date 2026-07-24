@@ -10,6 +10,26 @@
 #   2. BOT-WALL — we hide navigator.webdriver via a BiDi preload script, so
 #               Cloudflare et al. don't block the automated session (which would
 #               also block the saved login from loading).
+
+# single-reviver mkdir-lock (port of omarchy start-auto fix): manual runs and the
+# watchdog's revive raced each other (tab restore collapsed to 2/12 tabs, 2026-07-24).
+# mkdir-lock is pid-owned, EXIT-trapped, dead-owner stolen; flock is unusable here
+# (spawned daemons inherit the fd and hold it forever).
+_LOCKDIR=/tmp/8-up.lockdir
+_acquire(){ mkdir "$_LOCKDIR" 2>/dev/null && echo $$ >"$_LOCKDIR/pid"; }
+if ! _acquire; then
+  _OWNER=$(cat "$_LOCKDIR/pid" 2>/dev/null)
+  if [ -n "$_OWNER" ] && kill -0 "$_OWNER" 2>/dev/null; then
+    for _ in $(seq 1 36); do sleep 5; [ ! -d "$_LOCKDIR" ] && break; done
+  fi
+  if [ -d "$_LOCKDIR" ]; then
+    _OWNER=$(cat "$_LOCKDIR/pid" 2>/dev/null)
+    if [ -n "$_OWNER" ] && kill -0 "$_OWNER" 2>/dev/null; then echo "up.sh: another run holds the lock (pid $_OWNER) — bailing"; exit 1; fi
+    rm -rf "$_LOCKDIR"; _acquire || exit 1
+  fi
+fi
+trap 'rm -rf "$_LOCKDIR"' EXIT
+
 set -uo pipefail
 
 REPO=/Users/rishirajs/Desktop/repos

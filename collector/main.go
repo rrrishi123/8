@@ -535,7 +535,10 @@ func (c *collector) memoryAperture(softMB int) {
 	// on focus. Open != loaded, exactly as lease != liveness. Per-tab accounting is
 	// exact (N is small); a bloom-filter variant only earns its keep at thousands.
 	const cooldown = 2 * time.Minute
-	memScript := `const cb=arguments[arguments.length-1];ChromeUtils.requestProcInfo().then(i=>{let t=i.memory;for(const ch of i.children)t+=ch.memory;cb(''+Math.round(t/1048576))}).catch(e=>cb('ERR'));`
+	// parent-only: the aperture targets the parent's compositor-surface leak; content
+	// processes of live tabs are legitimate spend. Budgeting the TOTAL made a 12-tab
+	// seat (baseline ~4GB) park a victim every tick forever (2026-07-24 over-parking).
+	memScript := `const cb=arguments[arguments.length-1];ChromeUtils.requestProcInfo().then(i=>cb(''+Math.round(i.memory/1048576))).catch(e=>cb('ERR'));`
 	parkScript := `const cb=arguments[arguments.length-1];(async()=>{try{
 const win=Services.wm.getMostRecentWindow("navigator:browser");const gB=win.gBrowser;
 const info=await ChromeUtils.requestProcInfo();const mem={};for(const ch of info.children){mem[ch.pid]=(ch.memory||0)/1048576;}
