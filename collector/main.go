@@ -527,9 +527,33 @@ func (c *collector) memoryAperture(softMB int) {
 	if c.geckoBase() == "" || softMB <= 0 {
 		return
 	}
-	const cooldown = 5 * time.Minute
-	memScript := `const cb=arguments[arguments.length-1];ChromeUtils.requestProcInfo().then(i=>cb(''+Math.round(i.memory/1048576))).catch(e=>cb('ERR'));`
-	minScript := `const cb=arguments[arguments.length-1];try{for(let i=0;i<3;i++)Services.obs.notifyObservers(null,"memory-pressure","heap-minimize");cb("ok");}catch(e){cb("ERR:"+e);}`
+	// FAIR APERTURE (the operator's law, 2026-07-24): the INVARIANT is the tabs —
+	// their identities are conserved, the system never closes one. Memory LIVENESS
+	// is the budgeted resource, allocated fairly: under genuine shortage the
+	// heaviest non-focused tab pays first (Stochastic-Fair-BLUE semantics), parked
+	// via gBrowser.discardBrowser — unloaded from RAM, kept in the strip, reloads
+	// on focus. Open != loaded, exactly as lease != liveness. Per-tab accounting is
+	// exact (N is small); a bloom-filter variant only earns its keep at thousands.
+	const cooldown = 2 * time.Minute
+	memScript := `const cb=arguments[arguments.length-1];ChromeUtils.requestProcInfo().then(i=>{let t=i.memory;for(const ch of i.children)t+=ch.memory;cb(''+Math.round(t/1048576))}).catch(e=>cb('ERR'));`
+	parkScript := `const cb=arguments[arguments.length-1];(async()=>{try{
+const win=Services.wm.getMostRecentWindow("navigator:browser");const gB=win.gBrowser;
+const info=await ChromeUtils.requestProcInfo();const mem={};for(const ch of info.children){mem[ch.pid]=(ch.memory||0)/1048576;}
+const cands=[];
+for(const tab of gB.tabs){
+  if(tab===gB.selectedTab)continue;
+  if(tab.getAttribute("pending")==="true")continue;
+  const br=tab.linkedBrowser;if(!br)continue;
+  const url=(br.currentURI&&br.currentURI.spec)||"";
+  if(url.startsWith("http://localhost:8088"))continue;
+  let pid=0;try{pid=br.browsingContext.currentWindowGlobal.osPid||0}catch(e){}
+  cands.push({u:url.slice(0,90),mb:Math.round(mem[pid]||0),tab});
+}
+cands.sort((a,b)=>b.mb-a.mb);
+if(!cands.length){cb(JSON.stringify({parked:null}));return;}
+const v=cands[0];gB.discardBrowser(v.tab);
+cb(JSON.stringify({parked:v.u,mb:v.mb}));
+}catch(e){cb("ERR:"+e)}})();`
 	var lastFire time.Time
 	log.Printf("aperture: watching (soft=%dMB, cooldown=%s)", softMB, cooldown)
 	for {
@@ -548,14 +572,15 @@ func (c *collector) memoryAperture(softMB int) {
 		if err != nil || before < softMB {
 			continue
 		}
-		if _, err := c.execChrome(minScript); err != nil {
+		parked, err := c.execChrome(parkScript)
+		if err != nil {
 			continue
 		}
 		lastFire = time.Now()
 		after, _ := c.execChrome(memScript)
 		amb, _ := strconv.Atoi(strings.TrimSpace(after))
-		c.publish(fmt.Sprintf(`{"session":"fox","origin":"COLLECTOR","frame":{"method":"aperture.heap_minimize","params":{"before_mb":%d,"after_mb":%d,"reclaimed_mb":%d}}}`, before, amb, before-amb))
-		log.Printf("aperture: parent %dMB > %dMB soft -> heap-minimize -> %dMB (reclaimed %dMB)", before, softMB, amb, before-amb)
+		c.publish(fmt.Sprintf(`{"session":"fox","origin":"COLLECTOR","frame":{"method":"aperture.park","params":{"before_mb":%d,"after_mb":%d,"victim":%s}}}`, before, amb, strings.TrimSpace(parked)))
+		log.Printf("aperture: total %dMB > %dMB soft -> FAIR park heaviest -> %dMB | victim=%s", before, softMB, amb, strings.TrimSpace(parked))
 	}
 }
 
@@ -2715,7 +2740,7 @@ func main() {
 	fxdriver := flag.String("fxdriver", os.ExpandEnv("$HOME/Desktop/repos/adapters/browser/firefox-stream.js"), "path to the Firefox capture driver (adapters/browser/firefox-stream.js)")
 	fxshot := flag.String("fxshot", os.ExpandEnv("$HOME/Desktop/repos/adapters/browser/firefox-drawshot.js"), "path to the Firefox leak-free still driver (adapters/browser/firefox-drawshot.js)")
 	sessionFile := flag.String("session-file", os.ExpandEnv("$HOME/.8/gecko.json"), "file where up.sh publishes the current geckodriver SID; the collector re-reads it to auto-recover the session after a Firefox recycle")
-	apertureMB := flag.Int("aperture-mb", 0, "soft parent-memory threshold (MB): fires Firefox heap-minimize above this. DEFAULT 0 (OFF) — heap-minimize proven NOT to reclaim drawSnapshot compositor surfaces (reclaimed ~0/negative); the real fix is hard foveation (only the hero re-captures). Watchdog 4500 recycle is the backstop.")
+	apertureMB := flag.Int("aperture-mb", 3000, "soft parent+children memory threshold (MB): above this the FAIR aperture parks the heaviest non-focused tab (gBrowser.discardBrowser — memory freed, tab identity preserved, reloads on focus). INVARIANT: no tab is ever closed. 0 disables. Watchdog 4500 full-recycle stays as the backstop.")
 	token := flag.String("token", os.Getenv("EIGHT_TOKEN"), "shared secret required on every endpoint via X-8-Token/Bearer (empty = auth off, local-dev default)")
 	origins := flag.String("origins", os.Getenv("EIGHT_ORIGINS"), "comma CORS origin allowlist, e.g. http://localhost:8088 (empty = *, local-dev)")
 	flag.Parse()
