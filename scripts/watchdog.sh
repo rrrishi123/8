@@ -15,6 +15,16 @@ echo "[watchdog] started $(date +%H:%M:%S) — process-based liveness — tab st
 # never run two up.sh at once — concurrent revives kill each other's geckodriver
 # session and leave Firefox down (the exact mess that desynced the wire for hours).
 run_up() {
+  # kill a WEDGED revive first (2026-07-25: a stuck up.sh held the field for
+  # hours while the watchdog skipped 'already running' — deadlocked revives)
+  for pid in $(pgrep -f 'bash scripts/up.sh' 2>/dev/null); do
+    age=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')
+    if [ "${age:-0}" -gt 300 ]; then
+      echo "[watchdog $(date +%H:%M:%S)] up.sh pid $pid wedged (${age}s) — killing stale revive"
+      kill "$pid" 2>/dev/null; sleep 1; kill -9 "$pid" 2>/dev/null
+      rm -rf /tmp/8-up.lockdir
+    fi
+  done
   if pgrep -f 'bash scripts/up.sh' >/dev/null 2>&1; then
     echo "[watchdog $(date +%H:%M:%S)] up.sh already running — skip (no concurrent revives)"
     return
