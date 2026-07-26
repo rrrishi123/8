@@ -1,0 +1,61 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>webrtc · CHANNEL · adapter</title><link rel="stylesheet" href="_shared.css">
+</head><body><div class="wrap">
+<a class="back" href="index.html">← the 8 transports</a>
+<h1>webrtc <span class="badge channel">CHANNEL</span><span class="badge adapter">adapter</span></h1>
+<p class="lede">Two peers negotiate over a <b>signaling CALL</b> (SDP offer → answer — the only part the wire
+sees), then open a peer-to-peer <b>DataChannel</b> (a CHANNEL). Everything below runs in this one page: two
+real <code>RTCPeerConnection</code>s, real DTLS/SCTP. No server.</p>
+
+<div class="panel">
+  <div class="row">
+    <button id="neg">1 · run signaling CALL (offer→answer)</button>
+    <span><span class="dot" id="dot"></span><span id="statTxt">idle</span></span>
+  </div>
+  <div class="row" style="align-items:stretch">
+    <div style="flex:1"><div class="k">offer SDP (posted by peer A)</div><pre id="offer" style="max-height:150px">—</pre></div>
+    <div style="flex:1"><div class="k">answer SDP (returned by peer B)</div><pre id="answer" style="max-height:150px">—</pre></div>
+  </div>
+  <div class="row">
+    <input id="msg" value="hello over the datachannel" style="width:320px">
+    <button id="send" disabled>2 · send on the CHANNEL →</button>
+  </div>
+  <div class="k">datachannel traffic</div>
+  <pre id="log">—</pre>
+</div>
+
+<div class="wired">
+  <b>How this is wired:</b> peer A creates a <code>DataChannel</code> and an SDP offer; that offer is the
+  <em>signaling CALL</em> — here handed straight to peer B in-page (in the real adapter it rides an
+  <code>http_request</code>). B answers, ICE candidates trade, DTLS handshakes, the channel opens. This mirrors
+  the webrtc conformance test exactly: it proves the <b>offer/answer CALL</b> (the wire's only surface) and
+  leaves DTLS/SCTP to the WebRTC stack — which the browser provides here, and <code>pion</code> would in Go.
+  <b>The wire never sees the SDP interior.</b>
+</div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const line=(a,s)=>$('log').textContent=(a+'  '+s+'\n'+$('log').textContent).slice(0,4000);
+let A,B,dc;
+$('neg').onclick=async()=>{
+  $('dot').className='dot live'; $('statTxt').textContent='negotiating…'; $('log').textContent='';
+  A=new RTCPeerConnection(); B=new RTCPeerConnection();
+  A.onicecandidate=e=>e.candidate&&B.addIceCandidate(e.candidate);
+  B.onicecandidate=e=>e.candidate&&A.addIceCandidate(e.candidate);
+  // peer B answers on the datachannel by echoing
+  B.ondatachannel=e=>{ e.channel.onmessage=ev=>{ line('↓ B recv',ev.data); e.channel.send('echo:'+ev.data); }; };
+  dc=A.createDataChannel('wire');
+  dc.onopen=()=>{ $('dot').className='dot ok'; $('statTxt').textContent='DataChannel open';
+    $('send').disabled=false; line('•','[CHANNEL open — DTLS/SCTP established]'); };
+  dc.onmessage=ev=>line('↓ A recv',ev.data);
+  const offer=await A.createOffer(); await A.setLocalDescription(offer);   // the CALL payload
+  $('offer').textContent=offer.sdp.split('\n').slice(0,12).join('\n')+'\n…';
+  await B.setRemoteDescription(offer);
+  const answer=await B.createAnswer(); await B.setLocalDescription(answer); // the CALL response
+  $('answer').textContent=answer.sdp.split('\n').slice(0,12).join('\n')+'\n…';
+  await A.setRemoteDescription(answer);
+};
+$('send').onclick=()=>{ const m=$('msg').value; dc.send(m); line('↑ A send',m); };
+</script>
+</body></html>

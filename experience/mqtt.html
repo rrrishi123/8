@@ -1,0 +1,56 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mqtt · CHANNEL · adapter</title><link rel="stylesheet" href="_shared.css">
+</head><body><div class="wrap">
+<a class="back" href="index.html">← the 8 transports</a>
+<h1>mqtt <span class="badge channel">CHANNEL</span><span class="badge adapter">adapter</span></h1>
+<p class="lede">A persistent broker connection. <b>subscribe</b> to a topic and messages arrive as frames
+(CHANNEL); <b>publish</b> fires one message into a topic (CALL). Topic routing and QoS are the
+"capability-shaped" bits the adapter owns — the wire never learns about topics.</p>
+
+<div class="panel">
+  <div class="row">
+    <input id="broker" value="wss://broker.emqx.io:8084/mqtt" style="width:300px">
+    <button id="conn">connect</button>
+    <span><span class="dot" id="dot"></span><span id="statTxt">disconnected</span></span>
+  </div>
+  <div class="row">
+    <span class="k">topic</span><input id="topic" style="width:260px">
+    <button id="sub" disabled>subscribe (open CHANNEL)</button>
+  </div>
+  <div class="row">
+    <input id="msg" value='{"mode":"CHANNEL via MQTT","ok":true}' style="width:300px">
+    <button id="pub" disabled>publish (CALL) →</button>
+  </div>
+  <div class="k">frames on the subscribed topic</div>
+  <pre id="log">—</pre>
+</div>
+
+<div class="wired">
+  <b>How this is wired:</b> <code>mqtt.js</code> (from a CDN) over WebSocket to a public test broker, so you get
+  real pub/sub with zero setup. The topic is randomized per visit so you only see your own frames. This mirrors
+  the mqtt conformance test one-to-one — except that test stands up its <b>own</b> hand-rolled MQTT 3.1.1 broker
+  in pure Go (<code>adapters/mqtt</code>) and drives subscribe=CHANNEL / publish=CALL against it, so both ends
+  are ours. Same shape; here the broker is borrowed, there it is built.
+</div>
+</div>
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+$('topic').value = 'wire/experience/'+Math.random().toString(36).slice(2,8);
+const line=(a,s)=>$('log').textContent=(new Date().toLocaleTimeString()+'  '+a+'  '+s+'\n'+$('log').textContent).slice(0,4000);
+let client=null;
+$('conn').onclick=()=>{
+  if(typeof mqtt==='undefined'){ line('!','mqtt.js failed to load (offline / CDN blocked)'); return; }
+  $('dot').className='dot live'; $('statTxt').textContent='connecting…';
+  client=mqtt.connect($('broker').value.trim());
+  client.on('connect',()=>{ $('dot').className='dot ok'; $('statTxt').textContent='connected';
+    $('sub').disabled=false; $('pub').disabled=false; line('•','[broker connected]'); });
+  client.on('message',(t,p)=>line('↓ recv','['+t+']  '+p.toString()));
+  client.on('error',e=>{ $('dot').className='dot err'; $('statTxt').textContent='error: '+e.message; });
+  client.on('close',()=>{ $('dot').className='dot'; $('statTxt').textContent='disconnected'; });
+};
+$('sub').onclick=()=>{ const t=$('topic').value.trim(); client.subscribe(t,()=>line('•','[subscribed → '+t+']')); };
+$('pub').onclick=()=>{ const t=$('topic').value.trim(); client.publish(t,$('msg').value); line('↑ pub','['+t+']  '+$('msg').value); };
+</script>
+</body></html>

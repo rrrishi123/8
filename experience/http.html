@@ -1,0 +1,52 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>http · CALL · the wire</title><link rel="stylesheet" href="_shared.css">
+</head><body><div class="wrap">
+<a class="back" href="index.html">← the 8 transports</a>
+<h1>http <span class="badge call">CALL</span><span class="badge wire">wire</span></h1>
+<p class="lede">One request, one response, then nothing. The whole of WebDriver, Appium, and every REST
+hub is this atom. Fire one at the live collector and read exactly what comes back.</p>
+
+<div class="panel">
+  <div class="row">
+    <select id="method"><option>GET</option><option>POST</option></select>
+    <input id="url" value="/health">
+    <button id="go">send CALL</button>
+    <span id="stat"><span class="dot" id="dot"></span><span id="statTxt">idle</span></span>
+  </div>
+  <div class="k">request</div>
+  <pre id="req">—</pre>
+  <div class="k">response</div>
+  <pre id="res">—</pre>
+</div>
+
+<div class="wired">
+  <b>How this is wired:</b> a plain <code>fetch()</code> to
+  <code>&lt;collector base&gt; + &lt;path&gt;</code>. Default target is the live <b>8</b> collector on omarchy
+  (<code>/health</code> returns <code>{"alive":true,"sessions":[...]}</code>). This is the browser twin of
+  <code>httpx.Do</code> and of <code>probeHTTP</code> in the conformance test. Change the base on the
+  <a class="back" href="index.html">index</a>.
+</div>
+</div>
+<script>
+const base = (localStorage.getItem('wire.base')||'http://100.83.251.102:7070').replace(/\/$/,'');
+const $=id=>document.getElementById(id);
+$('go').onclick = async () => {
+  const m=$('method').value, path=$('url').value.trim(), url=base+(path.startsWith('/')?path:'/'+path);
+  $('req').textContent = m+' '+url;
+  $('dot').className='dot live'; $('statTxt').textContent='calling…'; $('go').disabled=true;
+  const t0=performance.now();
+  try{
+    const r = await fetch(url,{method:m});
+    const body = await r.text(); const ms=(performance.now()-t0).toFixed(0);
+    $('dot').className='dot ok'; $('statTxt').textContent=r.status+' · '+ms+'ms';
+    const hdrs=[...r.headers].map(([k,v])=>k+': '+v).join('\n');
+    $('res').textContent = 'status '+r.status+'\n'+hdrs+'\n\n'+body;
+  }catch(e){
+    $('dot').className='dot err'; $('statTxt').textContent='failed';
+    $('res').textContent = 'CALL failed: '+e.message+
+      '\n\n(is the collector reachable? CORS open? try a base you can reach on the index.)';
+  }finally{ $('go').disabled=false; }
+};
+</script>
+</body></html>

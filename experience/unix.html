@@ -1,0 +1,42 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>unix_socket · CALL|CHANNEL · the wire</title><link rel="stylesheet" href="_shared.css">
+</head><body><div class="wrap">
+<a class="back" href="index.html">← the 8 transports</a>
+<h1>unix_socket <span class="badge call">CALL</span><span class="badge channel">CHANNEL</span><span class="badge wire">wire</span></h1>
+<p class="lede">Not a new protocol — the <em>same</em> CALL and CHANNEL bytes, dialed over a unix-domain socket
+instead of TCP. No port, no network stack, just a path on disk. A unix socket carries no framing of its own,
+so it stays in the wire, not an adapter.</p>
+
+<div class="panel">
+  <div class="k">why there is no live button here</div>
+  <p>Browsers deliberately cannot open a unix socket — <code>fetch()</code> and <code>WebSocket</code> only
+  speak <code>http(s)://</code> and <code>ws(s)://</code> over the network. Unix sockets are a
+  <b>local-process</b> transport, so this one is proven in Go, not in a tab. That boundary is the point:
+  unix sockets exist precisely to talk to something on the same machine with no port exposed.</p>
+
+  <div class="k">the wire's URL forms</div>
+  <table>
+    <tr><th>mode</th><th>URL</th><th>maps to</th></tr>
+    <tr><td>CALL</td><td><code>http+unix:///var/run/app.sock:/route</code></td><td><code>httpx.Do</code> over <code>net.Dial("unix",…)</code></td></tr>
+    <tr><td>CHANNEL</td><td><code>ws+unix:///var/run/app.sock:/ws</code></td><td><code>wsx.Dial</code> over <code>net.Dial("unix",…)</code></td></tr>
+  </table>
+  <p class="k" style="margin-top:12px">everything up to the first <code>:</code> after the authority is the socket path; the rest is the request path.</p>
+
+  <div class="k">where you actually use it</div>
+  <ul>
+    <li>talk to <b>dockerd</b> at <code>/var/run/docker.sock</code> with no TCP exposure</li>
+    <li>a chromedriver / appium sidecar over a pipe</li>
+    <li>the <b>8</b> collector ↔ browser without opening a port on the box</li>
+  </ul>
+</div>
+
+<div class="wired">
+  <b>How this is proven:</b> the conformance test dials <code>http+unix://…/ping</code> (CALL) and
+  <code>ws+unix://…/ws</code> (CHANNEL) against a real unix listener it owns — both halves, same bytes as TCP.
+  See <code>probeUnixSocket</code> in <code>http-mcp/cmd/mcp/transports_conformance_test.go</code>. A browser
+  can watch <a class="back" href="http.html">http</a> and <a class="back" href="websocket.html">websocket</a>;
+  this is those same two atoms, just addressed by a filesystem path.
+</div>
+</div>
+</body></html>

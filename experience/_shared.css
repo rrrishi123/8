@@ -1,0 +1,37 @@
+:root{ --bg:#0d1117; --card:#161b22; --line:#30363d; --ink:#e6edf3; --dim:#8b949e;
+       --wire:#3fb950; --adapter:#f0883e; --call:#58a6ff; --channel:#bc8cff; --bad:#f85149; }
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+     font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.wrap{max-width:900px;margin:0 auto;padding:24px 26px 70px}
+a.back{color:var(--dim);text-decoration:none}
+a.back:hover{color:var(--ink)}
+h1{margin:14px 0 2px;font-size:24px}
+h1 .badge{font-size:12px;vertical-align:middle;margin-left:10px;padding:3px 9px;border-radius:12px;letter-spacing:.5px}
+.badge.call{color:var(--call);border:1px solid #1f6feb}
+.badge.channel{color:var(--channel);border:1px solid #8957e5}
+.badge.wire{color:var(--wire);border:1px solid #238636}
+.badge.adapter{color:var(--adapter);border:1px solid #bb8009}
+.lede{color:var(--dim);margin:6px 0 20px;max-width:760px}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;margin:16px 0}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+button{background:#238636;color:#fff;border:0;padding:9px 16px;border-radius:7px;
+       font-family:inherit;font-size:14px;cursor:pointer}
+button:hover{background:#2ea043} button:disabled{opacity:.5;cursor:default}
+button.sec{background:#21262d;border:1px solid var(--line)}
+input,select{background:#010409;border:1px solid var(--line);color:var(--ink);
+     padding:8px 10px;border-radius:6px;font-family:inherit}
+input{width:280px}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#6e7681;margin-right:7px}
+.dot.ok{background:var(--wire)} .dot.err{background:var(--bad)} .dot.live{background:var(--call);animation:p 1s infinite}
+@keyframes p{50%{opacity:.3}}
+pre{background:#010409;border:1px solid var(--line);border-radius:8px;padding:14px;
+    overflow:auto;max-height:340px;white-space:pre-wrap;word-break:break-word;color:#c9d1d9}
+.k{color:var(--dim)} .g{color:var(--wire)} .o{color:var(--adapter)} .b{color:var(--call)} .v{color:var(--channel)}
+.wired{margin-top:26px;border-top:1px dashed var(--line);padding-top:16px;color:var(--dim);font-size:12.5px}
+.wired b{color:var(--ink)}
+.count{font-size:34px;font-weight:700}
+code{color:var(--call)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+td,th{border:1px solid var(--line);padding:6px 9px;text-align:left}
+th{color:var(--dim);font-weight:600}

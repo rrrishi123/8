@@ -1,0 +1,51 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>websocket · CHANNEL · the wire</title><link rel="stylesheet" href="_shared.css">
+</head><body><div class="wrap">
+<a class="back" href="index.html">← the 8 transports</a>
+<h1>websocket <span class="badge channel">CHANNEL</span><span class="badge wire">wire</span></h1>
+<p class="lede">The full channel: one long-lived socket you write frames <em>into</em> and read frames
+<em>out of</em>, both directions, staying open. CDP and WebDriver-BiDi are exactly this — so mapping this one
+socket maps Playwright, Puppeteer and Selenium-BiDi too. Type a frame, send it, watch the echo come back.</p>
+
+<div class="panel">
+  <div class="row">
+    <input id="url" value="wss://echo.websocket.events" style="width:340px">
+    <button id="conn">connect</button>
+    <button id="disc" class="sec" disabled>disconnect</button>
+    <span><span class="dot" id="dot"></span><span id="statTxt">closed</span></span>
+  </div>
+  <div class="row">
+    <input id="msg" value='{"id":1,"method":"ping"}' style="width:340px">
+    <button id="send" disabled>send frame →</button>
+  </div>
+  <div class="k">frames (↑ sent · ↓ received)</div>
+  <pre id="log">—</pre>
+</div>
+
+<div class="wired">
+  <b>How this is wired:</b> the browser's native <code>WebSocket</code>. Default target is a public echo so you
+  can see the round-trip with zero setup; point it at your own endpoint (or the <b>8</b> broker) to drive real
+  BiDi. This is the browser twin of the wire's <code>wsx</code> atom — and of the conformance test, which stands
+  up its <b>own</b> RFC6455 echo server and drives <code>wsx</code> against it: we made the channel, we send into
+  it, events come back. Unlike <a class="back" href="sse.html">sse</a>, here you <em>can</em> push upstream.
+</div>
+</div>
+<script>
+const $=id=>document.getElementById(id); let ws=null;
+const line=(dir,s)=>{ const a=dir==='up'?'↑':'↓';
+  $('log').textContent=(new Date().toLocaleTimeString()+'  '+a+'  '+s+'\n'+$('log').textContent).slice(0,4000); };
+$('conn').onclick=()=>{
+  try{ ws=new WebSocket($('url').value.trim()); }catch(e){ line('↓','bad url: '+e.message); return; }
+  $('dot').className='dot live'; $('statTxt').textContent='connecting…'; $('log').textContent='';
+  ws.onopen=()=>{ $('dot').className='dot ok'; $('statTxt').textContent='open';
+    $('conn').disabled=true;$('disc').disabled=false;$('send').disabled=false; line('↓','[channel open]'); };
+  ws.onmessage=ev=>line('down', typeof ev.data==='string'?ev.data:'[binary '+ev.data.size+'b]');
+  ws.onclose=()=>{ $('dot').className='dot'; $('statTxt').textContent='closed';
+    $('conn').disabled=false;$('disc').disabled=true;$('send').disabled=true; };
+  ws.onerror=()=>{ $('dot').className='dot err'; $('statTxt').textContent='error'; };
+};
+$('send').onclick=()=>{ const m=$('msg').value; ws.send(m); line('up',m); };
+$('disc').onclick=()=>ws&&ws.close();
+</script>
+</body></html>

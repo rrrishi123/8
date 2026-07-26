@@ -1,0 +1,52 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sse · CHANNEL afferent · the wire</title><link rel="stylesheet" href="_shared.css">
+</head><body><div class="wrap">
+<a class="back" href="index.html">← the 8 transports</a>
+<h1>sse <span class="badge channel">CHANNEL · afferent</span><span class="badge wire">wire</span></h1>
+<p class="lede">A degenerate channel: the server pushes, the client only listens — no client→server frames.
+It rides plain HTTP with <code>text/event-stream</code>. Open it and watch the live witness feed
+stream real events off the browser on omarchy.</p>
+
+<div class="panel">
+  <div class="row">
+    <input id="path" value="/feed">
+    <button id="open">open channel</button>
+    <button id="close" class="sec" disabled>close</button>
+    <span><span class="dot" id="dot"></span><span id="statTxt">closed</span></span>
+  </div>
+  <div class="row" style="gap:26px">
+    <div><div class="k">frames received</div><div class="count g" id="n">0</div></div>
+    <div style="flex:1"><div class="k">latest event</div><pre id="last" style="max-height:150px">—</pre></div>
+  </div>
+  <div class="k">stream tail</div>
+  <pre id="log">—</pre>
+</div>
+
+<div class="wired">
+  <b>How this is wired:</b> a browser <code>EventSource(base + path)</code> onto the collector's
+  <code>/feed</code> — the same afferent stream <code>probeSSE</code> asserts and the <b>8</b> cockpit consumes.
+  Each <code>data:</code> line here is a real frame the witness saw (look for <code>"origin":"BIDI"</code> —
+  those are live WebDriver-BiDi frames off Firefox). Server pushes; you cannot push back — that is what
+  "afferent" means.
+</div>
+</div>
+<script>
+const base=(localStorage.getItem('wire.base')||'http://100.83.251.102:7070').replace(/\/$/,'');
+const $=id=>document.getElementById(id);
+let es=null,n=0;
+$('open').onclick=()=>{
+  const url=base+($('path').value.trim()||'/feed');
+  $('dot').className='dot live'; $('statTxt').textContent='connecting…';
+  es=new EventSource(url); n=0; $('n').textContent='0'; $('log').textContent='';
+  es.onopen=()=>{ $('dot').className='dot ok'; $('statTxt').textContent='open · '+url; $('open').disabled=true; $('close').disabled=false; };
+  es.onmessage=ev=>{
+    n++; $('n').textContent=n; $('last').textContent=ev.data.slice(0,600);
+    $('log').textContent=(new Date().toLocaleTimeString()+'  '+ev.data.slice(0,140)+'\n'+$('log').textContent).slice(0,4000);
+  };
+  es.onerror=()=>{ $('dot').className='dot err'; $('statTxt').textContent='error / reconnecting (or CORS blocked)'; };
+};
+$('close').onclick=()=>{ if(es)es.close(); $('dot').className='dot'; $('statTxt').textContent='closed';
+  $('open').disabled=false; $('close').disabled=true; };
+</script>
+</body></html>
