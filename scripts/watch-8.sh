@@ -27,7 +27,7 @@ trap 'rm -rf "$_LOCK"' EXIT
 
 echo "$(date +%H:%M:%S) 8-WATCH watcher started (pid $$)" >> "$LOG"
 
-prev="INIT"; hi=0
+prev="INIT"; hi=0; wdBad=0
 while true; do
   ff=$(pgrep -f 'firefox.*ltqa-firefox-deepseek' 2>/dev/null | head -1)
   wc=$(pgrep -f 'bash scripts/watchdog.sh' 2>/dev/null | grep -c .)
@@ -35,9 +35,13 @@ while true; do
   mem=$(curl -s -m4 "http://127.0.0.1:7070/procinfo?session=fox" 2>/dev/null | jq -r '.parent_mem_mb // -1' 2>/dev/null); mem=${mem%.*}; [ -z "$mem" ] && mem=-1
   curl -s -m3 http://127.0.0.1:7070/health >/dev/null 2>&1 && col=up || col=DOWN
   if [ "$mem" -gt 4400 ] 2>/dev/null; then hi=$((hi+1)); else hi=0; fi
+  # watchdog-count debounce: a spawn attempt is REJECTED by the singleton lock
+  # within seconds (by design, e.g. up.sh racing a revive) — the 25s sample can
+  # catch it mid-exit. Only a count!=1 that PERSISTS two ticks is a real problem.
+  if [ "$wc" != "1" ]; then wdBad=$((wdBad+1)); else wdBad=0; fi
   key=""; probs=""
   [ -z "$ff" ] && { key="${key}F"; probs="$probs FIREFOX-DOWN"; }
-  [ "$wc" != "1" ] && { key="${key}W$wc"; probs="$probs watchdogs=$wc(want1)"; }
+  { [ "$wdBad" -ge 2 ]; } 2>/dev/null && { key="${key}W$wc"; probs="$probs watchdogs=$wc(want1, persisted)"; }
   { [ "$uc" -gt 1 ]; } 2>/dev/null && { key="${key}U"; probs="$probs DUP-up.sh=$uc"; }
   [ "$col" = "DOWN" ] && { key="${key}C"; probs="$probs COLLECTOR-DOWN"; }
   { [ "$hi" -ge 2 ]; } 2>/dev/null && { key="${key}M"; probs="$probs parent_mem=${mem}MB SUSTAINED>4400 (recycle imminent)"; }
