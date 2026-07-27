@@ -443,3 +443,4 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 /* inline "+ tab" url input (replaces the WebDriver-dismissed native prompt) */
 .deck-add-in { background: var(--bg); color: var(--fg); border: 1px solid var(--green);
   font: inherit; font-size: 11px; padding: 1px 6px; width: 170px; outline: none; }
+.tr-twowire { color: var(--yellow); text-decoration: none; border-bottom: 1px dotted var(--yellow); }

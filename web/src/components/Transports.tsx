@@ -136,6 +136,7 @@ export function Transports() {
       <div className="tr-lede">
         Every automation reduces to two atoms: <b className="phys-call">CALL</b> (one request → one response) and <b className="phys-channel">CHANNEL</b> (one held bidirectional stream).
         The 8 below are those two in different clothes. <b>Fire one</b> — it is a real op through the wire: it lands in the feed, 8 foveates to where it happened, and it is recordable → replayable. This is not a demo beside 8; it is the loop 8 already runs.
+        {' '}<a className="tr-twowire" href="/two-wire.html" target="_blank" rel="noreferrer">watch the two physics, animated →</a>
       </div>
       <div className="tr-chan">{chan ? <>channel session held: <b>{chan}</b> — CHANNEL fires drive it live</> : <span className="bad">no channel session held — start Firefox/8 to fire CHANNEL ops</span>}</div>
 

@@ -52,16 +52,20 @@ export function Canvas({ session }: { session: string | null }) {
   const recRef = useRef(false);
   useEffect(() => {
     let alive = true;
+    let hidTick = 0;
     const tick = async () => {
       if (!alive) return;
-      if (!document.hidden) {
+      hidTick++;
+      // hidden slows, never stops (an AGENT may be recording with no human window)
+      if (!document.hidden || hidTick % 4 === 0 || recRef.current) {
         const r = await recordCtl(''); setRec(r); recRef.current = !!r.recording;
       }
       if (alive) window.setTimeout(tick, recRef.current ? 1000 : 4000);
     };
     tick();
     listSeries().then(setSeries);
-    const st = window.setInterval(() => { if (!document.hidden) listSeries().then(setSeries); }, 8000);
+    let sTick = 0;
+    const st = window.setInterval(() => { sTick++; if (!document.hidden || sTick % 3 === 0) listSeries().then(setSeries); }, 8000);
     return () => { alive = false; clearInterval(st); };
   }, []);
   const toggleRec = async () => {
@@ -102,7 +106,15 @@ export function Canvas({ session }: { session: string | null }) {
       } catch { /* keep last */ }
     };
     load();
-    const t = window.setInterval(() => { if (!document.hidden) load(); }, 4000);
+    // hidden ≠ dead. The old guard (skip while document.hidden) froze tab
+    // discovery/procinfo INDEFINITELY when the window was occluded — but agents
+    // keep driving and keep LOOKING via captureScreenshot (which renders a
+    // hidden page yet never clears document.hidden). Observed 2026-07-27: an
+    // agent-opened tab never appeared on canvas because no human had the window
+    // foregrounded. The gate is not "is a human looking" but "is anyone
+    // consuming" — so hidden only SLOWS the poll (4s → 16s), never stops it.
+    let n = 0;
+    const t = window.setInterval(() => { n++; if (!document.hidden || n % 4 === 0) load(); }, 4000);
     return () => clearInterval(t);
   }, []);
 
@@ -113,9 +125,13 @@ export function Canvas({ session }: { session: string | null }) {
   // "on" the tab; the seer's gaze follows the action automatically.
   useEffect(() => {
     let alive = true;
+    let hidTick = 0;
     const poll = async () => {
       if (!alive) return;
-      if (!document.hidden) {
+      // hidden slows foveation (1.5s → 6s) but never stops it — an agent's act
+      // must still move the seer's gaze even when no human has the window up.
+      hidTick++;
+      if (!document.hidden || hidTick % 4 === 0) {
         const f = await getFocus();
         if (f.seq > 0 && f.seq !== lastFocusSeq.current) {
           lastFocusSeq.current = f.seq;

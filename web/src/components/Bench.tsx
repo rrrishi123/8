@@ -7,7 +7,11 @@ import type { BenchRec, ReqRec } from '../types';
 // still holds the socket. Data is loaded as a bounded window (the store keeps
 // all; the cockpit shows the recent slice).
 export function Bench() {
-  const [tab, setTab] = useState<'batches' | 'requests' | 'physics'>('batches');
+  // Land on PHYSICS — the claim — not the raw numbers. A newcomer who opens the
+  // Lab on BENCHMARKS sees a wall of µs with the question torn off; PHYSICS is
+  // the question ("two physics, where each wins") and BENCHMARKS/REQUESTS are
+  // its evidence, one click behind. Story first, numbers as proof.
+  const [tab, setTab] = useState<'batches' | 'requests' | 'physics'>('physics');
   const [benches, setBenches] = useState<BenchRec[]>([]);
   const [reqs, setReqs] = useState<ReqRec[]>([]);
   const [tag, setTag] = useState('');
@@ -183,10 +187,10 @@ export function Bench() {
               <tr><td>flutterAndroid</td><td>mobile-api/framework/v1/flutter/build</td><td>android</td></tr>
               <tr><td>flutterIos</td><td>mobile-api/framework/v1/flutter/ios/build</td><td>ios</td></tr>
             </tbody></table>
-            <p className="dim">The whole native-suite family is one endpoint shape. <b>Real vs virtual device is the <code>isVirtualDevice</code> flag in the payload</b> — same wire, same tool, the pool is data. The public api-doc curls point at <code>manual-api</code>, but that host <b>500s</b> on the live build/list routes; <code>mobile-api</code> is the working host (manual-api is upload-only). Verified live through http-mcp on <code>prod:adminltqa</code>, secret below the boundary:</p>
+            <p className="dim">The whole native-suite family is one endpoint shape. <b>Real vs virtual device is the <code>isVirtualDevice</code> flag in the payload</b> — same wire, same tool, the pool is data. The public api-doc curls point at <code>manual-api</code>, but that host <b>500s</b> on the live build/list routes; <code>mobile-api</code> is the working host (manual-api is upload-only). Verified live through http-mcp on <code>&lt;account&gt;</code>, secret below the boundary:</p>
             <table className="metrics"><thead><tr><th>run</th><th>RD/VD</th><th>buildId</th><th>verdict</th></tr></thead><tbody>
-              <tr><td>espresso</td><td>real device</td><td><a href="https://appautomation.lambdatest.com/build?pageType=build&buildId=22983015" target="_blank" rel="noreferrer">22983015</a></td><td className="hot">Passed · 4 sessions · 1m13s</td></tr>
-              <tr><td>xcui</td><td><b>virtual</b> (isVirtualDevice)</td><td><a href="https://appautomation.lambdatest.com/build?pageType=build&buildId=22986617" target="_blank" rel="noreferrer">22986617</a></td><td>submitted · iPhone 15 sim</td></tr>
+              <tr><td>espresso</td><td>real device</td><td><a href="https://appautomation.lambdatest.com/build?pageType=build&buildId=&lt;build_id&gt;" target="_blank" rel="noreferrer">&lt;build_id&gt;</a></td><td className="hot">Passed · 4 sessions · 1m13s</td></tr>
+              <tr><td>xcui</td><td><b>virtual</b> (isVirtualDevice)</td><td><a href="https://appautomation.lambdatest.com/build?pageType=build&buildId=&lt;build_id&gt;" target="_blank" rel="noreferrer">&lt;build_id&gt;</a></td><td>submitted · iPhone 15 sim</td></tr>
             </tbody></table>
             <p className="dim"><b>Peer review of http-mcp v.0.0.1.</b> The provider matrix is <b>spec-data expanded by a host</b> — http-mcp stays the 3-tool, provider-agnostic wire; each new cloud (BrowserStack next) is one JSON file, never a tool. The peer: <i>"exactly the right boundary … prevents http-mcp from becoming a monolithic integration hub."</i> On provenance he held the <code>isVirtualDevice</code> flag sufficient if paired with the buildId (hence the links above). And he flagged two auth hardenings — redact the resolved ws URL and credential from channel errors — now applied below the boundary.</p>
           </div>
