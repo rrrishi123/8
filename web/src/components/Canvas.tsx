@@ -8,6 +8,18 @@ import { procinfo, recordCtl, listSeries, replaySeries, addTab, getFocus, type S
 
 const BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
 
+// SELF_ID — a per-tab id in the URL hash so a cockpit can tell its OWN tab apart
+// from a SIBLING cockpit tab (both are localhost:8088). Set once, synchronously,
+// at module load so it exists before the first /tabs poll. Enables the
+// two-cockpit fan-out (drive one 8-tab, watch it rise in the other's canvas).
+const SELF_ID = (() => {
+  try {
+    let id = new URLSearchParams(location.hash.replace(/^#/, '')).get('c');
+    if (!id) { id = Math.random().toString(36).slice(2, 8); location.hash = 'c=' + id; }
+    return id;
+  } catch { return 'self'; }
+})();
+
 // pretext spatial cockpit: every live target is a card SIZED TO ITS SOURCE, laid
 // out in a world you pan/zoom like a map. A browser's tabs are a SOLITAIRE DECK —
 // stacked cards you fan out to see together; a device/request seat is a lone card.
@@ -86,7 +98,18 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
         await Promise.all(live.filter((s) => s.physics === 'channel').map(async (s) => {
           try {
             const t = await (await fetch(`${BASE}/tabs?session=${encodeURIComponent(s.id)}`)).json();
-            tb[s.id] = (t.tabs || []).filter((x: Tab) => !String(x.url || '').includes(location.host));
+            // Exclude only THIS cockpit's OWN tab (by its self-id), not every
+            // localhost:8088 tab — so a SIBLING cockpit tab appears as a card and
+            // can be foveated/fanned-out when driven (2026-07-27, the two-cockpit
+            // fan-out test). The feed's self-witness recursion guard (collector
+            // dropping :8088 network events) is untouched — this only relaxes
+            // which tabs render as CARDS. A cockpit still never shows ITSELF.
+            tb[s.id] = (t.tabs || []).filter((x: Tab) => {
+              const u = String(x.url || '');
+              const mine = u.includes(location.host) && u.includes('c=' + SELF_ID);
+              const ownNoId = u.replace(/#.*$/, '') === location.href.replace(/#.*$/, '') && !u.includes('c=');
+              return !mine && !ownNoId;
+            });
           } catch { tb[s.id] = []; }
         }));
         setTabsBy(tb);
