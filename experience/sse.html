@@ -31,15 +31,17 @@ stream real events off the browser on omarchy.</p>
   "afferent" means.
 </div>
 </div>
+<script src="_wire.js"></script>
 <script>
-const base=(localStorage.getItem('wire.base')||'http://100.83.251.102:7070').replace(/\/$/,'');
+const base=WIRE.base();
 const $=id=>document.getElementById(id);
 let es=null,n=0;
 $('open').onclick=()=>{
   const url=base+($('path').value.trim()||'/feed');
   $('dot').className='dot live'; $('statTxt').textContent='connecting…';
   es=new EventSource(url); n=0; $('n').textContent='0'; $('log').textContent='';
-  es.onopen=()=>{ $('dot').className='dot ok'; $('statTxt').textContent='open · '+url; $('open').disabled=true; $('close').disabled=false; };
+  es.onopen=()=>{ $('dot').className='dot ok'; $('statTxt').textContent='open · '+url; $('open').disabled=true; $('close').disabled=false;
+    WIRE.fire('browser','opened CHANNEL (sse) '+url,'CHANNEL'); };
   es.onmessage=ev=>{
     n++; $('n').textContent=n; $('last').textContent=ev.data.slice(0,600);
     $('log').textContent=(new Date().toLocaleTimeString()+'  '+ev.data.slice(0,140)+'\n'+$('log').textContent).slice(0,4000);

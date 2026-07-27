@@ -34,11 +34,13 @@ real <code>RTCPeerConnection</code>s, real DTLS/SCTP. No server.</p>
   <b>The wire never sees the SDP interior.</b>
 </div>
 </div>
+<script src="_wire.js"></script>
 <script>
 const $=id=>document.getElementById(id);
 const line=(a,s)=>$('log').textContent=(a+'  '+s+'\n'+$('log').textContent).slice(0,4000);
 let A,B,dc;
 $('neg').onclick=async()=>{
+  WIRE.fire('browser','fired signaling CALL (SDP offer→answer)','CALL');
   $('dot').className='dot live'; $('statTxt').textContent='negotiating…'; $('log').textContent='';
   A=new RTCPeerConnection(); B=new RTCPeerConnection();
   A.onicecandidate=e=>e.candidate&&B.addIceCandidate(e.candidate);
@@ -47,7 +49,8 @@ $('neg').onclick=async()=>{
   B.ondatachannel=e=>{ e.channel.onmessage=ev=>{ line('↓ B recv',ev.data); e.channel.send('echo:'+ev.data); }; };
   dc=A.createDataChannel('wire');
   dc.onopen=()=>{ $('dot').className='dot ok'; $('statTxt').textContent='DataChannel open';
-    $('send').disabled=false; line('•','[CHANNEL open — DTLS/SCTP established]'); };
+    $('send').disabled=false; line('•','[CHANNEL open — DTLS/SCTP established]');
+    WIRE.fire('browser','opened CHANNEL (webrtc datachannel)','CHANNEL'); };
   dc.onmessage=ev=>line('↓ A recv',ev.data);
   const offer=await A.createOffer(); await A.setLocalDescription(offer);   // the CALL payload
   $('offer').textContent=offer.sdp.split('\n').slice(0,12).join('\n')+'\n…';

@@ -34,6 +34,7 @@
   are ours. Same shape; here the broker is borrowed, there it is built.
 </div>
 </div>
+<script src="_wire.js"></script>
 <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
 <script>
 const $=id=>document.getElementById(id);
@@ -45,12 +46,14 @@ $('conn').onclick=()=>{
   $('dot').className='dot live'; $('statTxt').textContent='connecting…';
   client=mqtt.connect($('broker').value.trim());
   client.on('connect',()=>{ $('dot').className='dot ok'; $('statTxt').textContent='connected';
-    $('sub').disabled=false; $('pub').disabled=false; line('•','[broker connected]'); });
+    $('sub').disabled=false; $('pub').disabled=false; line('•','[broker connected]');
+    WIRE.fire('browser','opened CHANNEL (mqtt) '+$('broker').value.trim(),'CHANNEL'); });
   client.on('message',(t,p)=>line('↓ recv','['+t+']  '+p.toString()));
   client.on('error',e=>{ $('dot').className='dot err'; $('statTxt').textContent='error: '+e.message; });
   client.on('close',()=>{ $('dot').className='dot'; $('statTxt').textContent='disconnected'; });
 };
 $('sub').onclick=()=>{ const t=$('topic').value.trim(); client.subscribe(t,()=>line('•','[subscribed → '+t+']')); };
-$('pub').onclick=()=>{ const t=$('topic').value.trim(); client.publish(t,$('msg').value); line('↑ pub','['+t+']  '+$('msg').value); };
+$('pub').onclick=()=>{ const t=$('topic').value.trim(); client.publish(t,$('msg').value); line('↑ pub','['+t+']  '+$('msg').value);
+  WIRE.fire('browser','published a CALL to mqtt topic '+t,'CALL'); };
 </script>
 </body></html>

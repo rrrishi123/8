@@ -1,0 +1,55 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>8 · the witness — reafference wall</title><link rel="stylesheet" href="_shared.css">
+<style>
+  .wall{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+  .fire{display:grid;grid-template-columns:52px 1fr 130px 96px;gap:12px;align-items:center;
+    background:var(--card);border:1px solid var(--line);border-left:3px solid var(--wire);
+    border-radius:8px;padding:10px 14px;animation:in .25s}
+  @keyframes in{from{opacity:0;transform:translateY(-6px)}}
+  .fire .seq{color:var(--dim)} .fire .who{color:var(--call);font-weight:700}
+  .fire .what{color:#c9d1d9} .fire .dms{color:var(--wire);text-align:right;font-weight:700}
+  .fire .ts{color:var(--dim);text-align:right;font-size:12px}
+  .big{display:flex;gap:40px;margin:18px 0 6px}
+  .big .n{font-size:34px;font-weight:700}
+  .empty{color:var(--dim);padding:18px 0}
+</style></head><body><div class="wrap">
+<a class="back" href="index.html">← the 8 transports</a>
+<h1>8 · the witness <span class="badge wire">reafference wall</span></h1>
+<p class="lede">Every fire from any host lands here — <b>automatically</b> — because the wire made each action
+one of only two shapes, so one observer can see all of them. This is not the log; it is the eye:
+<b>who fired what, and how soon 8 caught it.</b> Open a transport page in another tab and fire — watch it appear.</p>
+
+<div class="big">
+  <div><div class="k">fires seen</div><div class="n g" id="n">0</div></div>
+  <div><div class="k">watchers on the feed</div><div class="n" id="w">–</div></div>
+  <div><div class="k">witness uptime</div><div class="n" id="up">–</div></div>
+</div>
+<div class="row">
+  <span><span class="dot" id="dot"></span><span id="st">connecting…</span></span>
+  <button class="sec" id="demo">fire a test CALL →</button>
+</div>
+<div class="wall" id="wall"><div class="empty">no fires yet — go fire something.</div></div>
+</div>
+<script src="_wire.js"></script>
+<script>
+const $=id=>document.getElementById(id); let n=0;
+function add(f){
+  if(n===0) $('wall').innerHTML='';
+  n++; $('n').textContent=n;
+  const el=document.createElement('div'); el.className='fire';
+  el.innerHTML=`<span class="seq">#${f.seq||n}</span>`+
+    `<span><span class="who">${f.who||'?'}</span> fired <span class="what">${f.what||'?'}</span></span>`+
+    `<span class="dms">caught +${f.dms??0}ms</span>`+
+    `<span class="ts">${new Date(f.seen||Date.now()).toLocaleTimeString()}</span>`;
+  $('wall').prepend(el);
+}
+const es=new EventSource(location.origin+'/feed');
+es.onopen =()=>{ $('dot').className='dot ok';  $('st').textContent='feed open · '+location.origin+'/feed'; };
+es.onerror=()=>{ $('dot').className='dot err'; $('st').textContent='feed error (is serve.mjs running?)'; };
+es.onmessage=ev=>{ try{ const d=JSON.parse(ev.data); if(d.kind==='fire') add(d); }catch{} };
+async function poll(){ try{ const h=await (await fetch(location.origin+'/health')).json();
+  $('w').textContent=h.watchers??'–'; $('up').textContent=(h.uptime_s??0)+'s'; }catch{} }
+poll(); setInterval(poll,3000);
+$('demo').onclick=()=> WIRE.fire('witness','test CALL /health','CALL');
+</script></body></html>

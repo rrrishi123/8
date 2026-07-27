@@ -37,11 +37,12 @@ many response frames (CHANNEL). Build a real frame below — these are the exact
   where the protobuf for one string field is <code>0x0a</code> + varint-length + UTF-8 bytes.
 </div>
 </div>
+<script src="_wire.js"></script>
 <script>
 const $=id=>document.getElementById(id);
 function uvarint(n){ const b=[]; while(n>0x7f){ b.push((n&0x7f)|0x80); n>>>=7; } b.push(n); return b; }
 function hex(a){ return a.map(x=>x.toString(16).padStart(2,'0')).join(' '); }
-$('enc').onclick=()=>{
+function encode(){
   const text=$('txt').value; const bytes=[...new TextEncoder().encode(text)];
   const proto=[0x0a, ...uvarint(bytes.length), ...bytes];           // {string text=1}
   const len=proto.length;
@@ -54,7 +55,8 @@ $('enc').onclick=()=>{
     `<tr><td class="b">0a</td><td>protobuf field 1, wire-type 2 (length-delimited)</td></tr>`+
     `<tr><td class="b">${hex(uvarint(bytes.length))}</td><td>string length = ${bytes.length} (varint)</td></tr>`+
     `<tr><td class="v">${hex(bytes)}</td><td>UTF-8 of "${text}"</td></tr>`;
-};
-$('enc').click();
+}
+$('enc').onclick=()=>{ encode(); WIRE.fire('browser','encoded a gRPC frame (unary=CALL / stream=CHANNEL over h2)','CALL'); };
+encode();
 </script>
 </body></html>

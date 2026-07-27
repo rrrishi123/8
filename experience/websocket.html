@@ -31,6 +31,7 @@ socket maps Playwright, Puppeteer and Selenium-BiDi too. Type a frame, send it, 
   it, events come back. Unlike <a class="back" href="sse.html">sse</a>, here you <em>can</em> push upstream.
 </div>
 </div>
+<script src="_wire.js"></script>
 <script>
 const $=id=>document.getElementById(id); let ws=null;
 const line=(dir,s)=>{ const a=dir==='up'?'↑':'↓';
@@ -39,13 +40,14 @@ $('conn').onclick=()=>{
   try{ ws=new WebSocket($('url').value.trim()); }catch(e){ line('↓','bad url: '+e.message); return; }
   $('dot').className='dot live'; $('statTxt').textContent='connecting…'; $('log').textContent='';
   ws.onopen=()=>{ $('dot').className='dot ok'; $('statTxt').textContent='open';
-    $('conn').disabled=true;$('disc').disabled=false;$('send').disabled=false; line('↓','[channel open]'); };
+    $('conn').disabled=true;$('disc').disabled=false;$('send').disabled=false; line('↓','[channel open]');
+    WIRE.fire('browser','opened CHANNEL (websocket) '+$('url').value.trim(),'CHANNEL'); };
   ws.onmessage=ev=>line('down', typeof ev.data==='string'?ev.data:'[binary '+ev.data.size+'b]');
   ws.onclose=()=>{ $('dot').className='dot'; $('statTxt').textContent='closed';
     $('conn').disabled=false;$('disc').disabled=true;$('send').disabled=true; };
   ws.onerror=()=>{ $('dot').className='dot err'; $('statTxt').textContent='error'; };
 };
-$('send').onclick=()=>{ const m=$('msg').value; ws.send(m); line('up',m); };
+$('send').onclick=()=>{ const m=$('msg').value; ws.send(m); line('up',m); WIRE.fire('browser','sent a frame on the CHANNEL','CHANNEL'); };
 $('disc').onclick=()=>ws&&ws.close();
 </script>
 </body></html>

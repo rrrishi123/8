@@ -21,15 +21,16 @@ hub is this atom. Fire one at the live collector and read exactly what comes bac
 </div>
 
 <div class="wired">
-  <b>How this is wired:</b> a plain <code>fetch()</code> to
-  <code>&lt;collector base&gt; + &lt;path&gt;</code>. Default target is the live <b>8</b> collector on omarchy
-  (<code>/health</code> returns <code>{"alive":true,"sessions":[...]}</code>). This is the browser twin of
-  <code>httpx.Do</code> and of <code>probeHTTP</code> in the conformance test. Change the base on the
-  <a class="back" href="index.html">index</a>.
+  <b>How this is wired:</b> a plain <code>fetch()</code> to <code>&lt;base&gt; + &lt;path&gt;</code>. Default base
+  is this origin — the demo witness (<code>serve.mjs</code>), whose <code>/health</code> returns
+  <code>{"alive":true,"role":"demo-witness",...}</code>; point it at a live omarchy collector on the
+  <a class="back" href="index.html">index</a> to hit a real <b>8</b>. On success it also reports the fire to the
+  <a class="back" href="witness.html">witness</a>. Browser twin of <code>httpx.Do</code> / <code>probeHTTP</code>.
 </div>
 </div>
+<script src="_wire.js"></script>
 <script>
-const base = (localStorage.getItem('wire.base')||'http://100.83.251.102:7070').replace(/\/$/,'');
+const base = WIRE.base();
 const $=id=>document.getElementById(id);
 $('go').onclick = async () => {
   const m=$('method').value, path=$('url').value.trim(), url=base+(path.startsWith('/')?path:'/'+path);
@@ -42,6 +43,7 @@ $('go').onclick = async () => {
     $('dot').className='dot ok'; $('statTxt').textContent=r.status+' · '+ms+'ms';
     const hdrs=[...r.headers].map(([k,v])=>k+': '+v).join('\n');
     $('res').textContent = 'status '+r.status+'\n'+hdrs+'\n\n'+body;
+    WIRE.fire('browser', m+' '+path+' → '+r.status, 'CALL');   // land it in the witness
   }catch(e){
     $('dot').className='dot err'; $('statTxt').textContent='failed';
     $('res').textContent = 'CALL failed: '+e.message+

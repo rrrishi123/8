@@ -35,6 +35,10 @@
   .cfg{margin:16px 0;color:var(--dim)}
   .cfg input{background:#010409;border:1px solid var(--line);color:var(--ink);
              padding:6px 9px;border-radius:6px;width:320px;font-family:inherit}
+  .witness{display:flex;gap:14px;align-items:center;margin:18px 0 4px;padding:14px 16px;
+           background:linear-gradient(90deg,#132a1a,#161b22);border:1px solid #238636;border-radius:10px}
+  .witness a{color:var(--wire);font-weight:700;text-decoration:none;font-size:15px}
+  .witness .d{color:var(--dim);font-size:13px}
   footer{max-width:1100px;margin:0 auto;padding:0 28px 50px;color:var(--dim);font-size:12px}
   code{color:var(--call)}
 </style>
@@ -48,9 +52,14 @@
     <div class="atom call"><span class="t">CALL</span> &nbsp;— one request, one response, then nothing. &nbsp;<code>http_request</code></div>
     <div class="atom chan"><span class="t">CHANNEL</span> &nbsp;— one long-lived bidirectional stream. &nbsp;<code>bidi_command</code></div>
   </div>
-  <div class="cfg">Live collector base (for http / sse / mjpeg):
-    <input id="base" placeholder="http://100.83.251.102:7070">
-    <span id="hint"></span>
+  <div class="witness">
+    <a href="witness.html">▶ open the witness wall</a>
+    <span class="d">— open it in another window, then fire from any transport below. Every fire lands there
+       automatically, with how soon <b>8</b> caught it. That is the whole thesis: one host acts, one witness sees.</span>
+  </div>
+  <div class="cfg">Collector target (for http / sse / mjpeg) —
+    <input id="base" placeholder="(same origin — the demo witness)">
+    <span id="hint"></span> &nbsp;<span style="font-size:12px">blank = this server (standalone); or point at a live omarchy collector.</span>
   </div>
 </header>
 <main>
@@ -65,10 +74,12 @@
   Each page says how it is wired at the bottom. &nbsp;·&nbsp; Nothing here is production; it is a teaching surface.
 </footer>
 <script>
-  const DEFAULT_BASE = "http://100.83.251.102:7070";
   const base = document.getElementById('base');
-  base.value = localStorage.getItem('wire.base') || DEFAULT_BASE;
-  base.addEventListener('change', ()=> localStorage.setItem('wire.base', base.value.trim()));
+  base.value = localStorage.getItem('wire.base') || '';   // blank = same origin (the demo witness)
+  base.addEventListener('change', ()=> {
+    const v = base.value.trim();
+    if(v) localStorage.setItem('wire.base', v); else localStorage.removeItem('wire.base');
+  });
 
   const T = [
     ['w','http','CALL · wire','one request → one response','http.html','on'],
