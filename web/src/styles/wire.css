@@ -444,3 +444,11 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .deck-add-in { background: var(--bg); color: var(--fg); border: 1px solid var(--green);
   font: inherit; font-size: 11px; padding: 1px 6px; width: 170px; outline: none; }
 .tr-twowire { color: var(--yellow); text-decoration: none; border-bottom: 1px dotted var(--yellow); }
+.tr-jump { color: var(--cyan); cursor: pointer; text-decoration: none; border-bottom: 1px dotted var(--cyan); }
+.replay.see { color: var(--cyan); margin-left: 6px; }
+.attach { margin: 8px 10px; color: var(--fg-dim); }
+.attach summary { cursor: pointer; color: var(--cyan); font-size: 11px; }
+.attach-in { display: block; width: calc(100% - 4px); margin: 6px 0; background: var(--bg2); color: var(--fg); border: 1px solid var(--border); font: inherit; font-size: 11px; padding: 4px 6px; }
+.attach-go { margin: 2px 0 4px; font-size: 11px; }
+.attach-note { font-size: 10px; color: var(--fg); margin: 4px 0; word-break: break-word; }
+.attach-hint { font-size: 9.5px; color: var(--fg-faint); line-height: 1.4; }

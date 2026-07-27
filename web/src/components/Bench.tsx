@@ -53,7 +53,9 @@ export function Bench() {
         <button className={tab === 'physics' ? 'on' : ''} onClick={() => setTab('physics')}>
           PHYSICS
         </button>
-        <span className="lab-note">read-via-channel vs see-via-screenshot · timed in 8 (Go ns)</span>
+        <span className="lab-note">read-via-channel vs see-via-screenshot · timed in 8 (Go ns)
+          {' '}· <a className="tr-jump" onClick={() => window.dispatchEvent(new CustomEvent('8:jump', { detail: { view: 'wire' } }))}>fire these transports live → WIRE</a>
+        </span>
       </div>
 
       {tab === 'batches' && (

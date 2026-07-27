@@ -6,11 +6,22 @@ import type { CaptureRow, Session } from '../types';
 // must not evict a quiet one's history). Unified timeline, origin glyph, error
 // rows flagged — per the peer's review.
 export function SessionStream({ session, rows }: { session: Session; rows: CaptureRow[] }) {
+  // Same attention-first coalescing as the main feed: consecutive same-shape rows
+  // (the witness's own capture ops, by the hundreds) summarize to one ×N row so
+  // the session's REAL traffic stays legible. Newest of each run is kept.
+  type G = { row: CaptureRow; n: number };
+  const grouped: G[] = [];
+  for (const r of rows) {
+    const last = grouped[grouped.length - 1];
+    if (last && last.row.method === r.method && last.row.detail === r.detail && last.row.origin === r.origin) {
+      last.row = r; last.n++;
+    } else grouped.push({ row: r, n: 1 });
+  }
   return (
     <section className="panel sess-stream">
       <div className="panel-h">
         traffic · {session.id} · {session.physics}
-        <span className="ss-count">{rows.length}</span>
+        <span className="ss-count">{grouped.length < rows.length ? `${grouped.length} of ` : ''}{rows.length}</span>
       </div>
       <div className="cap-head">
         <span className="ln">ln</span>
@@ -22,18 +33,18 @@ export function SessionStream({ session, rows }: { session: Session; rows: Captu
         <div className="empty">no traffic yet — drive it. 8's own /source, /act, /run show here too.</div>
       )}
       <ul className="rows">
-        {rows.slice().reverse().map((r, i) => {
+        {grouped.slice().reverse().map(({ row: r, n }, i) => {
           const status = r.raw && typeof (r.raw as any).status === 'number' ? (r.raw as any).status : undefined;
           const err = status !== undefined && status >= 400;
           // context==null channel events are session-global, not this tab's — flag them.
           const global = r.origin === 'BIDI' && session.physics === 'channel' && !r.tab;
           return (
             <li key={r.id} className={`cap-row phys-${r.physics}${err ? ' err-row' : ''}`}>
-              <span className="ln">{rows.length - i}</span>
+              <span className="ln">{grouped.length - i}</span>
               <span className="org" title={r.origin === 'COLLECTOR' ? "8's own call" : 'the wire'}>
                 {r.origin === 'COLLECTOR' ? '8' : '∿'}
               </span>
-              <span className="method">{r.method}</span>
+              <span className="method">{r.method}{n > 1 ? <b className="xn"> ×{n}</b> : null}</span>
               <span className="detail">{global ? '[GLOBAL] ' : ''}{r.detail}</span>
             </li>
           );

@@ -1538,6 +1538,56 @@ func lookupSession(id string) *sessionRec {
 	return found
 }
 
+// redactHub strips userinfo (user:key creds) from a hub URL for publishing —
+// the credential crosses into the registry file only, never into the feed.
+func redactHub(hub string) string {
+	if u, err := url.Parse(hub); err == nil && u.User != nil {
+		u.User = nil
+		return u.String()
+	}
+	return hub
+}
+
+// handleAttach — connect ANY existing session from ANY provider, at runtime:
+// POST {"hub":"https://user:key@hub.lambdatest.com/wd/hub","session_id":"<sid>"}.
+// CALL sessions are driven entirely off hub+id, so on attach the WHOLE cockpit
+// works on it — the rail, the Interaction view (inspector-on-attach), /shot,
+// /source, /act, liveness tombstoning. Probe verdict beats claim: we attach only
+// a session that actually answers a device-touching command (/window/rect).
+// CHANNEL attach (a raw ws url) needs a broker spawn + brokers-slice locking —
+// deliberately not here yet; this endpoint is the CALL half.
+func (c *collector) handleAttach(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var in struct {
+		Hub       string `json:"hub"`
+		SessionID string `json:"session_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Hub == "" || in.SessionID == "" {
+		http.Error(w, `need {"hub":"https://user:key@hub/wd/hub","session_id":"..."}`, http.StatusBadRequest)
+		return
+	}
+	in.Hub = strings.TrimRight(in.Hub, "/")
+	cl := &http.Client{Timeout: 8 * time.Second}
+	resp, err := cl.Get(in.Hub + "/session/" + in.SessionID + "/window/rect")
+	if err != nil {
+		http.Error(w, "probe failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		http.Error(w, fmt.Sprintf("hub answered %d: %s", resp.StatusCode, body), http.StatusBadGateway)
+		return
+	}
+	registerSession(sessionRec{ID: in.SessionID, Hub: in.Hub, Kind: "cloud", Physics: "call"})
+	c.publish(fmt.Sprintf(`{"session":%q,"physics":"call","origin":"COLLECTOR","frame":{"method":"session.attach","params":{"hub":%q}}}`, in.SessionID, redactHub(in.Hub)))
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"attached":%q,"physics":"call"}`, in.SessionID)
+}
+
 // handleSessions returns the live session list for 8's rail: the held brokers
 // (always channel sessions) plus everything in the shared registry file.
 func (c *collector) handleSessions(w http.ResponseWriter, r *http.Request) {
@@ -2845,6 +2895,7 @@ func main() {
 	mux.HandleFunc("/fxstats", c.handleFxStats)
 	mux.HandleFunc("/fxdiag", c.handleFxDiag)
 	mux.HandleFunc("/sessions", c.handleSessions)
+	mux.HandleFunc("/attach", c.handleAttach) // connect any provider's live session (CALL) at runtime
 	mux.HandleFunc("/source", c.handleSource)
 	mux.HandleFunc("/act", c.handleAct)
 	mux.HandleFunc("/stream", c.handleStream)

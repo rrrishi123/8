@@ -38,6 +38,24 @@ export default function App() {
   // a noisy session must not evict a quiet one's history.
   const sessBuf = useRef<Map<string, CaptureRow[]>>(new Map());
   const [, setSessTick] = useState(0);
+  // CROSS-VIEW TRAVEL — the four views are radio buttons (one visible at a time),
+  // so context must TRAVEL when you switch: any component fires an `8:jump`
+  // CustomEvent ({view, q?, focusKey?}) and App switches the view carrying the
+  // context — a feed row jumps to its tab's card on canvas, WIRE jumps to LAB's
+  // evidence, LAB jumps back to fire on WIRE. Views stop being dead ends.
+  const [canvasFocus, setCanvasFocus] = useState('');
+  useEffect(() => {
+    const onJump = (e: Event) => {
+      const d = (e as CustomEvent).detail || {};
+      setShowCanvas(d.view === 'canvas');
+      setShowLab(d.view === 'lab');
+      setShowWire(d.view === 'wire');
+      if (d.q !== undefined) setQ(d.q);
+      if (d.focusKey) setCanvasFocus(d.focusKey);
+    };
+    window.addEventListener('8:jump', onJump);
+    return () => window.removeEventListener('8:jump', onJump);
+  }, [setShowCanvas]);
 
   useEffect(() => {
     const load = () => listSessions().then(setSessions).catch(() => {});
@@ -86,7 +104,7 @@ export default function App() {
   return (
     <div className="app">
       <main className="cols">
-        {showCanvas ? <Canvas session={sessions.find((s) => s.physics === 'channel')?.id || null} /> : showLab ? <Bench /> : showWire ? <Transports /> : (<>
+        {showCanvas ? <Canvas session={sessions.find((s) => s.physics === 'channel')?.id || null} focusKey={canvasFocus} /> : showLab ? <Bench /> : showWire ? <Transports /> : (<>
         <div className="rail-wrap" style={{ width: railW, flex: 'none' }}>
           <SessionRail sessions={sessions} rows={rows} filters={filters} onToggle={toggle} onSelect={setSelSession} selectedId={selSession?.id} />
         </div>
@@ -135,6 +153,7 @@ export default function App() {
                   {r.ledgerId != null
                     ? <button className="replay" title="replay this request" onClick={(e) => { e.stopPropagation(); doReplay(r.ledgerId!); }}>{replayed[r.ledgerId] || '▶ replay'}</button>
                     : <span className="no">·</span>}
+                  {r.tab && <button className="replay see" title="see this tab's card on the canvas" onClick={(e) => { e.stopPropagation(); window.dispatchEvent(new CustomEvent('8:jump', { detail: { view: 'canvas', focusKey: r.session + r.tab } })); }}>◉ see</button>}
                 </span>
               </li>
             ))}

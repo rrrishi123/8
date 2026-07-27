@@ -19,7 +19,7 @@ interface Cell { key: string; session: string; context?: string; url?: string; t
 interface Stack { key: string; session: string; isBrowser: boolean; isCDP: boolean; label: string; cells: Cell[] }
 interface PaneRect { id: string; x: number; y: number; w: number; h: number; z?: number; node: ReactNode; gravity?: boolean }
 
-export function Canvas({ session }: { session: string | null }) {
+export function Canvas({ session, focusKey }: { session: string | null; focusKey?: string }) {
   const wrap = useRef<HTMLDivElement>(null);
   const [cam, setCam] = useLocal<{ x: number; y: number; z: number }>('cam', { x: 60, y: 30, z: 0.42 });
   const [seats, setSeats] = useState<Seat[]>([]);
@@ -32,6 +32,9 @@ export function Canvas({ session }: { session: string | null }) {
   // before the watchdog's 4500 recycle: hero 3fps → 1fps, ambient 0.4 → frozen.
   const [parentMem, setParentMem] = useState(0);
   const [pinnedKey, setPinnedKey] = useState(''); // the HERO card (explicit pin, not center)
+  // cross-view travel: a feed row's "◉ see" hands its tab here — pin it as hero
+  // on arrival so the jump lands ON the thing you were looking at, not a default.
+  useEffect(() => { if (focusKey) setPinnedKey(focusKey); }, [focusKey]);
   const [spreadBy, setSpreadBy] = useLocal<Record<string, boolean>>('spreadBy', {}); // fanned decks
   const [addFor, setAddFor] = useState('');       // which deck's "+ tab" input is open
   const [addUrl, setAddUrl] = useState('https://www.airbnb.com');

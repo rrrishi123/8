@@ -145,7 +145,10 @@ export function Transports() {
       <div className="tr-group adapter">the ADAPTER — adds framing / routing / negotiation, the wire never sees it</div>
       {group('adapter').map(row)}
 
-      <div className="tr-foot">fired ops appear in the middle feed with <span className="phys-call">call</span>/<span className="phys-channel">channel</span> physics · click one to inspect · record while you fire, then replay the series</div>
+      <div className="tr-foot">fired ops appear in the middle feed with <span className="phys-call">call</span>/<span className="phys-channel">channel</span> physics · click one to inspect · record while you fire, then replay the series
+        {' '}· <a className="tr-jump" onClick={() => window.dispatchEvent(new CustomEvent('8:jump', { detail: { view: 'lab' } }))}>the measured numbers behind these claims → LAB</a>
+        {' '}· <a className="tr-jump" onClick={() => window.dispatchEvent(new CustomEvent('8:jump', { detail: { view: 'home', q: '' } }))}>watch them land → feed</a>
+      </div>
     </section>
   );
 }
