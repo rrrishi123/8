@@ -996,19 +996,32 @@ func (c *collector) pump(ctx context.Context, b broker) {
 						Params json.RawMessage `json:"params"`
 					}
 					if json.Unmarshal([]byte(payload), &echo) == nil && echo.Origin == "wire" {
-						var p struct {
-							Context string `json:"context"`
-							Target  struct {
+						// OBSERVATION IS NOT ACTION: captureScreenshot/getTree/print are
+						// afferent reads — they must never move the gaze, no matter who
+						// fires them. Found live (2026-07-27): an agent filming the demo
+						// (captureScreenshot on the cockpit at 2.4/s through the broker)
+						// hammered focus back to the cockpit card and drowned its OWN
+						// acts on the driven tab — the camera stole the spotlight from
+						// the actor. Only efferent acts (input.*, navigate, evaluate,
+						// activate…) foveate.
+						obs := echo.Method == "browsingContext.captureScreenshot" ||
+							echo.Method == "browsingContext.getTree" ||
+							echo.Method == "browsingContext.print"
+						if !obs {
+							var p struct {
 								Context string `json:"context"`
-							} `json:"target"`
-						}
-						json.Unmarshal(echo.Params, &p)
-						fctx := p.Context
-						if fctx == "" {
-							fctx = p.Target.Context
-						}
-						if fctx != "" {
-							c.setFocus(b.id, fctx) // 8 surfaces the driven card, no fan-out
+								Target  struct {
+									Context string `json:"context"`
+								} `json:"target"`
+							}
+							json.Unmarshal(echo.Params, &p)
+							fctx := p.Context
+							if fctx == "" {
+								fctx = p.Target.Context
+							}
+							if fctx != "" {
+								c.setFocus(b.id, fctx) // 8 surfaces the driven card, no fan-out
+							}
 						}
 					}
 					c.publish(fmt.Sprintf(`{"session":%q,"origin":"WIRE","frame":%s}`, b.id, payload))
