@@ -10,7 +10,38 @@
 # Run detached:  nohup bash scripts/watchdog.sh >/tmp/watchdog.log 2>&1 &
 cd "$(dirname "$0")/.." || exit 1
 TABS_FILE="${TABS_FILE:-$HOME/.8-tabs.txt}"
+
+# SINGLETON (pid-owned mkdir-lock, dead-owner stolen) — exactly one watchdog.
+# up.sh spawns a watchdog per revive and a detached one can outlive for days;
+# without this guard they pile up (2 watchdogs racing revives, 2026-07-27).
+# mkdir is atomic (no TOCTOU); flock is unusable (children inherit the fd).
+_WD_LOCK=/tmp/8-watchdog.lockdir
+if ! mkdir "$_WD_LOCK" 2>/dev/null; then
+  _o=$(cat "$_WD_LOCK/pid" 2>/dev/null)
+  if [ -n "$_o" ] && kill -0 "$_o" 2>/dev/null; then
+    echo "[watchdog] another watchdog (pid $_o) already holds the lock — exiting (singleton)"; exit 0
+  fi
+  rm -rf "$_WD_LOCK"; mkdir "$_WD_LOCK" 2>/dev/null || { echo "[watchdog] lock race lost — exiting"; exit 0; }
+fi
+echo $$ > "$_WD_LOCK/pid"
+trap 'rm -rf "$_WD_LOCK"' EXIT
+
 echo "[watchdog] started $(date +%H:%M:%S) — process-based liveness — tab store: $TABS_FILE"
+
+# elapsed seconds for a pid — PLATFORM-AGNOSTIC. `ps -o etimes=` (whole seconds)
+# is a GNU/procps extension ABSENT on macOS/BSD: there it errored every cycle
+# ("integer expression expected") so the wedge-killer below silently never fired
+# and wedged up.sh piled up (2 up.sh + 2 watchdogs, 2026-07-27). `etime`
+# ([[DD-]HH:]MM:SS) is POSIX and works on Linux AND macOS; parse it ourselves.
+age_secs() {
+  local e; e=$(ps -o etime= -p "$1" 2>/dev/null | tr -d ' ')
+  [ -z "$e" ] && { echo 0; return; }
+  local days=0 hms="$e"
+  case "$e" in *-*) days=${e%%-*}; hms=${e#*-};; esac
+  local h=0 m=0 s=0 IFS=:; set -- $hms
+  case $# in 3) h=$1 m=$2 s=$3;; 2) m=$1 s=$2;; 1) s=$1;; esac
+  echo $(( 10#${days:-0}*86400 + 10#${h:-0}*3600 + 10#${m:-0}*60 + 10#${s:-0} ))
+}
 
 # never run two up.sh at once — concurrent revives kill each other's geckodriver
 # session and leave Firefox down (the exact mess that desynced the wire for hours).
@@ -18,7 +49,7 @@ run_up() {
   # kill a WEDGED revive first (2026-07-25: a stuck up.sh held the field for
   # hours while the watchdog skipped 'already running' — deadlocked revives)
   for pid in $(pgrep -f 'bash scripts/up.sh' 2>/dev/null); do
-    age=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')
+    age=$(age_secs "$pid")
     if [ "${age:-0}" -gt 300 ]; then
       echo "[watchdog $(date +%H:%M:%S)] up.sh pid $pid wedged (${age}s) — killing stale revive"
       kill "$pid" 2>/dev/null; sleep 1; kill -9 "$pid" 2>/dev/null
