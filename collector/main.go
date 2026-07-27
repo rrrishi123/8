@@ -169,6 +169,33 @@ func (c *collector) activateCockpit() {
 	}
 }
 
+// witnessHeaders makes the REAFFERENCE ride back on the fire itself: an agent
+// that fires through 8 learns, in the SAME response, that it was witnessed —
+// which replayable frame it became, its physics, its latency, and where the
+// gaze moved (attention follows action). The aha for an agent: using the wire
+// through 8 means being remembered + replayable, for free, with no second call.
+// Headers only — the body stays the pure op result (non-breaking). Exposed via
+// CORS so the browser cockpit can surface it too.
+func (c *collector) witnessHeaders(w http.ResponseWriter, ledgerID int64, physics string, latencyMs int64) {
+	c.focusMu.Lock()
+	ctx, seq := c.focusContext, c.focusSeq
+	c.focusMu.Unlock()
+	h := w.Header()
+	h.Set("Access-Control-Expose-Headers", "X-8-Witness, X-8-Ledger, X-8-Physics, X-8-Replayable, X-8-Focus-Seq, X-8-Focus-Context")
+	h.Set("X-8-Ledger", strconv.FormatInt(ledgerID, 10))
+	h.Set("X-8-Physics", physics)
+	h.Set("X-8-Replayable", "true")
+	h.Set("X-8-Focus-Seq", strconv.FormatInt(seq, 10))
+	if ctx != "" {
+		h.Set("X-8-Focus-Context", ctx)
+	}
+	gaze := ctx
+	if gaze == "" {
+		gaze = "—"
+	}
+	h.Set("X-8-Witness", fmt.Sprintf("seen · replayable frame #%d · %s · %dms · gaze→%s", ledgerID, physics, latencyMs, gaze))
+}
+
 func (c *collector) handleFocus(w http.ResponseWriter, r *http.Request) {
 	c.focusMu.Lock()
 	s, ctx, seq := c.focusSession, c.focusContext, c.focusSeq
@@ -1087,6 +1114,7 @@ func (c *collector) handleRun(w http.ResponseWriter, r *http.Request) {
 	// echo into view-1 carrying the ledger id, so the row links to its full payload + replay
 	c.publish(fmt.Sprintf(`{"session":%q,"physics":"channel","origin":"COLLECTOR","frame":{"method":%q,"params":{"ledger_id":%d,"status":%d,"latency_us":%.0f}}}`, b.id, probe.Method, id, resp.StatusCode, lat))
 	w.Header().Set("Content-Type", "application/json")
+	c.witnessHeaders(w, id, "channel", int64(lat/1000)) // reafference rides back
 	w.WriteHeader(resp.StatusCode)
 	w.Write(rb)
 }
@@ -1245,11 +1273,13 @@ func (c *collector) handleFetch(w http.ResponseWriter, r *http.Request) {
 		hdr[k] = resp.Header.Get(k)
 	}
 	w.Header().Set("Content-Type", "application/json")
+	c.witnessHeaders(w, id, "call", latency) // reafference rides back
 	json.NewEncoder(w).Encode(map[string]any{
 		"status":     resp.StatusCode,
 		"latency_ms": latency,
 		"headers":    hdr,
 		"body":       string(rb),
+		"witness":    map[string]any{"ledger_id": id, "physics": "call", "replayable": true, "seen": fmt.Sprintf("replayable frame #%d", id)},
 	})
 }
 
@@ -1874,8 +1904,9 @@ func (c *collector) actChannel(w http.ResponseWriter, r *http.Request, b *broker
 	}
 	c.echoOut(b.id, "channel", "act", map[string]any{"action": in.Action, "context": ctx, "at": fmt.Sprintf("%d,%d", in.X, in.Y)}, 200, time.Since(start).Milliseconds())
 	// control is replayable + seat-attributed — folds into the active recording
-	c.record(reqRec{TS: nowNano(), Physics: "channel", Session: b.id, Method: "act:" + in.Action, URL: b.base + "/command", Body: cmd, Status: 200, Replayable: true, Seat: in.Seat})
+	id := c.record(reqRec{TS: nowNano(), Physics: "channel", Session: b.id, Method: "act:" + in.Action, URL: b.base + "/command", Body: cmd, Status: 200, Replayable: true, Seat: in.Seat})
 	w.Header().Set("Content-Type", "application/json")
+	c.witnessHeaders(w, id, "channel", time.Since(start).Milliseconds()) // reafference: what you did, replayable, gaze moved here
 	w.Write(tr)
 }
 
