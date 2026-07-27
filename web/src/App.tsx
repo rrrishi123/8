@@ -61,6 +61,20 @@ export default function App() {
   const ql = q.trim().toLowerCase();
   const shown = rows.filter((r) => filters[r.physics] &&
     (!ql || `${r.method} ${r.detail} ${r.session} ${r.physics}`.toLowerCase().includes(ql)));
+  // ATTENTION-FIRST feed: the witness's own eye-movements (viewport/canvas capture
+  // ops) repeat by the hundreds and evict the real events from the 200-ring —
+  // observed 188/200 rows = captureScreenshot (2026-07-27). Coalesce CONSECUTIVE
+  // same-shape rows into one "×N" row (newest kept, clickable as ever); the raw
+  // stream stays one toggle away. Signal first, repetition summarized.
+  const [coalesce, setCoalesce] = useState(true);
+  type Grouped = { row: CaptureRow; n: number };
+  const grouped: Grouped[] = [];
+  for (const r of shown) {
+    const last = grouped[grouped.length - 1];
+    if (coalesce && last && last.row.method === r.method && last.row.detail === r.detail && last.row.session === r.session) {
+      last.row = r; last.n++; // keep the NEWEST of the run
+    } else grouped.push({ row: r, n: 1 });
+  }
   const sessionRows = selSession ? sessBuf.current.get(selSession.id) || [] : [];
   const toggle = (k: 'call' | 'channel') => setFilters((f) => ({ ...f, [k]: !f[k] }));
   const doReplay = async (id: number) => {
@@ -89,7 +103,8 @@ export default function App() {
           <div className="stream-filter">
             <input className="filt-in" placeholder="filter — method, route, session, physics…" value={q} onChange={(e) => setQ(e.target.value)} />
             {q && <button className="filt-x" onClick={() => setQ('')}>clear</button>}
-            <span className="filt-cnt">{shown.length}/{rows.length}</span>
+            <button className={`filt-x${coalesce ? ' on' : ''}`} title="summarize repeated identical ops (the witness's own captures) into one ×N row" onClick={() => setCoalesce((v) => !v)}>{coalesce ? '≡ coalesced' : '≣ raw'}</button>
+            <span className="filt-cnt">{coalesce ? `${grouped.length} of ` : ''}{shown.length}/{rows.length}</span>
           </div>
           <div className="cap-head">
             <span className="ln">ln</span>
@@ -104,15 +119,15 @@ export default function App() {
             <div className="empty">no traffic{q ? ' matches the filter' : ' yet — drive a session or Fire a curl'}.</div>
           )}
           <ul className="rows">
-            {shown.slice().reverse().map((r, i) => (
+            {grouped.slice().reverse().map(({ row: r, n }, i) => (
               <li
                 key={r.id}
                 className={`cap-row phys-${r.physics}${r.id === selId ? ' sel' : ''}`}
                 onClick={() => setSelId(r.id)}
               >
-                <span className="ln">{shown.length - i}</span>
+                <span className="ln">{grouped.length - i}</span>
                 <span className="phys">{r.physics}</span>
-                <span className="method">{r.method}</span>
+                <span className="method">{r.method}{n > 1 ? <b className="xn"> ×{n}</b> : null}</span>
                 <span className="detail">{r.detail}</span>
                 <span className="t">{new Date(r.at).toLocaleTimeString()}</span>
                 <span className="sess">{r.session}</span>

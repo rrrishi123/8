@@ -26,6 +26,11 @@ export function Canvas({ session }: { session: string | null }) {
   const [tabsBy, setTabsBy] = useState<Record<string, Tab[]>>({});
   const [aspectBy, setAspectBy] = useLocal<Record<string, number>>('aspectBy', {});
   const [hudBy, setHudBy] = useState<Record<string, { mem?: number; cpu?: number | null }>>({});
+  // ADAPTIVE APERTURE (view side): the seat's PARENT memory, polled with procinfo.
+  // Capture is what bloats the parent (drawSnapshot surfaces), so under pressure
+  // the witness dims its own eyes BEFORE the collector must flush/park and long
+  // before the watchdog's 4500 recycle: hero 3fps → 1fps, ambient 0.4 → frozen.
+  const [parentMem, setParentMem] = useState(0);
   const [pinnedKey, setPinnedKey] = useState(''); // the HERO card (explicit pin, not center)
   const [spreadBy, setSpreadBy] = useLocal<Record<string, boolean>>('spreadBy', {}); // fanned decks
   const [addFor, setAddFor] = useState('');       // which deck's "+ tab" input is open
@@ -91,6 +96,7 @@ export function Canvas({ session }: { session: string | null }) {
               map[t.url] = { mem: t.mem_mb, cpu };
             });
             setHudBy(map);
+            setParentMem(p.parent_mem_mb || 0);
           }
         }
       } catch { /* keep last */ }
@@ -211,7 +217,8 @@ export function Canvas({ session }: { session: string | null }) {
     return {
       id: 'seat-' + L.c.key, x: L.x, y: L.y, w: L.w, h: H, z: L.z, gravity: hero,
       node: <Viewport session={L.c.session} context={L.c.context} title={L.c.title}
-        visible={streams} live={live} fps={hero ? 3 : (streams ? 0.4 : 0)} pinned={hero}
+        visible={streams} live={live}
+        fps={parentMem > 3500 ? (hero ? 1 : 0) : (hero ? 3 : (streams ? 0.4 : 0))} pinned={hero}
         lodW={lodBucket(L.w * cam.z)}
         fx={isFox} fxNeedle={L.c.url ? host(L.c.url) : ''}
         onPin={() => setPinnedKey(L.c.key)}

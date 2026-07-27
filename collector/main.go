@@ -539,6 +539,13 @@ func (c *collector) memoryAperture(softMB int) {
 	// processes of live tabs are legitimate spend. Budgeting the TOTAL made a 12-tab
 	// seat (baseline ~4GB) park a victim every tick forever (2026-07-24 over-parking).
 	memScript := `const cb=arguments[arguments.length-1];ChromeUtils.requestProcInfo().then(i=>cb(''+Math.round(i.memory/1048576))).catch(e=>cb('ERR'));`
+	// flushScript is about:memory's "Minimize memory usage": three memory-pressure
+	// notifications (the third with heap-minimize semantics), which is what actually
+	// releases the parent's capture-accumulated compositor surfaces. Validated
+	// earlier at ~66% parent reclaim; forceGC alone reclaims ~0 (it is not JS heap).
+	flushScript := `const cb=arguments[arguments.length-1];(async()=>{try{
+for(let i=0;i<3;i++){Services.obs.notifyObservers(null,"memory-pressure","heap-minimize");await new Promise(r=>setTimeout(r,250));}
+cb("3");}catch(e){cb("ERR:"+e)}})();`
 	parkScript := `const cb=arguments[arguments.length-1];(async()=>{try{
 const win=Services.wm.getMostRecentWindow("navigator:browser");const gB=win.gBrowser;
 const info=await ChromeUtils.requestProcInfo();const mem={};for(const ch of info.children){mem[ch.pid]=(ch.memory||0)/1048576;}
@@ -575,15 +582,36 @@ cb(JSON.stringify({parked:v.u,mb:v.mb}));
 		if err != nil || before < softMB {
 			continue
 		}
-		parked, err := c.execChrome(parkScript)
+		// STEP 1 — flush the compartment that actually grows: the measured number
+		// is the PARENT process, and what bloats it is the drawSnapshot compositor-
+		// surface cache (capture-driven; frees on its own only after ~6min idle).
+		// Parking a CONTENT tab frees a child process — the wrong compartment —
+		// which is why park-only ticks often didn't lower the number (2026-07-27
+		// crash-loop: parent climbed 6-8GB past the 4500 recycle bound while the
+		// aperture dutifully parked ~230MB tabs). heap-minimize is the about:memory
+		// "Minimize memory usage" path this function's contract always promised.
+		flushed, err := c.execChrome(flushScript)
 		if err != nil {
 			continue
 		}
 		lastFire = time.Now()
+		mid, _ := c.execChrome(memScript)
+		mmb, _ := strconv.Atoi(strings.TrimSpace(mid))
+		c.publish(fmt.Sprintf(`{"session":"fox","origin":"COLLECTOR","frame":{"method":"aperture.flush","params":{"before_mb":%d,"after_mb":%d,"passes":%s}}}`, before, mmb, strings.TrimSpace(flushed)))
+		log.Printf("aperture: parent %dMB > %dMB soft -> heap-minimize -> %dMB", before, softMB, mmb)
+		if mmb < softMB {
+			continue // the flush alone brought the parent home — no victim needed
+		}
+		// STEP 2 (secondary) — genuine shortage even after the flush: FAIR-park the
+		// heaviest non-focused tab (content memory is real spend; identity conserved).
+		parked, err := c.execChrome(parkScript)
+		if err != nil {
+			continue
+		}
 		after, _ := c.execChrome(memScript)
 		amb, _ := strconv.Atoi(strings.TrimSpace(after))
-		c.publish(fmt.Sprintf(`{"session":"fox","origin":"COLLECTOR","frame":{"method":"aperture.park","params":{"before_mb":%d,"after_mb":%d,"victim":%s}}}`, before, amb, strings.TrimSpace(parked)))
-		log.Printf("aperture: total %dMB > %dMB soft -> FAIR park heaviest -> %dMB | victim=%s", before, softMB, amb, strings.TrimSpace(parked))
+		c.publish(fmt.Sprintf(`{"session":"fox","origin":"COLLECTOR","frame":{"method":"aperture.park","params":{"before_mb":%d,"after_mb":%d,"victim":%s}}}`, mmb, amb, strings.TrimSpace(parked)))
+		log.Printf("aperture: still %dMB after flush -> FAIR park heaviest -> %dMB | victim=%s", mmb, amb, strings.TrimSpace(parked))
 	}
 }
 

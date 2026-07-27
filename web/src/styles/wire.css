@@ -214,6 +214,8 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .replay:hover { border-color: var(--green); }
 .lab-toggle { cursor: pointer; color: var(--purple); font-weight: 700; }
 .wire-toggle { cursor: pointer; color: var(--green); font-weight: 700; }
+.cap-row .method .xn { color: var(--yellow); font-weight: 700; }
+.filt-x.on { color: var(--green); border-color: var(--green); }
 
 /* the WIRE pane — the self-explanatory front door. call=blue, channel=purple. */
 .transports { overflow: auto; padding-bottom: 24px; }
