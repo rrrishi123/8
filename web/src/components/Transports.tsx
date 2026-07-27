@@ -1,152 +1,281 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { fetchUrl, run, shot, listSessions } from '../lib/api';
 import type { Session } from '../types';
 
-// The Wire pane — the front door, made self-explanatory. Every automation
-// reduces to two atoms: CALL (one request → one response) and CHANNEL (one held
-// bidirectional stream). The 8 transports are those two wearing different
-// clothes. Fire one and it is a REAL op through the wire — it lands in the feed,
-// 8 foveates to where it happened, and it is recordable + replayable. Nothing
-// here is new; it is the loop 8 already runs, named so a newcomer (human OR
-// agent) sees the IP without being told.
+const BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
 
-type FireRes = { ok: boolean; summary: string; physics: 'call' | 'channel' };
-interface Transport {
-  name: string;
-  where: 'wire' | 'adapter';
-  atom: 'CALL' | 'CHANNEL' | 'CALL | CHANNEL';
-  afferent?: boolean;
-  what: string;
-  use: string;
-  // A real fire that lands in the feed, or a `proven` pointer when the browser
-  // cannot originate it (it is validated in code instead — no faking).
-  fire?: (chan: string | null) => Promise<FireRes>;
-  proven?: string;
+// The WIRE pane, two-wire style: every transport is a LIVE WIRE you can see —
+// a held CHANNEL glows and carries pushed events; a CALL lights only for one
+// round trip then goes dark ("request, response, gone"). Firing a row is a REAL
+// op (browser fetch/ws/shot, or the adapters `loopback` via /adapters/fire) and
+// the packets you watch are timed by the real response. Not a diagram of the
+// physics — the physics, witnessed. Animation runs on setInterval (not rAF) so
+// an AGENT filming through captureScreenshot sees it move even when the window
+// is occluded (the canvas-view rAF lesson, 2026-07-27).
+
+type Dir = 'out' | 'in';
+interface Packet { p: number; dir: Dir; color: string; label: string; speed: number }
+interface WireState {
+  held: boolean;        // a held channel: line stays lit, events may drift in
+  litUntil: number;     // CALL wires: lit while a round trip is in flight
+  packets: Packet[];
+  midNode?: string;     // mqtt: the broker sits ON the wire
+  rightLabel: string;
 }
 
-const TRANSPORTS: Transport[] = [
-  {
-    name: 'http', where: 'wire', atom: 'CALL',
-    what: 'one request, one response, then nothing',
-    use: 'every WebDriver / Appium / REST hub command',
-    fire: async () => {
-      const r = await fetchUrl({ method: 'GET', url: 'https://api.github.com/zen', headers: {}, body: '' });
-      return { ok: r.status > 0 && r.status < 400, physics: 'call', summary: `${r.status} · ${r.latency_ms}ms · ${(r.body || '').slice(0, 40)}` };
-    },
-  },
-  {
-    name: 'websocket', where: 'wire', atom: 'CHANNEL',
-    what: 'one long-lived bidirectional stream',
-    use: 'live CDP / WebDriver-BiDi — every Playwright test is this',
-    fire: async (chan) => {
-      if (!chan) return { ok: false, physics: 'channel', summary: 'no channel session held' };
-      const r = await run(chan, 'browsingContext.getTree', {}) as { result?: { contexts?: unknown[] }; type?: string };
-      const n = r?.result?.contexts?.length;
-      return { ok: r?.type !== 'error', physics: 'channel', summary: n != null ? `getTree → ${n} tabs on the held socket` : JSON.stringify(r).slice(0, 48) };
-    },
-  },
-  {
-    name: 'sse', where: 'wire', atom: 'CHANNEL', afferent: true,
-    what: 'server pushes, client only listens (text/event-stream)',
-    use: 'the feed you are watching right now IS this',
-    proven: 'the middle feed is a live SSE channel — every row arrived by server push',
-  },
-  {
-    name: 'mjpeg', where: 'wire', atom: 'CHANNEL', afferent: true,
-    what: 'multipart/x-mixed-replace — the afferent media plane',
-    use: 'live device / browser screencast',
-    fire: async (chan) => {
-      if (!chan) return { ok: false, physics: 'channel', summary: 'no channel session held' };
-      const data = await shot(chan);
-      return { ok: !!data, physics: 'channel', summary: data ? `captured a frame · ${Math.round(data.length / 1024)}kb (the media plane)` : 'no frame' };
-    },
-  },
-  {
-    name: 'unix_socket', where: 'wire', atom: 'CALL | CHANNEL',
-    what: 'the same two atoms over a unix dialer — no TCP port',
-    use: 'portless local daemons (dockerd, a driver sidecar)',
-    proven: 'http+unix:// & ws+unix:// — probed both halves in http-mcp/cmd/mcp/transports_conformance_test.go',
-  },
-  {
-    name: 'grpc', where: 'adapter', atom: 'CALL | CHANNEL',
-    what: 'unary = CALL, server-stream = CHANNEL, over HTTP/2',
-    use: 'streaming device farms / gRPC backends',
-    proven: 'real HTTP/2 loopback, no protoc — adapters/grpc/grpc_test.go',
-  },
-  {
-    name: 'mqtt', where: 'adapter', atom: 'CHANNEL',
-    what: 'publish = CALL, subscribe = CHANNEL (held broker)',
-    use: 'IoT / device-under-test event bus',
-    proven: 'hand-rolled MQTT 3.1.1 broker + client — adapters/mqtt/mqtt_test.go',
-  },
-  {
-    name: 'webrtc', where: 'adapter', atom: 'CHANNEL',
-    what: 'SDP signaling = CALL, then a peer DataChannel = CHANNEL',
-    use: 'real-time media / low-latency datachannel apps',
-    proven: 'signaling offer→answer CALL (the only wire-visible surface) — adapters/webrtc/webrtc_test.go',
-  },
-];
+interface Row {
+  name: string;
+  atom: string;
+  phys: 'call' | 'channel' | 'afferent' | 'both';
+  where: 'wire' | 'adapter';
+  what: string;
+  use: string;
+  right: string;        // the far-end node label
+  mid?: string;
+  fire: (st: WireState, spawn: (dir: Dir, color: string, label: string) => void, chan: string | null) => Promise<string>;
+}
+
+const css = (v: string) => getComputedStyle(document.documentElement).getPropertyValue(v).trim() || '#888';
 
 export function Transports() {
   const [chan, setChan] = useState<string | null>(null);
-  const [res, setRes] = useState<Record<string, FireRes | '…'>>({});
+  const [res, setRes] = useState<Record<string, { ok: boolean; text: string } | 'firing'>>({});
+  const canvases = useRef<Record<string, HTMLCanvasElement | null>>({});
+  const states = useRef<Record<string, WireState>>({});
 
   useEffect(() => {
     const load = () => listSessions()
       .then((ss: Session[]) => setChan(ss.find((s) => s.physics === 'channel' && s.status !== 'disconnected')?.id || null))
       .catch(() => {});
     load();
-    const t = window.setInterval(load, 3000);
+    const t = window.setInterval(load, 4000);
     return () => clearInterval(t);
   }, []);
 
-  const doFire = async (t: Transport) => {
-    if (!t.fire) return;
-    setRes((p) => ({ ...p, [t.name]: '…' }));
-    try { const r = await t.fire(chan); setRes((p) => ({ ...p, [t.name]: r })); }
-    catch (e) { setRes((p) => ({ ...p, [t.name]: { ok: false, physics: 'call', summary: String(e).slice(0, 60) } })); }
-  };
+  const ROWS: Row[] = [
+    {
+      name: 'http', atom: 'CALL', phys: 'call', where: 'wire',
+      what: 'one request, one response, then nothing', use: 'every WebDriver / Appium / REST hub command', right: 'server',
+      fire: async (st, spawn) => {
+        st.litUntil = Date.now() + 4000; spawn('out', css('--blue'), 'req');
+        const r = await fetchUrl({ method: 'GET', url: 'https://api.github.com/zen', headers: {}, body: '' });
+        spawn('in', css('--blue'), 'res');
+        return `${r.status} · ${r.latency_ms}ms · “${(r.body || '').slice(0, 42)}”`;
+      },
+    },
+    {
+      name: 'websocket', atom: 'CHANNEL', phys: 'channel', where: 'wire',
+      what: 'one held bidirectional socket — cmd ⇄ reply, matched by id', use: 'CDP / BiDi: every Playwright test IS this', right: 'browser',
+      fire: async (st, spawn, chan) => {
+        if (!chan) throw new Error('no channel session held');
+        spawn('out', css('--purple'), 'cmd');
+        const r = await run(chan, 'browsingContext.getTree', {}) as { result?: { contexts?: unknown[] } };
+        spawn('in', css('--purple'), 'reply');
+        return `getTree → ${r?.result?.contexts?.length ?? '?'} tabs on the held socket`;
+      },
+    },
+    {
+      name: 'sse', atom: 'CHANNEL · afferent', phys: 'afferent', where: 'wire',
+      what: 'server pushes, client only listens', use: 'the feed this cockpit runs on', right: '8 feed',
+      fire: (st, spawn) => new Promise((resolve, reject) => {
+        const es = new EventSource(`${BASE}/feed`);
+        let n = 0;
+        const to = setTimeout(() => { es.close(); n ? resolve(`${n} events pushed (closed early)`) : reject(new Error('no events in 6s')); }, 6000);
+        es.onmessage = () => { n++; spawn('in', css('--yellow'), 'evt'); if (n >= 3) { clearTimeout(to); es.close(); resolve('3 real events pushed by the server — never requested'); } };
+        es.onerror = () => { clearTimeout(to); es.close(); reject(new Error('feed unreachable')); };
+      }),
+    },
+    {
+      name: 'mjpeg', atom: 'CHANNEL · afferent', phys: 'afferent', where: 'wire',
+      what: 'multipart/x-mixed-replace — the media plane', use: 'live device / browser screencast', right: 'screen',
+      fire: async (st, spawn, chan) => {
+        if (!chan) throw new Error('no channel session held');
+        const data = await shot(chan);
+        spawn('in', css('--yellow'), 'frame');
+        return `captured a real frame · ${Math.round((data?.length || 0) / 1024)}kb of pixels`;
+      },
+    },
+    {
+      name: 'unix', atom: 'CALL | CHANNEL', phys: 'call', where: 'wire',
+      what: 'the same bytes over a unix-domain socket — no TCP port', use: 'portless daemons: dockerd, driver sidecars', right: '∅ socket',
+      fire: async (st, spawn) => {
+        st.litUntil = Date.now() + 3000; spawn('out', css('--blue'), 'req');
+        const j = await fireAdapter('unix');
+        spawn('in', css('--blue'), 'res');
+        return j.detail;
+      },
+    },
+    {
+      name: 'grpc', atom: 'CALL | CHANNEL', phys: 'both', where: 'adapter',
+      what: 'unary = CALL · server-stream = CHANNEL, over HTTP/2', use: 'streaming device farms / gRPC backends', right: 'h2 svc',
+      fire: async (st, spawn) => {
+        st.litUntil = Date.now() + 4000; spawn('out', css('--blue'), 'unary');
+        const j = await fireAdapter('grpc');
+        spawn('in', css('--blue'), 'echo');
+        for (let i = 0; i < 3; i++) setTimeout(() => spawn('in', css('--purple'), `#${i}`), 350 + i * 380);
+        return j.detail;
+      },
+    },
+    {
+      name: 'mqtt', atom: 'CHANNEL', phys: 'channel', where: 'adapter', mid: 'broker',
+      what: 'publish = CALL into a topic · subscribe = held CHANNEL out', use: 'IoT / device-under-test event bus', right: 'subscriber',
+      fire: async (st, spawn) => {
+        spawn('out', css('--blue'), 'pub');
+        const j = await fireAdapter('mqtt');
+        setTimeout(() => spawn('out', css('--purple'), 'msg'), 420);
+        st.held = true;
+        return j.detail;
+      },
+    },
+    {
+      name: 'webrtc', atom: 'CHANNEL', phys: 'both', where: 'adapter',
+      what: 'SDP signaling = CALL, then a peer DataChannel = CHANNEL', use: 'real-time media / low-latency apps', right: 'peer',
+      fire: async (st, spawn) => {
+        st.litUntil = Date.now() + 3500; spawn('out', css('--blue'), 'offer');
+        const j = await fireAdapter('webrtc');
+        spawn('in', css('--blue'), 'answer');
+        st.held = true; // the negotiated DataChannel: the wire stays lit
+        return j.detail;
+      },
+    },
+  ];
 
-  const group = (where: 'wire' | 'adapter') => TRANSPORTS.filter((t) => t.where === where);
+  async function fireAdapter(t: string): Promise<{ ok: boolean; ms: number; detail: string }> {
+    const r = await fetch(`${BASE}/adapters/fire?t=${t}`);
+    if (!r.ok) throw new Error((await r.text()).slice(0, 120));
+    return r.json();
+  }
 
-  const row = (t: Transport) => {
-    const r = res[t.name];
-    const phys = t.atom.startsWith('CHANNEL') ? 'channel' : 'call';
-    return (
-      <div key={t.name} className={`tr-row phys-${phys}`}>
-        <span className="tr-name">{t.name}</span>
-        <span className={`tr-atom phys-${phys}`}>{t.atom}{t.afferent ? ' · afferent' : ''}</span>
-        <span className="tr-what">{t.what}<span className="tr-use">{t.use}</span></span>
-        <span className="tr-act">
-          {t.fire
-            ? <button className="fire" disabled={r === '…'} onClick={() => doFire(t)}>{r === '…' ? '…' : '▷ fire'}</button>
-            : <span className="tr-proven-tag">proven ↓</span>}
-        </span>
-        <span className="tr-res">
-          {t.fire && r && r !== '…' && <span className={r.ok ? 'ok' : 'bad'}>{r.ok ? '✓ ' : '✗ '}{r.summary}</span>}
-          {!t.fire && t.proven && <span className="tr-proven">{t.proven}</span>}
-        </span>
-      </div>
-    );
+  // one shared ticker draws every wire — setInterval, NOT rAF (agents must see
+  // motion via captureScreenshot even when the window is occluded).
+  useEffect(() => {
+    for (const row of ROWS) {
+      states.current[row.name] ||= {
+        held: row.phys === 'channel' || row.phys === 'afferent',
+        litUntil: 0, packets: [], midNode: row.mid, rightLabel: row.right,
+      };
+    }
+    let lastAmbient = 0;
+    const tick = () => {
+      const now = Date.now();
+      // ambient life on held wires: a faint event drifts in every ~5s
+      if (now - lastAmbient > 5200) {
+        lastAmbient = now;
+        for (const n of ['websocket', 'sse']) {
+          const st = states.current[n];
+          if (st?.held) st.packets.push({ p: 0, dir: 'in', color: css('--yellow'), label: 'evt', speed: 0.012 });
+        }
+      }
+      for (const row of ROWS) {
+        const cv = canvases.current[row.name]; const st = states.current[row.name];
+        if (!cv || !st) continue;
+        draw(cv, row, st, now);
+        for (const pk of st.packets) pk.p += pk.speed;
+        st.packets = st.packets.filter((pk) => pk.p < 1.06);
+      }
+    };
+    const t = window.setInterval(tick, 40);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function draw(cv: HTMLCanvasElement, row: Row, st: WireState, now: number) {
+    const w = cv.clientWidth, h = cv.clientHeight;
+    if (!w) return;
+    const dpr = window.devicePixelRatio || 1;
+    if (cv.width !== w * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
+    const g = cv.getContext('2d')!;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, h);
+    const y = h / 2, Lx = 54, Rx = w - 64;
+    const lit = st.held || now < st.litUntil;
+    const lineColor = st.held ? css('--purple') : lit ? css('--blue') : css('--border');
+    // the wire
+    g.lineWidth = 2;
+    g.strokeStyle = lineColor;
+    g.globalAlpha = lit ? 0.85 : 0.9;
+    g.setLineDash(st.held ? [] : [5, 7]);
+    g.beginPath(); g.moveTo(Lx, y); g.lineTo(Rx, y); g.stroke();
+    g.setLineDash([]); g.globalAlpha = 1;
+    // end nodes + labels
+    const node = (x: number, label: string) => {
+      g.beginPath(); g.arc(x, y, 5.5, 0, 7);
+      g.fillStyle = css('--bg2'); g.fill();
+      g.strokeStyle = lit ? lineColor : css('--fg-faint'); g.lineWidth = 2; g.stroke();
+      g.fillStyle = css('--fg-dim'); g.font = '10px ui-monospace, monospace'; g.textAlign = 'center';
+      g.fillText(label, x, y + 20);
+    };
+    node(Lx, 'client'); node(Rx, st.rightLabel);
+    if (st.midNode) node((Lx + Rx) / 2, st.midNode);
+    // state caption on the wire
+    g.fillStyle = css('--fg-faint'); g.font = '9.5px ui-monospace, monospace'; g.textAlign = 'left';
+    g.fillText(st.held ? 'held open' : lit ? 'in flight' : 'no socket between calls', Lx + 10, y - 10);
+    // packets
+    for (const pk of st.packets) {
+      const x = pk.dir === 'out' ? Lx + (Rx - Lx) * pk.p : Rx - (Rx - Lx) * pk.p;
+      const grad = g.createRadialGradient(x, y, 0, x, y, 14);
+      grad.addColorStop(0, pk.color); grad.addColorStop(1, 'transparent');
+      g.globalAlpha = 0.5; g.fillStyle = grad;
+      g.beginPath(); g.arc(x, y, 14, 0, 7); g.fill();
+      g.globalAlpha = 1; g.fillStyle = pk.color;
+      g.beginPath(); g.arc(x, y, 5, 0, 7); g.fill();
+      g.fillStyle = css('--bg'); g.font = 'bold 7px ui-monospace, monospace'; g.textAlign = 'center';
+      g.fillText(pk.label.slice(0, 4), x, y + 2.5);
+    }
+  }
+
+  const doFire = async (row: Row) => {
+    const st = states.current[row.name];
+    setRes((p) => ({ ...p, [row.name]: 'firing' }));
+    const spawn = (dir: Dir, color: string, label: string) =>
+      st.packets.push({ p: 0, dir, color, label, speed: 0.016 });
+    try {
+      const text = await row.fire(st, spawn, chan);
+      setRes((p) => ({ ...p, [row.name]: { ok: true, text } }));
+    } catch (e) {
+      setRes((p) => ({ ...p, [row.name]: { ok: false, text: String((e as Error).message || e).slice(0, 110) } }));
+    }
   };
 
   return (
     <section className="panel transports">
-      <div className="panel-h">the wire · 8 transports = 2 atoms</div>
+      <div className="panel-h">the wire · 8 transports = 2 physics · every fire is real</div>
       <div className="tr-lede">
-        Every automation reduces to two atoms: <b className="phys-call">CALL</b> (one request → one response) and <b className="phys-channel">CHANNEL</b> (one held bidirectional stream).
-        The 8 below are those two in different clothes. <b>Fire one</b> — it is a real op through the wire: it lands in the feed, 8 foveates to where it happened, and it is recordable → replayable. This is not a demo beside 8; it is the loop 8 already runs.
-        {' '}<a className="tr-twowire" href="/two-wire.html" target="_blank" rel="noreferrer">watch the two physics, animated →</a>
+        A <b className="phys-call">CALL</b> lights its wire for one round trip, then the socket is gone.
+        A <b className="phys-channel">CHANNEL</b> is held — it glows, and <span className="tr-evt">events</span> arrive that were never requested.
+        Fire a wire: the packets you watch are timed by the real response, and the op lands in the feed.
+        {' '}<a className="tr-twowire" href="/two-wire.html" target="_blank" rel="noreferrer">the original two-wire page →</a>
       </div>
-      <div className="tr-chan">{chan ? <>channel session held: <b>{chan}</b> — CHANNEL fires drive it live</> : <span className="bad">no channel session held — start Firefox/8 to fire CHANNEL ops</span>}</div>
+      <div className="tr-chan">{chan ? <>channel session held: <b>{chan}</b></> : <span className="bad">no channel session held — CHANNEL fires need the browser seat</span>}</div>
 
-      <div className="tr-group">the WIRE — stdlib, zero deps, raw bytes</div>
-      {group('wire').map(row)}
-      <div className="tr-group adapter">the ADAPTER — adds framing / routing / negotiation, the wire never sees it</div>
-      {group('adapter').map(row)}
+      {(['wire', 'adapter'] as const).map((zone) => (
+        <div key={zone}>
+          <div className={`tr-group${zone === 'adapter' ? ' adapter' : ''}`}>
+            {zone === 'wire' ? 'the WIRE — stdlib, zero deps, raw bytes' : 'the ADAPTERS — framing/negotiation baked in (fired via adapters/loopback, witnessed by 8)'}
+          </div>
+          {ROWS.filter((r) => r.where === zone).map((row) => {
+            const r = res[row.name];
+            return (
+              <div key={row.name} className="tw-row">
+                <div className="tw-label">
+                  <span className="tw-name">{row.name}</span>
+                  <span className={`tw-atom ${row.phys === 'call' ? 'phys-call' : 'phys-channel'}`}>{row.atom}</span>
+                  <span className="tw-what">{row.what}</span>
+                  <span className="tw-use">{row.use}</span>
+                </div>
+                <canvas className="tw-canvas" ref={(el) => { canvases.current[row.name] = el; }} />
+                <div className="tw-act">
+                  <button className="fire" disabled={r === 'firing'} onClick={() => doFire(row)}>{r === 'firing' ? '…' : '▷ fire'}</button>
+                  {r && r !== 'firing' && <div className={`tw-res ${r.ok ? 'ok' : 'bad'}`}>{r.ok ? '✓ ' : '✗ '}{r.text}</div>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ))}
 
-      <div className="tr-foot">fired ops appear in the middle feed with <span className="phys-call">call</span>/<span className="phys-channel">channel</span> physics · click one to inspect · record while you fire, then replay the series
-        {' '}· <a className="tr-jump" onClick={() => window.dispatchEvent(new CustomEvent('8:jump', { detail: { view: 'lab' } }))}>the measured numbers behind these claims → LAB</a>
+      <div className="tr-foot">every fire lands in the feed · record while you fire, replay the series
+        {' '}· <a className="tr-jump" onClick={() => window.dispatchEvent(new CustomEvent('8:jump', { detail: { view: 'lab' } }))}>the measured numbers → LAB</a>
         {' '}· <a className="tr-jump" onClick={() => window.dispatchEvent(new CustomEvent('8:jump', { detail: { view: 'home', q: '' } }))}>watch them land → feed</a>
       </div>
     </section>

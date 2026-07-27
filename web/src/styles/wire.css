@@ -452,3 +452,19 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .attach-go { margin: 2px 0 4px; font-size: 11px; }
 .attach-note { font-size: 10px; color: var(--fg); margin: 4px 0; word-break: break-word; }
 .attach-hint { font-size: 9.5px; color: var(--fg-faint); line-height: 1.4; }
+
+/* two-wire style WIRE pane rows */
+.tw-row { display: grid; grid-template-columns: 300px 1fr 300px; gap: 14px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--border); }
+.tw-label { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tw-name { font-weight: 700; font-size: 15px; color: var(--fg); }
+.tw-atom { font-size: 10.5px; letter-spacing: .05em; }
+.tw-atom.phys-call { color: var(--blue); }
+.tw-atom.phys-channel { color: var(--purple); }
+.tw-what { color: var(--fg-dim); font-size: 11.5px; }
+.tw-use { color: var(--fg-faint); font-size: 10.5px; }
+.tw-canvas { width: 100%; height: 64px; display: block; }
+.tw-act { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; min-width: 0; }
+.tw-res { font-size: 11px; line-height: 1.45; word-break: break-word; }
+.tw-res.ok { color: var(--green); }
+.tw-res.bad { color: var(--red); }
+.tr-evt { color: var(--yellow); font-weight: 700; }

@@ -44,6 +44,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -1551,6 +1552,41 @@ func lookupSession(id string) *sessionRec {
 	return found
 }
 
+// handleAdapterFire — fire a REAL own-both-ends loopback for a transport the
+// wire delegates to adapters (grpc/mqtt/webrtc/unix), by exec-ing the adapters
+// repo's `loopback` command. The result is WITNESSED into the feed like any op,
+// so the WIRE pane's adapter rows are genuinely fireable — no faking a
+// transport the browser cannot originate; the adapter originates it and 8 sees.
+func (c *collector) handleAdapterFire(w http.ResponseWriter, r *http.Request) {
+	t := r.URL.Query().Get("t")
+	switch t {
+	case "grpc", "mqtt", "webrtc", "unix":
+	default:
+		http.Error(w, `t must be grpc|mqtt|webrtc|unix`, http.StatusBadRequest)
+		return
+	}
+	bin := os.ExpandEnv("$HOME/Desktop/repos/adapters/loopback")
+	if _, err := os.Stat(bin); err != nil {
+		http.Error(w, "adapters loopback binary not found at "+bin+" — build with: (cd adapters && go build -o loopback ./cmd/loopback)", http.StatusServiceUnavailable)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, t).Output()
+	line := strings.TrimSpace(string(out))
+	if err != nil && line == "" {
+		http.Error(w, "loopback failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	phys := "channel"
+	if t == "webrtc" || t == "unix" {
+		phys = "call" // the wire-visible surface of these fires is a CALL
+	}
+	c.publish(fmt.Sprintf(`{"session":"wire","physics":%q,"origin":"COLLECTOR","frame":{"method":"adapter.loopback","params":%s}}`, phys, line))
+	w.Header().Set("Content-Type", "application/json")
+	io.WriteString(w, line)
+}
+
 // redactHub strips userinfo (user:key creds) from a hub URL for publishing —
 // the credential crosses into the registry file only, never into the feed.
 func redactHub(hub string) string {
@@ -2909,6 +2945,7 @@ func main() {
 	mux.HandleFunc("/fxdiag", c.handleFxDiag)
 	mux.HandleFunc("/sessions", c.handleSessions)
 	mux.HandleFunc("/attach", c.handleAttach) // connect any provider's live session (CALL) at runtime
+	mux.HandleFunc("/adapters/fire", c.handleAdapterFire) // fire a real adapter loopback (grpc|mqtt|webrtc|unix), witnessed
 	mux.HandleFunc("/source", c.handleSource)
 	mux.HandleFunc("/act", c.handleAct)
 	mux.HandleFunc("/stream", c.handleStream)
