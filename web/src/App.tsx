@@ -10,6 +10,7 @@ import { Bench } from './components/Bench';
 import { Splitter, SideStack, useLocal } from './components/Dock';
 import { ThemePicker } from './components/ThemePicker';
 import { Canvas } from './components/Canvas';
+import { Transports } from './components/Transports';
 import { initTheme } from './lib/theme';
 import { openFeed } from './lib/feed';
 import { listSessions, replay } from './lib/api';
@@ -23,6 +24,7 @@ export default function App() {
   const [filters, setFilters] = useState({ call: true, channel: true });
   const [selSession, setSelSession] = useState<Session | null>(null);
   const [showLab, setShowLab] = useState(false);
+  const [showWire, setShowWire] = useState(false);
   const [q, setQ] = useState('');
   const [replayed, setReplayed] = useState<Record<number, string>>({});
   const [themeBg] = useState(() => initTheme());
@@ -70,7 +72,7 @@ export default function App() {
   return (
     <div className="app">
       <main className="cols">
-        {showCanvas ? <Canvas session={sessions.find((s) => s.physics === 'channel')?.id || null} /> : showLab ? <Bench /> : (<>
+        {showCanvas ? <Canvas session={sessions.find((s) => s.physics === 'channel')?.id || null} /> : showLab ? <Bench /> : showWire ? <Transports /> : (<>
         <div className="rail-wrap" style={{ width: railW, flex: 'none' }}>
           <SessionRail sessions={sessions} rows={rows} filters={filters} onToggle={toggle} onSelect={setSelSession} selectedId={selSession?.id} />
         </div>
@@ -145,6 +147,7 @@ export default function App() {
         <span>CAPTURE {rows.length}</span>
         <span className="canvas-toggle" onClick={() => setShowCanvas((v) => !v)}>{showCanvas ? '▣ CANVAS' : '▢ CANVAS'}</span>
         <span className="lab-toggle" onClick={() => setShowLab((v) => !v)}>{showLab ? '▣ LAB' : '▢ LAB'}</span>
+        <span className="wire-toggle" onClick={() => setShowWire((v) => !v)}>{showWire ? '▣ WIRE' : '▢ WIRE'}</span>
         <span className="keys">click row → inspect · paste a curl → Fire</span>
       </header>
       <ThemePicker initial={themeBg} />

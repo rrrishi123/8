@@ -213,6 +213,34 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .replay { background: var(--bg2); color: var(--green); border: 1px solid var(--border); padding: 1px 8px; font: inherit; font-size: 11px; cursor: pointer; }
 .replay:hover { border-color: var(--green); }
 .lab-toggle { cursor: pointer; color: var(--purple); font-weight: 700; }
+.wire-toggle { cursor: pointer; color: var(--green); font-weight: 700; }
+
+/* the WIRE pane — the self-explanatory front door. call=blue, channel=purple. */
+.transports { overflow: auto; padding-bottom: 24px; }
+.transports .tr-lede { padding: 12px 14px 4px; color: var(--fg-dim); font-size: 12.5px; line-height: 1.6; max-width: 118ch; }
+.transports .tr-lede b { color: var(--fg); font-weight: 700; }
+.transports .tr-lede b.phys-call { color: var(--blue); }
+.transports .tr-lede b.phys-channel { color: var(--purple); }
+.transports .tr-chan { padding: 2px 14px 10px; color: var(--fg-dim); font-size: 12px; }
+.transports .tr-chan b { color: var(--green); }
+.transports .tr-chan .bad { color: var(--red); }
+.tr-group { padding: 12px 14px 5px; color: var(--green); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; font-weight: 700; }
+.tr-group.adapter { color: var(--yellow); }
+.tr-row { display: grid; grid-template-columns: 12ch 15ch minmax(28ch, 1.4fr) 9ch minmax(20ch, 1fr); gap: 12px; align-items: baseline; padding: 7px 14px; border-top: 1px solid var(--border); font-size: 12.5px; }
+.tr-name { font-weight: 700; color: var(--fg); }
+.tr-atom { font-size: 11px; letter-spacing: .04em; }
+.tr-atom.phys-call { color: var(--blue); }
+.tr-atom.phys-channel { color: var(--purple); }
+.tr-what { color: var(--fg); display: flex; flex-direction: column; gap: 2px; }
+.tr-what .tr-use { color: var(--fg-faint); font-size: 11px; }
+.tr-act .tr-proven-tag { color: var(--fg-faint); font-size: 11px; }
+.tr-res { color: var(--fg-dim); font-size: 11.5px; min-width: 0; word-break: break-word; }
+.tr-res .ok { color: var(--green); }
+.tr-res .bad { color: var(--red); }
+.tr-res .tr-proven { color: var(--fg-faint); font-style: italic; }
+.tr-foot { padding: 14px; color: var(--fg-faint); font-size: 11.5px; border-top: 1px solid var(--border); margin-top: 8px; }
+.tr-foot .phys-call { color: var(--blue); }
+.tr-foot .phys-channel { color: var(--purple); }
 .metrics .dim { color: var(--fg-faint); font-size: 11px; }
 .physics p.dim { color: var(--fg-dim); font-size: 12px; max-width: 92ch; line-height: 1.6; margin: 6px 0 0; }
 .physics p.dim b { color: var(--fg); }
