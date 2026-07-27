@@ -104,7 +104,12 @@ while true; do
       SID=$(ps aux | grep '[c]hannel -ws' | grep 4445 | grep -o 'session/[0-9a-f-]*' | head -1 | cut -d/ -f2)
       BRK="fox=http://127.0.0.1:4445"
       lsof -ti :4446 >/dev/null 2>&1 && BRK="$BRK,chrome=http://127.0.0.1:4446"
-      nohup collector/collector -listen :7070 -brokers "$BRK" -gecko "http://127.0.0.1:4444/session/$SID" >/tmp/collector-8.log 2>&1 &
+      # -session-file keeps procinfo/aperture alive across Firefox recycles — a
+      # fixed -gecko URL goes stale on the first recycle and blinds both. This
+      # revive path MUST stay arg-parity with up.sh's collector start (the
+      # 2026-07-27 drift: this line lacked it, so a watchdog-revived collector
+      # went blind at the next recycle).
+      nohup collector/collector -listen :7070 -brokers "$BRK" -gecko "http://127.0.0.1:4444/session/$SID" -session-file "$HOME/.8/gecko.json" >/tmp/collector-8.log 2>&1 &
     fi
   else
     # Firefox PROCESS is GONE -> genuinely dead. Two consecutive to ride out a
