@@ -27,7 +27,7 @@ trap 'rm -rf "$_LOCK"' EXIT
 
 echo "$(date +%H:%M:%S) 8-WATCH watcher started (pid $$)" >> "$LOG"
 
-prev="INIT"; hi=0; wdBad=0
+prev="INIT"; hi=0; wdBad=0; upBad=0
 while true; do
   ff=$(pgrep -f 'firefox.*ltqa-firefox-deepseek' 2>/dev/null | head -1)
   wc=$(pgrep -f 'bash scripts/watchdog.sh' 2>/dev/null | grep -c .)
@@ -42,7 +42,10 @@ while true; do
   key=""; probs=""
   [ -z "$ff" ] && { key="${key}F"; probs="$probs FIREFOX-DOWN"; }
   { [ "$wdBad" -ge 2 ]; } 2>/dev/null && { key="${key}W$wc"; probs="$probs watchdogs=$wc(want1, persisted)"; }
-  { [ "$uc" -gt 1 ]; } 2>/dev/null && { key="${key}U"; probs="$probs DUP-up.sh=$uc"; }
+  # up.sh debounce: a recycle briefly races two revives before they finish /
+  # the wedge-killer trims a stuck one — only a DUP that PERSISTS two ticks is real.
+  if { [ "$uc" -gt 1 ]; } 2>/dev/null; then upBad=$((upBad+1)); else upBad=0; fi
+  { [ "$upBad" -ge 2 ]; } 2>/dev/null && { key="${key}U"; probs="$probs DUP-up.sh=$uc(persisted)"; }
   [ "$col" = "DOWN" ] && { key="${key}C"; probs="$probs COLLECTOR-DOWN"; }
   { [ "$hi" -ge 2 ]; } 2>/dev/null && { key="${key}M"; probs="$probs parent_mem=${mem}MB SUSTAINED>4400 (recycle imminent)"; }
   if [ -z "$key" ]; then key="ok"; line="healthy — firefox up, 1 watchdog, collector up, parent_mem=${mem}MB"; else line="ALERT:$probs"; fi
