@@ -15,10 +15,14 @@ const BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
 
 type Dir = 'out' | 'in';
 interface Packet { p: number; dir: Dir; color: string; label: string; speed: number }
+// an arrival pulse: the node ABSORBS the packet (a ring that flashes and fades)
+// — without it, dots overshot past both endpoints and blinked out mid-air
+// (the A/B "viewing problem": travel was allowed to p=1.06, 7% past the node).
+interface Pulse { dir: Dir; color: string; t0: number }
 interface WireState {
   held: boolean;        // a held channel: line stays lit, events may drift in
-  litUntil: number;     // CALL wires: lit while a round trip is in flight
   packets: Packet[];
+  pulses: Pulse[];
   midNode?: string;     // mqtt: the broker sits ON the wire
   rightLabel: string;
 }
@@ -57,7 +61,7 @@ export function Transports() {
       name: 'http', atom: 'CALL', phys: 'call', where: 'wire',
       what: 'one request, one response, then nothing', use: 'every WebDriver / Appium / REST hub command', right: 'server',
       fire: async (st, spawn) => {
-        st.litUntil = Date.now() + 4000; spawn('out', css('--blue'), 'req');
+        spawn('out', css('--blue'), 'req');
         const r = await fetchUrl({ method: 'GET', url: 'https://api.github.com/zen', headers: {}, body: '' });
         spawn('in', css('--blue'), 'res');
         return `${r.status} · ${r.latency_ms}ms · “${(r.body || '').slice(0, 42)}”`;
@@ -99,7 +103,7 @@ export function Transports() {
       name: 'unix', atom: 'CALL | CHANNEL', phys: 'call', where: 'wire',
       what: 'the same bytes over a unix-domain socket — no TCP port', use: 'portless daemons: dockerd, driver sidecars', right: '∅ socket',
       fire: async (st, spawn) => {
-        st.litUntil = Date.now() + 3000; spawn('out', css('--blue'), 'req');
+        spawn('out', css('--blue'), 'req');
         const j = await fireAdapter('unix');
         spawn('in', css('--blue'), 'res');
         return j.detail;
@@ -109,7 +113,7 @@ export function Transports() {
       name: 'grpc', atom: 'CALL | CHANNEL', phys: 'both', where: 'adapter',
       what: 'unary = CALL · server-stream = CHANNEL, over HTTP/2', use: 'streaming device farms / gRPC backends', right: 'h2 svc',
       fire: async (st, spawn) => {
-        st.litUntil = Date.now() + 4000; spawn('out', css('--blue'), 'unary');
+        spawn('out', css('--blue'), 'unary');
         const j = await fireAdapter('grpc');
         spawn('in', css('--blue'), 'echo');
         for (let i = 0; i < 3; i++) setTimeout(() => spawn('in', css('--purple'), `#${i}`), 350 + i * 380);
@@ -131,7 +135,7 @@ export function Transports() {
       name: 'webrtc', atom: 'CHANNEL', phys: 'both', where: 'adapter',
       what: 'SDP signaling = CALL, then a peer DataChannel = CHANNEL', use: 'real-time media / low-latency apps', right: 'peer',
       fire: async (st, spawn) => {
-        st.litUntil = Date.now() + 3500; spawn('out', css('--blue'), 'offer');
+        spawn('out', css('--blue'), 'offer');
         const j = await fireAdapter('webrtc');
         spawn('in', css('--blue'), 'answer');
         st.held = true; // the negotiated DataChannel: the wire stays lit
@@ -152,26 +156,40 @@ export function Transports() {
     for (const row of ROWS) {
       states.current[row.name] ||= {
         held: row.phys === 'channel' || row.phys === 'afferent',
-        litUntil: 0, packets: [], midNode: row.mid, rightLabel: row.right,
+        packets: [], pulses: [], midNode: row.mid, rightLabel: row.right,
       };
     }
     let lastAmbient = 0;
+    let lastNow = Date.now();
+    const CROSS_MS = 3400; // wall-clock time for a packet to cross A→B
     const tick = () => {
       const now = Date.now();
+      // TIME-BASED advance: move by REAL elapsed ms, not a fixed per-tick delta.
+      // Firefox throttles a non-foreground tab's setInterval (~300ms-1s), which
+      // made the dot crawl at ~1/6 speed and hug point A — invisible, the "A/B
+      // viewing problem" (2026-07-27, the hidden≠active lesson, third instance).
+      // Elapsed-time motion crosses in CROSS_MS regardless of the timer rate.
+      const dt = Math.min(now - lastNow, 500); // clamp a long stall to one hop
+      lastNow = now;
       // ambient life on held wires: a faint event drifts in every ~5s
       if (now - lastAmbient > 5200) {
         lastAmbient = now;
         for (const n of ['websocket', 'sse']) {
           const st = states.current[n];
-          if (st?.held) st.packets.push({ p: 0, dir: 'in', color: css('--yellow'), label: 'evt', speed: 0.012 });
+          if (st?.held) st.packets.push({ p: 0, dir: 'in', color: css('--yellow'), label: 'evt', speed: 0 });
         }
       }
       for (const row of ROWS) {
         const cv = canvases.current[row.name]; const st = states.current[row.name];
         if (!cv || !st) continue;
         draw(cv, row, st, now);
-        for (const pk of st.packets) pk.p += pk.speed;
-        st.packets = st.packets.filter((pk) => pk.p < 1.06);
+        for (const pk of st.packets) pk.p += dt / CROSS_MS;
+        // a packet ARRIVES at the node — absorbed into a pulse, never overshoots
+        for (const pk of st.packets) {
+          if (pk.p >= 1) st.pulses.push({ dir: pk.dir, color: pk.color, t0: now });
+        }
+        st.packets = st.packets.filter((pk) => pk.p < 1);
+        st.pulses = st.pulses.filter((pu) => now - pu.t0 < 600);
       }
     };
     const t = window.setInterval(tick, 40);
@@ -188,7 +206,12 @@ export function Transports() {
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, w, h);
     const y = h / 2, Lx = 54, Rx = w - 64;
-    const lit = st.held || now < st.litUntil;
+    // LIT derives from live traffic, not a timer: a CALL wire is lit exactly
+    // while a packet is in flight (or a pulse is fading), then goes dark —
+    // "request, response, gone". A held CHANNEL is always lit. (The old litUntil
+    // timer un-lit after ~300ms regardless, hiding the dot — 2026-07-27.)
+    const busy = st.packets.length > 0 || st.pulses.length > 0;
+    const lit = st.held || busy;
     const lineColor = st.held ? css('--purple') : lit ? css('--blue') : css('--border');
     // the wire
     g.lineWidth = 2;
@@ -210,17 +233,41 @@ export function Transports() {
     // state caption on the wire
     g.fillStyle = css('--fg-faint'); g.font = '9.5px ui-monospace, monospace'; g.textAlign = 'left';
     g.fillText(st.held ? 'held open' : lit ? 'in flight' : 'no socket between calls', Lx + 10, y - 10);
-    // packets
+    // arrival pulses: the destination node flashes as it ABSORBS a packet
+    for (const pu of st.pulses) {
+      const age = (now - pu.t0) / 600; // 0→1
+      const x = pu.dir === 'out' ? Rx : Lx;
+      g.globalAlpha = Math.max(0, 0.85 * (1 - age));
+      g.strokeStyle = pu.color; g.lineWidth = 2;
+      g.beginPath(); g.arc(x, y, 6 + age * 13, 0, 7); g.stroke();
+      g.globalAlpha = 1;
+    }
+    // packets — big, glowing, with a fading trail behind, position CLAMPED
+    // strictly between the two nodes (arrival is the pulse, never overshoot).
+    const xAt = (dir: Dir, p: number) => {
+      const pp = Math.max(0, Math.min(p, 1));
+      return dir === 'out' ? Lx + (Rx - Lx) * pp : Rx - (Rx - Lx) * pp;
+    };
     for (const pk of st.packets) {
-      const x = pk.dir === 'out' ? Lx + (Rx - Lx) * pk.p : Rx - (Rx - Lx) * pk.p;
-      const grad = g.createRadialGradient(x, y, 0, x, y, 14);
+      const x = xAt(pk.dir, pk.p);
+      // trail: 5 fading ghosts behind the head (motion is legible in a still frame)
+      for (let k = 5; k >= 1; k--) {
+        const tx = xAt(pk.dir, pk.p - k * 0.018);
+        g.globalAlpha = 0.10 * (6 - k);
+        g.fillStyle = pk.color;
+        g.beginPath(); g.arc(tx, y, 3 + (5 - k) * 0.7, 0, 7); g.fill();
+      }
+      // glow
+      const grad = g.createRadialGradient(x, y, 0, x, y, 20);
       grad.addColorStop(0, pk.color); grad.addColorStop(1, 'transparent');
-      g.globalAlpha = 0.5; g.fillStyle = grad;
-      g.beginPath(); g.arc(x, y, 14, 0, 7); g.fill();
+      g.globalAlpha = 0.55; g.fillStyle = grad;
+      g.beginPath(); g.arc(x, y, 20, 0, 7); g.fill();
+      // core
       g.globalAlpha = 1; g.fillStyle = pk.color;
-      g.beginPath(); g.arc(x, y, 5, 0, 7); g.fill();
-      g.fillStyle = css('--bg'); g.font = 'bold 7px ui-monospace, monospace'; g.textAlign = 'center';
-      g.fillText(pk.label.slice(0, 4), x, y + 2.5);
+      g.beginPath(); g.arc(x, y, 8, 0, 7); g.fill();
+      g.fillStyle = css('--bg'); g.font = 'bold 8px ui-monospace, monospace'; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(pk.label.slice(0, 5), x, y);
+      g.textBaseline = 'alphabetic';
     }
   }
 
@@ -228,7 +275,7 @@ export function Transports() {
     const st = states.current[row.name];
     setRes((p) => ({ ...p, [row.name]: 'firing' }));
     const spawn = (dir: Dir, color: string, label: string) =>
-      st.packets.push({ p: 0, dir, color, label, speed: 0.016 });
+      st.packets.push({ p: 0, dir, color, label, speed: 0.010 }); // ~4s wire crossing — on-wire long enough to always be caught
     try {
       const text = await row.fire(st, spawn, chan);
       setRes((p) => ({ ...p, [row.name]: { ok: true, text } }));
