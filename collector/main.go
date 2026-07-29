@@ -81,6 +81,15 @@ type collector struct {
 	ledger []reqRec // full request/response records — 8's witness ledger (replayable)
 	lseq   int64
 
+	// TAB MANIFEST — the durable answer to how-many / what / where / who / why / when
+	// for every tab. Reconciled against getTree by a background loop (so it stays true
+	// even when the cockpit is backgrounded/throttled). Persisted to ~/.8/manifest.json.
+	tmu            sync.Mutex
+	manifest       map[string]*tabRec // context-id -> record
+	tabseq         int64
+	pendOpen       []pendAttr // an agent declares intent before opening; the next-born tab claims it (provenance)
+	manifestSeeded bool       // first reconcile after (re)start captures already-open tabs as "unknown" — the witness didn't see them born, so it must NOT claim "human"
+
 	bmu     sync.Mutex
 	benches []benchRec // benchmark batch results — clubbed + filterable on 8
 	bseq    int64
@@ -205,7 +214,7 @@ func (c *collector) handleFocus(w http.ResponseWriter, r *http.Request) {
 }
 
 func newCollector(brokers []broker) *collector {
-	return &collector{brokers: brokers, client: &http.Client{}, geckoClient: &http.Client{Timeout: 25 * time.Second}, subs: map[int]chan string{}, frames: map[string]chan []byte{}, dprCache: map[string]float64{}, vpCache: map[string][2]float64{}, fxRecv: map[string]*fxStream{}}
+	return &collector{brokers: brokers, client: &http.Client{}, geckoClient: &http.Client{Timeout: 25 * time.Second}, subs: map[int]chan string{}, frames: map[string]chan []byte{}, dprCache: map[string]float64{}, vpCache: map[string][2]float64{}, fxRecv: map[string]*fxStream{}, manifest: map[string]*tabRec{}}
 }
 
 // chanDPR is a tab's devicePixelRatio (cached per context). The /stream screenshot
@@ -1511,6 +1520,166 @@ func (c *collector) handleTabs(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"tabs": tabs})
+}
+
+// chromeTabsScript enumerates EVERY tab across EVERY window from the chrome/parent
+// context — the authoritative list. BiDi getTree only sees tabs its session knows
+// (it was blind to 8 of 14 user-opened tabs, 2026-07-28); chrome sees them all.
+const chromeTabsScript = `const cb=arguments[arguments.length-1];try{let out=[];for(let w of Services.wm.getEnumerator("navigator:browser")){for(let t of w.gBrowser.tabs){let b=t.linkedBrowser;out.push({bcid:String(b.browsingContext?b.browsingContext.id:""),url:b.currentURI?b.currentURI.spec:"",title:t.label||""});}}cb(JSON.stringify(out));}catch(e){cb("ERR:"+e);}`
+
+// ── TAB MANIFEST ────────────────────────────────────────────────────────────
+// The witness's answer to the basic questions it could never answer before:
+// how many tabs, what each is, where (session), WHO opened it, WHY, and WHEN.
+// getTree gives how-many/what/where but is ephemeral and its context-ids rotate;
+// the manifest is the durable identity + provenance layer on top, reconciled every
+// few seconds so dead-context ghosts turn "closed" and new tabs are "born".
+type tabRec struct {
+	UID       int64  `json:"uid"`
+	Ctx       string `json:"ctx"`
+	URL       string `json:"url"`
+	Session   string `json:"session"`
+	OpenedBy  string `json:"opened_by"` // "human" | "<agent-id>"
+	Why       string `json:"why"`
+	FirstSeen string `json:"first_seen"`
+	LastSeen  string `json:"last_seen"`
+	Status    string `json:"status"` // live | closed
+	ClosedAt  string `json:"closed_at,omitempty"`
+}
+
+type pendAttr struct {
+	Agent string
+	Why   string
+	At    time.Time
+}
+
+// reconcileManifest folds a session's live getTree tabs into the durable manifest.
+// New contexts are BORN (attributed to a pending agent-intent if one was declared,
+// else "human"); contexts of this session no longer present are CLOSED. No polling
+// of its own — fed by handleTabs and the background reconcileLoop.
+func (c *collector) reconcileManifest(session string, tabs []map[string]string) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	c.tmu.Lock()
+	live := map[string]bool{}
+	for _, t := range tabs {
+		ctx := t["context"]
+		if ctx == "" {
+			continue
+		}
+		live[ctx] = true
+		r := c.manifest[ctx]
+		if r == nil {
+			c.tabseq++
+			// HONEST PROVENANCE: the witness only claims an opener it actually witnessed.
+			// - already-open at witness startup  -> "unknown" (it did NOT see them born)
+			// - a :8088 cockpit tab               -> "system" (up.sh/activateCockpit opens these)
+			// - an agent declared intent (POST /manifest) before opening -> that agent
+			// - otherwise a tab just appeared      -> "unknown" (could be human OR an
+			//   agent/system that did not declare — never assume "human")
+			var by, why string
+			switch {
+			case strings.Contains(t["url"], ":8088"):
+				by, why = "system", "up.sh cockpit"
+			case !c.manifestSeeded:
+				by, why = "unknown", "already open at witness startup"
+			case len(c.pendOpen) > 0:
+				p := c.pendOpen[len(c.pendOpen)-1]
+				c.pendOpen = c.pendOpen[:len(c.pendOpen)-1]
+				by, why = p.Agent, p.Why
+			default:
+				by, why = "unknown", "appeared — opener not witnessed"
+			}
+			r = &tabRec{UID: c.tabseq, Ctx: ctx, Session: session, OpenedBy: by, Why: why, FirstSeen: now, Status: "live"}
+			c.manifest[ctx] = r
+		}
+		r.URL = t["url"]
+		r.LastSeen = now
+		r.Status = "live"
+		r.ClosedAt = ""
+	}
+	for ctx, r := range c.manifest {
+		if r.Session == session && !live[ctx] && r.Status == "live" {
+			r.Status = "closed"
+			r.ClosedAt = now
+		}
+	}
+	c.manifestSeeded = true // startup snapshot done; later-born tabs can be attributed
+	snap := make([]*tabRec, 0, len(c.manifest))
+	for _, r := range c.manifest {
+		snap = append(snap, r)
+	}
+	c.tmu.Unlock()
+	os.MkdirAll(os.ExpandEnv("$HOME/.8"), 0o755)
+	if b, err := json.MarshalIndent(snap, "", " "); err == nil {
+		os.WriteFile(os.ExpandEnv("$HOME/.8/manifest.json"), b, 0o644)
+	}
+}
+
+// reconcileLoop keeps the manifest true even when NO cockpit is looking (fix for
+// background-throttling) AND enumerates from CHROME context — every tab in every
+// window — so the manifest finally sees ALL tabs, not just BiDi's session subset.
+func (c *collector) reconcileLoop() {
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	for range t.C {
+		out, err := c.execChrome(chromeTabsScript)
+		if err != nil || strings.HasPrefix(out, "ERR:") || !strings.HasPrefix(strings.TrimSpace(out), "[") {
+			continue
+		}
+		var ct []struct {
+			Bcid  string `json:"bcid"`
+			URL   string `json:"url"`
+			Title string `json:"title"`
+		}
+		if json.Unmarshal([]byte(out), &ct) != nil {
+			continue
+		}
+		tabs := make([]map[string]string, 0, len(ct))
+		for _, tb := range ct {
+			key := tb.Bcid
+			if key == "" {
+				key = tb.URL
+			}
+			tabs = append(tabs, map[string]string{"context": key, "url": tb.URL})
+		}
+		c.reconcileManifest("fox", tabs) // one Firefox = one session; chrome sees all its windows
+	}
+}
+
+// handleManifest — GET returns the full manifest (the answer to how-many/what/where/
+// who/why/when). POST {agent, why} declares intent BEFORE opening a tab, so the
+// next-born tab is attributed to that agent instead of "human" (provenance capture).
+func (c *collector) handleManifest(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var p struct {
+			Agent string `json:"agent"`
+			Why   string `json:"why"`
+		}
+		json.NewDecoder(r.Body).Decode(&p)
+		if p.Agent == "" {
+			p.Agent = "unknown-agent"
+		}
+		c.tmu.Lock()
+		c.pendOpen = append(c.pendOpen, pendAttr{Agent: p.Agent, Why: p.Why, At: time.Now()})
+		c.tmu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "note": "next-born tab -> " + p.Agent})
+		return
+	}
+	c.tmu.Lock()
+	snap := make([]*tabRec, 0, len(c.manifest))
+	for _, rec := range c.manifest {
+		snap = append(snap, rec)
+	}
+	c.tmu.Unlock()
+	sort.Slice(snap, func(i, j int) bool { return snap[i].UID < snap[j].UID })
+	live := 0
+	for _, rec := range snap {
+		if rec.Status == "live" {
+			live++
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"total": len(snap), "live": live, "tabs": snap})
 }
 
 // the shared session registry — every http-mcp instance (or the collector
@@ -2956,6 +3125,7 @@ func main() {
 		go c.activateCockpit() // every (re)start returns Firefox to 8's tab
 		time.Sleep(200 * time.Millisecond)
 		go c.memoryAperture(*apertureMB) // self-regulate parent memory (heap-minimize at the soft threshold)
+		go c.reconcileLoop()             // keep the tab manifest true even when no cockpit is watching
 	}()
 
 	mux := http.NewServeMux()
@@ -2989,6 +3159,7 @@ func main() {
 	mux.HandleFunc("/benches", c.handleBenches)
 	mux.HandleFunc("/focus", c.handleFocus)
 	mux.HandleFunc("/health", c.handleHealth)
+	mux.HandleFunc("/manifest", c.handleManifest) // durable tab manifest: how-many/what/where/who/why/when
 
 	allow := map[string]bool{}
 	for _, o := range strings.Split(*origins, ",") {

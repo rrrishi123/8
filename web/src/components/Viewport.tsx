@@ -10,9 +10,31 @@ type Seeing = 'pixels' | 'channel' | 'request';
 // live stream stops being a mirror and becomes hands: a click on the <img> maps
 // to the target's pixels and fires /act (tap), keystrokes fire /act (type). Same
 // surface drives a Firefox tab (BiDi) OR a real device (Appium) — one wire.
-export function Viewport({ session, title, context: fixedCtx, onAspect, hud, visible, live, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle }:
-  { session: string | null; title?: string; context?: string;
+export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAspect, hud, visible, live, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle }:
+  { session: string | null; title?: string; url?: string; context?: string;
     onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; live?: boolean; fps?: number; act?: boolean; pinned?: boolean; onPin?: () => void; lodW?: number; fx?: boolean; fxNeedle?: string }) {
+  // MANIFEST: the card's identity — who opened it, why, when — matched by URL
+  // (manifest keys by chrome bcid, cards by BiDi ctx, so URL is the join key).
+  const [man, setMan] = useState<{ opened_by?: string; why?: string; first_seen?: string } | null>(null);
+  useEffect(() => {
+    if (!cardUrl) return;
+    let alive = true;
+    const pull = () => fetch(`${BASE}/manifest`).then((r) => r.json()).then((j) => {
+      if (!alive) return;
+      const rec = (j.tabs || []).find((t: { url: string; status: string }) => t.url === cardUrl && t.status === 'live');
+      setMan(rec || null);
+    }).catch(() => {});
+    pull();
+    const iv = setInterval(pull, 5000);
+    return () => { alive = false; clearInterval(iv); };
+  }, [cardUrl]);
+  // back / reload / stop fired straight down the wire onto THIS card's context
+  const wire = (method: string, params: object) =>
+    fetch(`${BASE}/run?session=${encodeURIComponent(session || '')}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ method, params }),
+    }).catch(() => {});
+  const agent = man?.opened_by && man.opened_by !== 'human' && man.opened_by !== 'unknown' && man.opened_by !== 'system' ? man.opened_by : '';
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [ctx, setCtx] = useState(fixedCtx || '');
   const [reqSeat, setReqSeat] = useState('');
@@ -262,6 +284,15 @@ export function Viewport({ session, title, context: fixedCtx, onAspect, hud, vis
     <section className="panel viewport">
       <div className="panel-h">
         <span className={`vp-title${pinned ? ' pinned' : ''}`} onClick={onPin} title={onPin ? 'pin as hero (live)' : undefined}>{pinned ? '★ ' : ''}{title || 'viewport'}</span> {err ? '· ✗' : streaming ? '· ●' : '· ◌'}
+        {/* browser chrome: back · reload · full URL — a card is a real tab now */}
+        {ctx && <>
+          <button className="vp-nav" title="back" onClick={() => wire('browsingContext.traverseHistory', { context: ctx, delta: -1 })}>◀</button>
+          <button className="vp-nav" title="reload" onClick={() => wire('browsingContext.reload', { context: ctx })}>⟳</button>
+        </>}
+        {cardUrl && <span className="vp-url" title={cardUrl}>{cardUrl.replace(/^https?:\/\//, '')}</span>}
+        {/* WHO / WHY / WHEN + a live badge when an AGENT (not human/system) opened it */}
+        {agent && <span className="vp-agent" title={`${man?.why || ''} · ${man?.first_seen || ''}`}>🤖 {agent}</span>}
+        {man && !agent && <span className="vp-prov" title={`opened_by ${man.opened_by} · ${man.why} · ${man.first_seen}`}>{man.opened_by}</span>}
         <span className="seeing-tabs">
           {(['pixels', 'channel', 'request'] as Seeing[]).map((s) => (
             <button key={s} className={seeing === s ? 'on' : ''} onClick={() => setSeeing(s)} title={s === 'pixels' ? 'live stream' : s === 'channel' ? 'BiDi DOM' : 'classic source'}>{s}</button>

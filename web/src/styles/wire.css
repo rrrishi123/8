@@ -468,3 +468,10 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .tw-res.ok { color: var(--green); }
 .tw-res.bad { color: var(--red); }
 .tr-evt { color: var(--yellow); font-weight: 700; }
+
+/* card browser-chrome + provenance (2026-07-28): a card is a real, identified tab */
+.vp-nav { background: none; border: 1px solid var(--line, #333); color: var(--fg, #ccc); border-radius: 3px; font-size: 11px; padding: 0 5px; margin-left: 3px; cursor: pointer; }
+.vp-nav:hover { background: var(--hover, #2a2a2a); }
+.vp-url { font-size: 10px; opacity: 0.55; margin-left: 6px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
+.vp-agent { font-size: 10px; margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: #3b2f0b; color: #ffd43b; border: 1px solid #f08c00; }
+.vp-prov { font-size: 10px; margin-left: 6px; opacity: 0.5; }

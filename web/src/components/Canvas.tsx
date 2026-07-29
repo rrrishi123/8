@@ -48,6 +48,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   // on arrival so the jump lands ON the thing you were looking at, not a default.
   useEffect(() => { if (focusKey) setPinnedKey(focusKey); }, [focusKey]);
   const [spreadBy, setSpreadBy] = useLocal<Record<string, boolean>>('spreadBy', {}); // fanned decks
+  const [showSelf, setShowSelf] = useLocal<boolean>('showSelf', false); // reflexive breakpoint: let this 8 SEE its own tab (1 tab → 2 panes → controls itself)
   const [addFor, setAddFor] = useState('');       // which deck's "+ tab" input is open
   const [addUrl, setAddUrl] = useState('https://www.airbnb.com');
   const [liveKeys, setLiveKeys] = useState<string[]>([]); // recent-set: last 3 focused fox cards stay LIVE
@@ -105,6 +106,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
             // dropping :8088 network events) is untouched — this only relaxes
             // which tabs render as CARDS. A cockpit still never shows ITSELF.
             tb[s.id] = (t.tabs || []).filter((x: Tab) => {
+              if (showSelf) return true; // reflexive: show EVERY tab incl. my own — 8 sees itself
               const u = String(x.url || '');
               const mine = u.includes(location.host) && u.includes('c=' + SELF_ID);
               const ownNoId = u.replace(/#.*$/, '') === location.href.replace(/#.*$/, '') && !u.includes('c=');
@@ -142,7 +144,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     let n = 0;
     const t = window.setInterval(() => { n++; if (!document.hidden || n % 4 === 0) load(); }, 4000);
     return () => clearInterval(t);
-  }, []);
+  }, [showSelf]);
 
   // ATTENTION FOLLOWS ACTION: poll the collector's /focus (the last seat acted on,
   // by anyone — me via the wire, a replay, the operator). When it changes, 8
@@ -219,7 +221,11 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   let x = X0, y = Y0;
   const rowH = H + HEADER + OFFY * 5 + GAP;
   for (const st of stacks) {
-    const spread = !!spreadBy[st.key] || st.cells.length <= 1;
+    // DEFAULT FANNED: a browser's tabs show ALL cards side-by-side unless the
+    // user explicitly stacks that deck (spreadBy[key]===false). Spreading only
+    // changes LAYOUT — the freeze/LOD logic still keeps dormant tabs cheap — so
+    // "see all open tabs" is the default, not a per-deck click. (fix b, 2026-07-28)
+    const spread = spreadBy[st.key] !== false;
     const w0 = cardW(st.cells[0] || ({ key: '', session: '' } as Cell)) || 300;
     const fpW = spread ? Math.max(w0, st.cells.reduce((a, c) => a + cardW(c) + 16, -16)) : w0 + OFFX * (st.cells.length - 1);
     if (x > X0 && x + fpW > X0 + WORLD_W) { x = X0; y += rowH; }
@@ -258,7 +264,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     const streams = (isFox ? inSet : L.top) && L.vis;
     return {
       id: 'seat-' + L.c.key, x: L.x, y: L.y, w: L.w, h: H, z: L.z, gravity: hero,
-      node: <Viewport session={L.c.session} context={L.c.context} title={L.c.title}
+      node: <Viewport session={L.c.session} context={L.c.context} title={L.c.title} url={L.c.url}
         visible={streams} live={live}
         fps={parentMem > 3500 ? (hero ? 1 : 0) : (hero ? 3 : (streams ? 0.4 : 0))} pinned={hero}
         lodW={lodBucket(L.w * cam.z)}
@@ -352,7 +358,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
             {d.st.isBrowser && <span className="deck-count">{d.st.cells.length} tab{d.st.cells.length === 1 ? '' : 's'}</span>}
             {d.st.isBrowser && d.st.cells.length > 1 && (
               <button className="deck-btn" title={d.spread ? 'stack the deck' : 'fan the deck out — see all tabs'}
-                onClick={() => setSpreadBy((p) => ({ ...p, [d.st.key]: !p[d.st.key] }))}>{d.spread ? '▣ stack' : '⊞ fan'}</button>
+                onClick={() => setSpreadBy((p) => ({ ...p, [d.st.key]: !d.spread }))}>{d.spread ? '▣ stack' : '⊞ fan'}</button>
             )}
             {d.st.isBrowser && (addFor === d.st.key
               ? <input className="deck-add-in" autoFocus value={addUrl}
@@ -390,6 +396,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
         <button onClick={persp.p1} title="one card">P1 · act</button>
         <button onClick={persp.p2} title="all decks, side by side">P2 · decks</button>
         <button onClick={persp.bird} title="see everything">◇ bird's-eye</button>
+        <button className={showSelf ? 'on' : ''} onClick={() => setShowSelf((v) => !v)} title="reflexive: let this 8 see its OWN tab (1 tab → 2 panes → controls itself)">⟲ self</button>
         <span className="persp-z">{stacks.length} decks · {cells.length} cards · {Math.round(cam.z * 100)}%</span>
       </div>
       <WireLog />
