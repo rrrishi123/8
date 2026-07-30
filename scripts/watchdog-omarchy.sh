@@ -124,8 +124,14 @@ import json,sys
 d=json.load(sys.stdin)
 print(d.get('parent_mem_mb',0))
 " 2>/dev/null)
-    if [ "${mem:-0}" -gt "${RECYCLE_MB:-4500}" ] 2>/dev/null; then
-      echo "[peer-watchdog $(date +%H:%M:%S)] Firefox parent ${mem}MB > ${RECYCLE_MB:-4500}MB -> lease-aware recycle"
+    # RAM-AWARE, PLATFORM-AGNOSTIC recycle bound (2026-07-30): ~18% of physical RAM,
+    # capped 4500 — Firefox OOMs below 4500 on RAM-starved machines. sysctl(mac/BSD)
+    # else /proc/meminfo(linux) else fallback — same block as watchdog.sh (keep in sync).
+    _rmb=$(sysctl -n hw.memsize 2>/dev/null); _rmb=$(( ${_rmb:-0}/1048576 ))
+    [ "$_rmb" -le 0 ] && [ -r /proc/meminfo ] && _rmb=$(( $(awk '/^MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0)/1024 ))
+    _rec=$(( _rmb*18/100 )); { [ "$_rec" -le 0 ] || [ "$_rec" -gt 4500 ]; } && _rec=4500
+    if [ "${mem:-0}" -gt "${RECYCLE_MB:-$_rec}" ] 2>/dev/null; then
+      echo "[peer-watchdog $(date +%H:%M:%S)] Firefox parent ${mem}MB > ${RECYCLE_MB:-$_rec}MB -> lease-aware recycle"
 
       # Release all non-watchdog leases to close their tabs
       if [ -f "$LEASES_FILE" ]; then
