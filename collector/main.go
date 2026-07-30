@@ -1543,7 +1543,16 @@ func (c *collector) handleTabs(w http.ResponseWriter, r *http.Request) {
 // chromeTabsScript enumerates EVERY tab across EVERY window from the chrome/parent
 // context — the authoritative list. BiDi getTree only sees tabs its session knows
 // (it was blind to 8 of 14 user-opened tabs, 2026-07-28); chrome sees them all.
-const chromeTabsScript = `const cb=arguments[arguments.length-1];try{let out=[];for(let w of Services.wm.getEnumerator("navigator:browser")){for(let t of w.gBrowser.tabs){let b=t.linkedBrowser;out.push({bcid:String(b.browsingContext?b.browsingContext.id:""),url:b.currentURI?b.currentURI.spec:"",title:t.label||""});}}cb(JSON.stringify(out));}catch(e){cb("ERR:"+e);}`
+// chromeTabsScript also DEDUPES cockpit (:8088) tabs every reconcile — keeps the
+// SELECTED one, closes the rest. Firefox recycles accumulate :8088 tabs (13 seen
+// 2026-07-31) WITHOUT restarting the collector, so activateCockpit's startup dedupe
+// never fires on recycle — the periodic loop is the only place that catches it. Each
+// stray cockpit captures all the others (the parent-memory leak multiplier).
+const chromeTabsScript = `const cb=arguments[arguments.length-1];try{` +
+	`let ck=[];for(let w of Services.wm.getEnumerator("navigator:browser")){for(let t of Array.from(w.gBrowser.tabs)){if(t.linkedBrowser.currentURI.spec.includes("8088"))ck.push({t:t,w:w,sel:t.selected});}}` +
+	`if(ck.length>1){let keep=ck.find(c=>c.sel)||ck[0];for(let c of ck){if(c!==keep){try{c.w.gBrowser.removeTab(c.t);}catch(e){}}}}` +
+	`let out=[];for(let w of Services.wm.getEnumerator("navigator:browser")){for(let t of w.gBrowser.tabs){let b=t.linkedBrowser;out.push({bcid:String(b.browsingContext?b.browsingContext.id:""),url:b.currentURI?b.currentURI.spec:"",title:t.label||""});}}` +
+	`cb(JSON.stringify(out));}catch(e){cb("ERR:"+e);}`
 
 // ── TAB MANIFEST ────────────────────────────────────────────────────────────
 // The witness's answer to the basic questions it could never answer before:
