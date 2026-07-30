@@ -88,22 +88,10 @@ while true; do
       rm -f "$TABS_FILE.obs"
     fi
 
-    # FLOW 10 — proactive mem recycle: 8 watches its OWN parent memory and recycles
-    # BEFORE the OOM. Only fires when procinfo succeeds AND parent exceeds threshold.
-    mem=$(curl -s -m4 "http://127.0.0.1:7070/procinfo?session=fox" | jq -r '.parent_mem_mb // 0' 2>/dev/null)
-    # RAM-AWARE, PLATFORM-AGNOSTIC recycle bound (2026-07-30): Firefox OOM-crashes
-    # BELOW 4500MB on RAM-starved machines — this 18GB mac dies ~3800MB, so the fixed
-    # 4500 default never fired and Firefox crashed first. Derive ~18% of PHYSICAL RAM,
-    # capped at 4500 (18GB→~3300 < 3800 crash; 36GB+→4500). Detect RAM without assuming
-    # the OS: macOS/BSD `sysctl hw.memsize`, else Linux `/proc/meminfo`, else fall back.
-    _rmb=$(sysctl -n hw.memsize 2>/dev/null); _rmb=$(( ${_rmb:-0}/1048576 ))
-    [ "$_rmb" -le 0 ] && [ -r /proc/meminfo ] && _rmb=$(( $(awk '/^MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0)/1024 ))
-    _rec=$(( _rmb*18/100 )); { [ "$_rec" -le 0 ] || [ "$_rec" -gt 4500 ]; } && _rec=4500
-    if [ "${mem:-0}" -gt "${RECYCLE_MB:-$_rec}" ] 2>/dev/null; then
-      echo "[watchdog $(date +%H:%M:%S)] Firefox parent ${mem}MB > ${RECYCLE_MB:-$_rec}MB -> proactive recycle (FLOW 10)"
-      pkill -f "firefox.*ltqa-firefox-deepseek" 2>/dev/null; sleep 2
-      run_up; sleep 30
-    fi
+    # FLOW 10 (proactive mem recycle) now lives in the CROSS-PLATFORM Go collector
+    # (memoryAperture STEP 3: RAM-aware bound + pkill), not here — one platform-agnostic
+    # brain instead of duplicated per-OS shell in two watchdogs (2026-07-31, item c). The
+    # collector kills Firefox at the bound; THIS watchdog just revives it (below).
 
     # COLLECTOR liveness — revive a dead collector WITHOUT Firefox churn.
     if ! lsof -ti :7070 >/dev/null 2>&1; then

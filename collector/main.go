@@ -619,8 +619,10 @@ if(!cands.length){cb(JSON.stringify({parked:null}));return;}
 const v=cands[0];gB.discardBrowser(v.tab);
 cb(JSON.stringify({parked:v.u,mb:v.mb}));
 }catch(e){cb("ERR:"+e)}})();`
-	var lastFire time.Time
-	log.Printf("aperture: watching (soft=%dMB, cooldown=%s)", softMB, cooldown)
+	var lastFire, lastRecycle time.Time
+	recycleMB := recycleThresholdMB() // RAM-aware proactive-recycle bound (cross-platform, in Go)
+	const recycleCooldown = 5 * time.Minute
+	log.Printf("aperture: watching (soft=%dMB, recycle=%dMB, cooldown=%s)", softMB, recycleMB, cooldown)
 	for {
 		time.Sleep(30 * time.Second)
 		if n := c.lastCapture.Load(); n == 0 || time.Since(time.Unix(0, n)) > 90*time.Second {
@@ -667,7 +669,62 @@ cb(JSON.stringify({parked:v.u,mb:v.mb}));
 		amb, _ := strconv.Atoi(strings.TrimSpace(after))
 		c.publish(fmt.Sprintf(`{"session":"fox","origin":"COLLECTOR","frame":{"method":"aperture.park","params":{"before_mb":%d,"after_mb":%d,"victim":%s}}}`, mmb, amb, strings.TrimSpace(parked)))
 		log.Printf("aperture: still %dMB after flush -> FAIR park heaviest -> %dMB | victim=%s", mmb, amb, strings.TrimSpace(parked))
+		// STEP 3 (last resort) — flush+park couldn't bring the parent home and it is
+		// above the RAM-aware recycle bound: the graphics-surface leak is un-reclaimable,
+		// so RECYCLE Firefox before the OOM crash (the watchdog revives it). FLOW 10, now
+		// decided in the CROSS-PLATFORM collector instead of two OS-specific shell watch-
+		// dogs — the bloat is capture-driven (collector-driven), so this is where it belongs.
+		if recycleMB > 0 && amb >= recycleMB && time.Since(lastRecycle) > recycleCooldown {
+			lastRecycle = time.Now()
+			// AUTO-DEFER: where a multi-agent lease ledger owns recycle (omarchy
+			// ~/.8/leases.json) the watchdog closes tabs gracefully BY LEASE before
+			// killing — so the collector must not pkill out from under it. Single-agent
+			// machines (mac, no leases file) recycle directly here.
+			if _, err := os.Stat(os.ExpandEnv("$HOME/.8/leases.json")); err == nil {
+				log.Printf("aperture: parent %dMB >= %dMB — deferring recycle to lease-aware watchdog", amb, recycleMB)
+			} else {
+				log.Printf("aperture: parent %dMB >= %dMB recycle bound -> proactive recycle (FLOW 10)", amb, recycleMB)
+				c.publish(fmt.Sprintf(`{"session":"fox","origin":"COLLECTOR","frame":{"method":"aperture.recycle","params":{"parent_mb":%d,"bound_mb":%d}}}`, amb, recycleMB))
+				_ = exec.Command("pkill", "-f", "firefox.*ltqa-firefox-deepseek").Run()
+			}
+		}
 	}
+}
+
+// totalRAMMB returns physical RAM in MB, platform-agnostically (macOS/BSD sysctl,
+// Linux /proc/meminfo) — sizes the proactive-recycle bound to the machine. One Go
+// function replaces the per-OS shell that used to live in two watchdog scripts.
+func totalRAMMB() int {
+	if out, err := exec.Command("sysctl", "-n", "hw.memsize").Output(); err == nil {
+		if b, e := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64); e == nil && b > 0 {
+			return int(b / 1048576)
+		}
+	}
+	if data, err := os.ReadFile("/proc/meminfo"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(line, "MemTotal:") {
+				if f := strings.Fields(line); len(f) >= 2 {
+					if kb, e := strconv.Atoi(f[1]); e == nil {
+						return kb / 1024
+					}
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// recycleThresholdMB — ~18% of physical RAM, capped 4500 (Firefox OOMs below 4500 on
+// RAM-starved machines: 18GB→~3300 < ~3800 crash). 0 RAM → 4500 fallback.
+func recycleThresholdMB() int {
+	ram := totalRAMMB()
+	if ram <= 0 {
+		return 4500
+	}
+	if rec := ram * 18 / 100; rec < 4500 {
+		return rec
+	}
+	return 4500
 }
 
 // handleFxChunk receives one WebM cluster from the HiddenFrame driver (POST body =
