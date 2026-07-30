@@ -168,13 +168,31 @@ func (c *collector) activateCockpit() {
 		if json.Unmarshal(tr, &t) != nil {
 			continue
 		}
+		var cockpits []string
 		for _, ctx := range t.Result.Contexts {
 			if strings.Contains(ctx.URL, ":8088") {
-				c.command(b, fmt.Sprintf(`{"method":"browsingContext.activate","params":{"context":%q}}`, ctx.Context))
-				log.Printf("brought Firefox home to 8 (activated cockpit %s)", ctx.Context)
-				return
+				cockpits = append(cockpits, ctx.Context)
 			}
 		}
+		if len(cockpits) == 0 {
+			continue // no cockpit tab yet — keep retrying while the broker/session settle
+		}
+		// DEDUPE: keep ONE cockpit, close the rest. Every crash-revive opens a fresh
+		// :8088 tab (new #c=) and session-restore brings the dead ones back; unchecked
+		// they pile up (7 accumulated by 2026-07-30) and EACH cockpit captures all the
+		// others — a runaway multiplier on parent graphics-surface memory that feeds the
+		// crash-loop. Deduping on every (re)start bounds it to 1 and starves the leak.
+		keep := cockpits[0]
+		for _, extra := range cockpits[1:] {
+			c.command(b, fmt.Sprintf(`{"method":"browsingContext.close","params":{"context":%q}}`, extra))
+		}
+		c.command(b, fmt.Sprintf(`{"method":"browsingContext.activate","params":{"context":%q}}`, keep))
+		if n := len(cockpits) - 1; n > 0 {
+			log.Printf("cockpit dedupe: kept %s, closed %d redundant cockpit(s) — starves the capture leak", keep, n)
+		} else {
+			log.Printf("brought Firefox home to 8 (activated cockpit %s)", keep)
+		}
+		return
 	}
 }
 
