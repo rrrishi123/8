@@ -1,0 +1,26 @@
+{
+  "_purpose": "Replayable action: gently scroll the DeepSeek chat tab down a little in the already-running shared Firefox, via the http-mcp BiDi broker (CALL atom). Re-send this exact payload to replay.",
+  "broker": "http://127.0.0.1:4445/command",
+  "target_context": "26a173c9-f244-4de3-a8d4-40e9ab3377ca",
+  "target_url": "https://chat.deepseek.com/a/chat/s/82a7eafd-2ba5-4226-836d-344368e7723b",
+  "scroll_container_selector": "div.ds-virtual-list.ds-scroll-area",
+  "delta_px": 400,
+  "http": {
+    "method": "POST",
+    "url": "http://127.0.0.1:4445/command",
+    "body": {
+      "method": "script.evaluate",
+      "params": {
+        "awaitPromise": true,
+        "target": { "context": "26a173c9-f244-4de3-a8d4-40e9ab3377ca" },
+        "expression": "(async function(){var el=document.querySelector('div.ds-virtual-list.ds-scroll-area')||document.querySelector('.ds-scroll-area');if(!el){return JSON.stringify({error:'scroll container not found'});}var before=el.scrollTop;el.scrollTop=el.scrollTop+400;await new Promise(r=>setTimeout(r,300));var after=el.scrollTop;return JSON.stringify({before:before,after:after,delta:after-before,scrollHeight:el.scrollHeight,clientHeight:el.clientHeight});})()"
+      }
+    }
+  },
+  "notes": [
+    "Shared socket: never session.new / session.end / DeleteSession (kills all clients).",
+    "We address the existing tab by explicit context id rather than claiming a new one, because the action must land on the real DeepSeek tab.",
+    "The container is a virtualized list (ds-virtual-list); scrollTop is clamped to currently-rendered content, so near the bottom a large delta may clamp. 400px is gentle and lands.",
+    "Confirmation is built in: the JS returns before/after/delta; delta>0 proves the scroll happened."
+  ]
+}
