@@ -186,7 +186,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   for (const s of seats) {
     if (s.physics === 'channel') {
       const cells: Cell[] = (tabsBy[s.id] || []).map((tab) => ({ key: s.id + tab.context, session: s.id, context: tab.context, url: tab.url, title: host(tab.url) }));
-      const label = s.stream === 'cdp' ? 'chrome' : s.id === 'fox' ? 'firefox' : s.id;
+      const label = s.stream === 'cdp' ? 'chrome' : s.id === 'fox' ? 'firefox' : s.id === 'tmux' ? 'agents · tmux' : s.id;
       stacks.push({ key: s.id, session: s.id, isBrowser: true, isCDP: s.stream === 'cdp', label, cells });
     } else {
       const device = !!s.stream;
@@ -261,7 +261,9 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     // Firefox: a card is LIVE only if it's in the bounded set (else it freezes to bound
     // memory). Other engines keep the classic "deck's top card streams" rule.
     const live = isFox ? inSet : (L.top && L.vis);
-    const streams = (isFox ? inSet : L.top) && L.vis;
+    // tmux panes are TEXT frames (capture-pane) — pennies, not compositor surfaces —
+    // so every on-screen pane polls; the bounded-set economy is a pixels problem.
+    const streams = (L.c.session === 'tmux' ? true : (isFox ? inSet : L.top)) && L.vis;
     return {
       id: 'seat-' + L.c.key, x: L.x, y: L.y, w: L.w, h: H, z: L.z, gravity: hero,
       node: <Viewport session={L.c.session} context={L.c.context} title={L.c.title} url={L.c.url}

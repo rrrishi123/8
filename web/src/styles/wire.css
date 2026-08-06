@@ -475,3 +475,6 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .vp-url { font-size: 10px; opacity: 0.55; margin-left: 6px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
 .vp-agent { font-size: 10px; margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: #3b2f0b; color: #ffd43b; border: 1px solid #f08c00; }
 .vp-prov { font-size: 10px; margin-left: 6px; opacity: 0.5; }
+
+/* tmux pane card — the agents' surface: a mini terminal frame (2026-08-07) */
+.vp-tmux { background: #0b0f14; color: #9ece6a; font-size: 9.5px; line-height: 1.28; padding: 10px 12px; height: 100%; overflow: hidden; white-space: pre-wrap; word-break: break-all; }
