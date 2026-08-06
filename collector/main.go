@@ -1546,6 +1546,15 @@ func (c *collector) handleShot(w http.ResponseWriter, r *http.Request) {
 // handleTabs lists a session's top-level tabs (context + url) so the cockpit
 // can offer a picker for which one to mirror.
 func (c *collector) handleTabs(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("session") == "tmux" { // the agents' surface: panes are the tabs
+		tabs := make([]map[string]string, 0, 8)
+		for _, p := range tmuxPanes() {
+			tabs = append(tabs, map[string]string{"context": p.ID, "url": "tmux://" + p.Loc, "title": p.Title})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"tabs": tabs})
+		return
+	}
 	b := c.find(r.URL.Query().Get("session"))
 	if b == nil {
 		http.Error(w, `{"error":"unknown session"}`, http.StatusNotFound)
@@ -1758,7 +1767,78 @@ func (c *collector) reconcileLoop() {
 			tabs = append(tabs, map[string]string{"context": key, "url": tb.URL})
 		}
 		c.reconcileManifest("fox", tabs) // one Firefox = one session; chrome sees all its windows
+		// the AGENTS' surface flows into the SAME manifest — one db for every
+		// surface kind (browser tabs, tmux panes, soon nvim buffers): uid/what/
+		// where/who/why/when, births and deaths alike.
+		if panes := tmuxPanes(); len(panes) > 0 {
+			pt := make([]map[string]string, 0, len(panes))
+			for _, p := range panes {
+				pt = append(pt, map[string]string{"context": "tmux-" + p.ID, "url": "tmux://" + p.Loc + " · " + p.Title})
+			}
+			c.reconcileManifest("tmux", pt)
+		}
 	}
+}
+
+// ── TMUX — the agents' surface, native (the system's own eyes, no claude-deck) ──
+type tmuxPaneRec struct{ ID, Loc, Cmd, Title string }
+
+func tmuxBin() string {
+	for _, p := range []string{"/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	if p, err := exec.LookPath("tmux"); err == nil {
+		return p
+	}
+	return ""
+}
+
+// tmuxPanes enumerates every pane on the local tmux server. Empty (not error)
+// when tmux is absent or no server runs — the seat simply doesn't appear.
+func tmuxPanes() []tmuxPaneRec {
+	tb := tmuxBin()
+	if tb == "" {
+		return nil
+	}
+	out, err := exec.Command(tb, "list-panes", "-a", "-F", "#{pane_id}|#{session_name}:#{window_index}.#{pane_index}|#{pane_current_command}|#{pane_title}").Output()
+	if err != nil {
+		return nil
+	}
+	var panes []tmuxPaneRec
+	for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		f := strings.SplitN(ln, "|", 4)
+		if len(f) == 4 && strings.HasPrefix(f[0], "%") {
+			panes = append(panes, tmuxPaneRec{ID: f[0], Loc: f[1], Cmd: f[2], Title: f[3]})
+		}
+	}
+	return panes
+}
+
+// handleTmuxPane returns a pane's visible text (capture-pane) — the tmux seat's
+// "frame". GET /tmuxpane?pane=%25N (a %id). Afferent-only: reading never focuses.
+func (c *collector) handleTmuxPane(w http.ResponseWriter, r *http.Request) {
+	pane := r.URL.Query().Get("pane")
+	ok := strings.HasPrefix(pane, "%") && len(pane) > 1
+	for _, ch := range pane[1:] {
+		if ch < '0' || ch > '9' {
+			ok = false
+			break
+		}
+	}
+	tb := tmuxBin()
+	if !ok || tb == "" {
+		http.Error(w, `{"error":"bad pane id"}`, http.StatusBadRequest)
+		return
+	}
+	out, err := exec.Command(tb, "capture-pane", "-p", "-t", pane).Output()
+	if err != nil {
+		http.Error(w, `{"error":"capture failed"}`, http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Write(out)
 }
 
 // handleManifest — GET returns the full manifest (the answer to how-many/what/where/
@@ -1962,6 +2042,13 @@ func (c *collector) handleSessions(w http.ResponseWriter, r *http.Request) {
 			rec.Stream = "cdp" // non-fox channel brokers are CDP screencast-capable
 		}
 		byID[b.id] = rec
+	}
+	// TMUX SEAT — the agents' surface, enumerated NATIVELY (no claude-deck): tmux
+	// itself is the source of truth. Panes are this seat's "tabs"; a pane's title
+	// is its story; capture-pane is its frame (/tmuxpane). Same two atoms:
+	// send-keys=CALL, capture=afferent, control-mode=CHANNEL.
+	if len(tmuxPanes()) > 0 {
+		byID["tmux"] = sessionRec{ID: "tmux", Hub: "tmux://local", Kind: "local", Physics: "channel", Stream: "text"}
 	}
 	if data, err := os.ReadFile(sessionsFile()); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
@@ -3276,6 +3363,7 @@ func main() {
 	mux.HandleFunc("/focus", c.handleFocus)
 	mux.HandleFunc("/health", c.handleHealth)
 	mux.HandleFunc("/manifest", c.handleManifest) // durable tab manifest: how-many/what/where/who/why/when
+	mux.HandleFunc("/tmuxpane", c.handleTmuxPane) // a tmux pane's visible text — the agents' surface frame
 
 	allow := map[string]bool{}
 	for _, o := range strings.Split(*origins, ",") {
