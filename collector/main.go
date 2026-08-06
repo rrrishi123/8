@@ -1661,14 +1661,18 @@ func (c *collector) reconcileManifest(session string, tabs []map[string]string) 
 			//   agent/system that did not declare — never assume "human")
 			var by, why string
 			switch {
+			// a DECLARED intent wins over every heuristic — even for a :8088 tab.
+			// (2026-08-07: an agent that declared then opened the cockpit was being
+			// credited "system/up.sh" — a false witness; the class-guess shadowed
+			// the explicit statement. Explicit beats inferred, always.)
+			case c.manifestSeeded && len(c.pendOpen) > 0:
+				p := c.pendOpen[len(c.pendOpen)-1]
+				c.pendOpen = c.pendOpen[:len(c.pendOpen)-1]
+				by, why = p.Agent, p.Why
 			case strings.Contains(t["url"], ":8088"):
 				by, why = "system", "up.sh cockpit"
 			case !c.manifestSeeded:
 				by, why = "unknown", "already open at witness startup"
-			case len(c.pendOpen) > 0:
-				p := c.pendOpen[len(c.pendOpen)-1]
-				c.pendOpen = c.pendOpen[:len(c.pendOpen)-1]
-				by, why = p.Agent, p.Why
 			default:
 				by, why = "unknown", "appeared — opener not witnessed"
 			}
@@ -1704,10 +1708,38 @@ func (c *collector) reconcileManifest(session string, tabs []map[string]string) 
 func (c *collector) reconcileLoop() {
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
+	eyeClosed := 0 // consecutive ticks with NO :8088 tab — the witness's own eye
 	for range t.C {
 		out, err := c.execChrome(chromeTabsScript)
 		if err != nil || strings.HasPrefix(out, "ERR:") || !strings.HasPrefix(strings.TrimSpace(out), "[") {
 			continue
+		}
+		// THE EYE INVARIANT (2026-08-07): the cockpit tab vanished during a recycle
+		// and the witness ran HEADLESS FOR A WEEK — activateCockpit only fires at
+		// collector start and gives up if no tab exists. The witness must keep its
+		// own eye open: if no :8088 tab survives 12 ticks (~60s, debounced so a
+		// human closing it isn't fought instantly), reopen one — logged + witnessed.
+		if !strings.Contains(out, ":8088") && !strings.Contains(out, "localhost%3A8088") {
+			eyeClosed++
+			if eyeClosed >= 12 {
+				eyeClosed = 0
+				if b := c.find("fox"); b != nil {
+					if cr, e := c.command(b, `{"method":"browsingContext.create","params":{"type":"tab"}}`); e == nil {
+						var cv struct {
+							Result struct {
+								Context string `json:"context"`
+							} `json:"result"`
+						}
+						if json.Unmarshal(cr, &cv) == nil && cv.Result.Context != "" {
+							c.command(b, fmt.Sprintf(`{"method":"browsingContext.navigate","params":{"context":%q,"url":"http://localhost:8088/","wait":"none"}}`, cv.Result.Context))
+							c.publish(fmt.Sprintf(`{"session":"fox","origin":"COLLECTOR","frame":{"method":"witness.eye_reopened","params":{"context":%q}}}`, cv.Result.Context))
+							log.Printf("witness eye was closed ~60s -> reopened cockpit tab (%s)", cv.Result.Context)
+						}
+					}
+				}
+			}
+		} else {
+			eyeClosed = 0
 		}
 		var ct []struct {
 			Bcid  string `json:"bcid"`
