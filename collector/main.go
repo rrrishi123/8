@@ -2048,6 +2048,134 @@ func (c *collector) handleStopwatch(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, stopwatchHTML)
 }
 
+// ── EIGHT.DB — the one queryable store, projected from the scattered JSON ─────
+// The JSON/ndjson stores stay the SOURCE OF TRUTH (append-only, the "observation
+// only ADDS" invariant). eight.db is a READ-MODEL LENS over them — rebuilt
+// idempotently each sync (DROP/CREATE), so it can never desync into a second
+// authority DBeaver would trust wrongly. Built by shelling the sqlite3 binary,
+// so 8 stays stdlib-only (like tmux/pgrep/ps) and DBeaver opens a real file:
+//   dbeaver → SQLite → ~/.8/eight.db  (tables: surfaces, events, work, benches)
+// One db, four surface-kinds and every act, ready for data modelling.
+func eightDB() string { return os.ExpandEnv("$HOME/.8/eight.db") }
+
+// sqlQ single-quotes a value for SQLite, doubling embedded quotes (the only
+// escaping SQLite string literals need). NUL is stripped (SQLite can't store it).
+func sqlQ(s string) string {
+	s = strings.ReplaceAll(s, "\x00", "")
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+func (c *collector) syncDB() (map[string]int, error) {
+	counts := map[string]int{}
+	var b strings.Builder
+	b.WriteString("PRAGMA journal_mode=WAL;\nBEGIN;\n")
+	b.WriteString(`DROP TABLE IF EXISTS surfaces; CREATE TABLE surfaces(uid INTEGER PRIMARY KEY, ctx TEXT, session TEXT, url TEXT, opened_by TEXT, why TEXT, first_seen TEXT, last_seen TEXT, status TEXT, closed_at TEXT);` + "\n")
+	b.WriteString(`DROP TABLE IF EXISTS events; CREATE TABLE events(id INTEGER PRIMARY KEY, ts TEXT, physics TEXT, session TEXT, method TEXT, url TEXT, status INTEGER, latency_us INTEGER, resp_bytes INTEGER, replayable INTEGER);` + "\n")
+	b.WriteString(`DROP TABLE IF EXISTS work; CREATE TABLE work(id INTEGER PRIMARY KEY, text TEXT, status TEXT, by_who TEXT, ts TEXT);` + "\n")
+	b.WriteString(`DROP TABLE IF EXISTS benches; CREATE TABLE benches(id INTEGER, ts TEXT, tag TEXT, session TEXT, n INTEGER, equiv_p50 REAL, equiv_p99 REAL, byte_ratio REAL);` + "\n")
+
+	// surfaces ← manifest.json (a list of surface world-lines)
+	if data, err := os.ReadFile(os.ExpandEnv("$HOME/.8/manifest.json")); err == nil {
+		var recs []tabRec
+		if json.Unmarshal(data, &recs) == nil {
+			for _, r := range recs {
+				b.WriteString(fmt.Sprintf("INSERT INTO surfaces VALUES(%d,%s,%s,%s,%s,%s,%s,%s,%s,%s);\n",
+					r.UID, sqlQ(r.Ctx), sqlQ(r.Session), sqlQ(r.URL), sqlQ(r.OpenedBy), sqlQ(r.Why), sqlQ(r.FirstSeen), sqlQ(r.LastSeen), sqlQ(r.Status), sqlQ(r.ClosedAt)))
+				counts["surfaces"]++
+			}
+		}
+	}
+	// events ← requests.ndjson (every witnessed atom)
+	if data, err := os.ReadFile(os.ExpandEnv("$HOME/.8/requests.ndjson")); err == nil {
+		for _, ln := range strings.Split(string(data), "\n") {
+			if strings.TrimSpace(ln) == "" {
+				continue
+			}
+			var e struct {
+				ID         int64  `json:"id"`
+				TS         string `json:"ts"`
+				Physics    string `json:"physics"`
+				Session    string `json:"session"`
+				Method     string `json:"method"`
+				URL        string `json:"url"`
+				Status     int    `json:"status"`
+				LatencyUS  int64  `json:"latency_us"`
+				RespBytes  int64  `json:"resp_bytes"`
+				Replayable bool   `json:"replayable"`
+			}
+			if json.Unmarshal([]byte(ln), &e) != nil {
+				continue
+			}
+			rep := 0
+			if e.Replayable {
+				rep = 1
+			}
+			b.WriteString(fmt.Sprintf("INSERT INTO events VALUES(%d,%s,%s,%s,%s,%s,%d,%d,%d,%d);\n",
+				e.ID, sqlQ(e.TS), sqlQ(e.Physics), sqlQ(e.Session), sqlQ(e.Method), sqlQ(e.URL), e.Status, e.LatencyUS, e.RespBytes, rep))
+			counts["events"]++
+		}
+	}
+	// work ← work.json
+	if data, err := os.ReadFile(workFile()); err == nil {
+		var items []workItem
+		if json.Unmarshal(data, &items) == nil {
+			for _, it := range items {
+				b.WriteString(fmt.Sprintf("INSERT INTO work VALUES(%d,%s,%s,%s,%s);\n", it.ID, sqlQ(it.Text), sqlQ(it.Status), sqlQ(it.By), sqlQ(it.TS)))
+				counts["work"]++
+			}
+		}
+	}
+	// benches ← benches.ndjson (the sense-cost measurements)
+	if data, err := os.ReadFile(os.ExpandEnv("$HOME/.8/benches.ndjson")); err == nil {
+		for _, ln := range strings.Split(string(data), "\n") {
+			if strings.TrimSpace(ln) == "" {
+				continue
+			}
+			var bn struct {
+				ID        int64   `json:"id"`
+				TS        string  `json:"ts"`
+				Tag       string  `json:"tag"`
+				Session   string  `json:"session"`
+				N         int     `json:"n"`
+				EquivP50  float64 `json:"equiv_p50"`
+				EquivP99  float64 `json:"equiv_p99"`
+				ByteRatio float64 `json:"byte_ratio"`
+			}
+			if json.Unmarshal([]byte(ln), &bn) != nil {
+				continue
+			}
+			b.WriteString(fmt.Sprintf("INSERT INTO benches VALUES(%d,%s,%s,%s,%d,%f,%f,%f);\n",
+				bn.ID, sqlQ(bn.TS), sqlQ(bn.Tag), sqlQ(bn.Session), bn.N, bn.EquivP50, bn.EquivP99, bn.ByteRatio))
+			counts["benches"]++
+		}
+	}
+	b.WriteString("COMMIT;\n")
+
+	cmd := exec.Command("sqlite3", eightDB())
+	cmd.Stdin = strings.NewReader(b.String())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return counts, fmt.Errorf("sqlite3: %v: %s", err, out)
+	}
+	return counts, nil
+}
+
+// handleDB — GET /db triggers a projection sync and returns the row counts +
+// the file path DBeaver should open. The one store, on demand.
+func (c *collector) handleDB(w http.ResponseWriter, r *http.Request) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		http.Error(w, `{"error":"sqlite3 binary not found — brew install sqlite / apt install sqlite3"}`, http.StatusServiceUnavailable)
+		return
+	}
+	counts, err := c.syncDB()
+	if err != nil {
+		http.Error(w, `{"error":`+sqlQ(err.Error())+`}`, http.StatusInternalServerError)
+		return
+	}
+	c.publish(fmt.Sprintf(`{"session":"db","origin":"COLLECTOR","frame":{"method":"db.sync","params":{"surfaces":%d,"events":%d,"work":%d,"benches":%d}}}`, counts["surfaces"], counts["events"], counts["work"], counts["benches"]))
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"db": eightDB(), "counts": counts, "open_with": "DBeaver → SQLite → " + eightDB()})
+}
+
 // ── WORK — the shared task surface ───────────────────────────────────────────
 // The operator writes work INTO the witness (top-right widget); agents read it
 // FROM the witness before starting their own (the queue an agent checks FIRST).
@@ -3646,6 +3774,17 @@ func main() {
 		time.Sleep(200 * time.Millisecond)
 		go c.memoryAperture(*apertureMB) // self-regulate parent memory (heap-minimize at the soft threshold)
 		go c.reconcileLoop()             // keep the tab manifest true even when no cockpit is watching
+		go func() {                      // project eight.db every 30s so DBeaver always sees fresh data
+			if _, err := exec.LookPath("sqlite3"); err != nil {
+				return
+			}
+			c.syncDB()
+			t := time.NewTicker(30 * time.Second)
+			defer t.Stop()
+			for range t.C {
+				c.syncDB()
+			}
+		}()
 	}()
 
 	mux := http.NewServeMux()
@@ -3684,6 +3823,7 @@ func main() {
 	mux.HandleFunc("/tmuxsend", c.handleTmuxSend) // the tmux seat's CONTROL verb (seen ⇒ controllable)
 	mux.HandleFunc("/daemonframe", c.handleDaemonFrame) // a daemon's frame: ps line + log tail
 	mux.HandleFunc("/daemonsignal", c.handleDaemonSignal) // the daemons seat's CONTROL verb (watchdog protected)
+	mux.HandleFunc("/db", c.handleDB)                     // project the scattered stores into ~/.8/eight.db for DBeaver
 	mux.HandleFunc("/stopwatch", c.handleStopwatch)     // experiri: the witness's staleness made readable
 	mux.HandleFunc("/work", c.handleWork)               // the shared task surface — operator writes, agents check FIRST
 
