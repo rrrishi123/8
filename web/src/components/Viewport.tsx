@@ -89,6 +89,8 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
   const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
   const [hidden, setHidden] = useState(false);
   const imgRef = useRef<HTMLImageElement>(null);
+  const natRef = useRef(0);     // last frame's natural width — the feedback signal for render scale
+  const fxScaleRef = useRef(0.4); // last render scale, so the loop converges instead of restarting
   // APERTURE: a screenshot stream is the 38×-cost "see" — running N at once
   // balloons Firefox graphics memory (peaked 20GB once). So only stream a seat
   // that is ON SCREEN (the Canvas computes this from camera geometry — an
@@ -114,6 +116,7 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
     setFrameAt(Date.now());
     const img = e.currentTarget;
     if (img.naturalWidth && img.naturalHeight) {
+      natRef.current = img.naturalWidth; // feed the render-scale loop (work #9)
       setDims({ w: img.naturalWidth, h: img.naturalHeight });
       onAspect?.(img.naturalWidth / img.naturalHeight);
     }
@@ -188,11 +191,35 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
     // view), PERIPHERY renders tiny (thumbnail). drawSnapshot allocates a surface at this
     // scale, and the parent-process accumulation is ~area — so tiny periphery surfaces let
     // every tile stay LIVE without the memory climb (vs the old full-surface capture).
-    const fxScale = persistent ? 0.5 : 0.18;
-    const shotUrl = fx
-      ? `${BASE}/drawshot?session=${encodeURIComponent(session)}&needle=${encodeURIComponent(fxNeedle || '')}&s=${fxScale}`
-      : `${BASE}/shot?session=${encodeURIComponent(session)}${cq}${lodq}`;
+    // RENDER SCALE — was a blind constant (0.18/0.5) that ignored BOTH zoom and
+    // retina DPR, so a fullscreen card on a 2× display fetched a ~130px frame and
+    // upscaled it ~15× (work #9). Now scale is a FEEDBACK LOOP toward the card's
+    // REAL device footprint: displayed CSS width (lodW, already zoom-aware) × dpr,
+    // capped at 1400 device px so memory stays bounded (drawSnapshot's surface is
+    // ~area). Converges in 2–3 frames via the last frame's natural width; bucketed
+    // to 0.05 so the URL is stable (no per-frame re-render).
+    const dpr = window.devicePixelRatio || 1;
+    const computeFxScale = () => {
+      // hero targets its FULL device footprint (crisp, capped 1400 for memory);
+      // frozen periphery renders ONE seed at ~60% footprint capped 760 — a real
+      // thumbnail, not 9× mush, and memory-safe (a frozen card seeds once then
+      // stops; drawSnapshot frees on idle — only CONTINUOUS hi-res many-tab
+      // streaming balloons the parent).
+      const foot = (lodW || 480) * dpr;
+      const targetDev = persistent ? Math.min(1400, Math.max(180, foot)) : Math.min(760, Math.max(240, foot * 0.6));
+      const lastNat = natRef.current;
+      // first guess (no frame yet): estimate doc width ~1000 → scale ≈ target/1000
+      let sc = lastNat > 60 ? fxScaleRef.current * (targetDev / lastNat) : targetDev / 1000;
+      sc = Math.max(0.08, Math.min(1.25, sc));
+      sc = Math.round(sc * 20) / 20;
+      fxScaleRef.current = sc;
+      return sc;
+    };
     const tick = async () => {
+      const q = persistent ? 0.85 : 0.62; // crisp hero, cheap periphery
+      const shotUrl = fx
+        ? `${BASE}/drawshot?session=${encodeURIComponent(session)}&needle=${encodeURIComponent(fxNeedle || '')}&s=${computeFxScale()}&q=${q}`
+        : `${BASE}/shot?session=${encodeURIComponent(session)}${cq}${lodq}`;
       try { const j = await (await fetch(shotUrl)).json(); if (alive && j.data) { setShot(j.data); if (!persistent) setErr(false); } } catch { if (alive && !persistent) setErr(true); }
     };
     // SEED one still ALWAYS — even off-screen — so zooming out / bird's-eye shows

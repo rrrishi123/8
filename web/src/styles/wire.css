@@ -507,3 +507,7 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 /* draggable decks (work #2): the header is the handle */
 .deck-head { cursor: grab; }
 .deck-head:active { cursor: grabbing; }
+
+/* work #9: the full tab URL, readable on hover (was ellipsis-truncated with no reveal) */
+.vp-url { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: max-width .15s; }
+.vp-url:hover { max-width: 80vw; overflow: visible; background: #0b0f14; position: relative; z-index: 20; padding-right: 6px; }
