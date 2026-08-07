@@ -495,3 +495,11 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .work-add { width: 100%; margin-top: 6px; background: #0a0c14; border: 1px solid #2a3050; color: #c5cbe3; font-size: 10.5px; padding: 4px 6px; border-radius: 4px; box-sizing: border-box; }
 /* the stopwatch's DECK card is instrument-class too — visibly not a normal surface */
 .vp-inst { border: 1px solid #f08c00 !important; box-shadow: 0 0 14px #f08c0044; }
+
+/* AGE HUD — every card knows its own staleness (work #1) + the pin as explicit functionality */
+.vp-age { font-size: 9px; margin-left: 5px; padding: 0 4px; border-radius: 6px; font-family: ui-monospace, monospace; }
+.vp-age.fresh { color: #69db7c; background: #0b2012; }
+.vp-age.warm { color: #ffd43b; background: #201b0b; }
+.vp-age.stale { color: #ff6b6b; background: #200b0b; }
+.vp-pin { background: none; border: none; cursor: pointer; font-size: 10px; padding: 0 2px; opacity: .4; }
+.vp-pin.on { opacity: 1; }

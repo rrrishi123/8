@@ -35,6 +35,16 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
       body: JSON.stringify({ method, params }),
     }).catch(() => {});
   const agent = man?.opened_by && man.opened_by !== 'human' && man.opened_by !== 'unknown' && man.opened_by !== 'system' ? man.opened_by : '';
+  // AGE HUD (work #1, 2026-08-07): every card KNOWS its own staleness, always.
+  // frameAt = when this card's frame last landed (pixel onLoad / text pull);
+  // age ticks at 4Hz. Honest display-side number: what you SEE is age-old.
+  const [frameAt, setFrameAt] = useState(0);
+  const [ageMs, setAgeMs] = useState(-1);
+  useEffect(() => {
+    const t = setInterval(() => setAgeMs(frameAt ? Date.now() - frameAt : -1), 250);
+    return () => clearInterval(t);
+  }, [frameAt]);
+  const ageCls = ageMs < 1500 ? 'fresh' : ageMs < 4000 ? 'warm' : 'stale';
   // TEXT SEATS (tmux panes, host daemons): the FRAME is text — capture-pane for a
   // pane, ps+log-tail for a daemon. Text costs pennies (no compositor surface),
   // so poll whenever on-screen.
@@ -51,6 +61,7 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
       .then((r) => r.text()).then((t) => {
         if (!alive) return;
         setTmuxText(t);
+        setFrameAt(Date.now());
         // NEED-BASED SIZE (2026-08-07): a card takes the shape its content needs,
         // bounded by limits — never static, never unbounded. Content lines/cols →
         // aspect, clamped; the Canvas turns aspect into card width like it does
@@ -98,6 +109,7 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
   // the source (a portrait phone ≠ a landscape tab; pretext = natural size).
   const onFrameLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
     setErr(false);
+    setFrameAt(Date.now());
     const img = e.currentTarget;
     if (img.naturalWidth && img.naturalHeight) {
       setDims({ w: img.naturalWidth, h: img.naturalHeight });
@@ -313,7 +325,9 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
   return (
     <section className={`panel viewport${(cardUrl || '').includes('/stopwatch') ? ' vp-inst' : ''}`}>
       <div className="panel-h">
-        <span className={`vp-title${pinned ? ' pinned' : ''}`} onClick={onPin} title={onPin ? 'pin as hero (live)' : undefined}>{pinned ? '★ ' : ''}{title || 'viewport'}</span> {err ? '· ✗' : streaming ? '· ●' : '· ◌'}
+        {onPin && <button className={`vp-pin${pinned ? ' on' : ''}`} onClick={onPin} title={pinned ? 'pinned as hero' : 'pin as hero (live)'}>{pinned ? '📌' : '📍'}</button>}
+        <span className={`vp-title${pinned ? ' pinned' : ''}`} onClick={onPin} title={onPin ? 'pin as hero (live)' : undefined}>{title || 'viewport'}</span> {err ? '· ✗' : streaming ? '· ●' : '· ◌'}
+        {ageMs >= 0 && <span className={`vp-age ${ageCls}`} title="staleness of what this card shows — time since its frame landed">{(ageMs / 1000).toFixed(1)}s</span>}
         {/* browser chrome: back · reload · full URL — a card is a real tab now */}
         {ctx && !isText && <>
           <button className="vp-nav" title="back" onClick={() => wire('browsingContext.traverseHistory', { context: ctx, delta: -1 })}>◀</button>

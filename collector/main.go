@@ -2034,6 +2034,27 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 					items[i].Status = p.Status
 					items[i].TS = now
 					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":%q}}}`, p.ID, p.Status))
+					// THE SUMMONS (2026-08-07): the work surface is 2-WAY. When the
+					// OPERATOR flips an item to "doing" (the cockpit sends no `by`),
+					// the witness delivers the work INTO the assigned agent's pane —
+					// a literal prompt, via the control verb the tmux seat already
+					// has. Agent-driven changes (by=claude…) don't self-summon.
+					if p.Status == "doing" && (p.By == "" || p.By == "operator") {
+						if wb, err := os.ReadFile(os.ExpandEnv("$HOME/.8/worker.json")); err == nil {
+							var wk struct {
+								Pane  string `json:"pane"`
+								Agent string `json:"agent"`
+							}
+							if json.Unmarshal(wb, &wk) == nil && wk.Pane != "" {
+								if tb := tmuxBin(); tb != "" {
+									msg := fmt.Sprintf("[8-work #%d -> doing] %s -- assigned via the cockpit; queue: curl -s 127.0.0.1:7070/work", items[i].ID, items[i].Text)
+									exec.Command(tb, "send-keys", "-t", wk.Pane, "-l", msg).Run()
+									exec.Command(tb, "send-keys", "-t", wk.Pane, "Enter").Run()
+									c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.summon","params":{"id":%d,"pane":%q,"agent":%q}}}`, items[i].ID, wk.Pane, wk.Agent))
+								}
+							}
+						}
+					}
 				}
 			}
 		}
