@@ -1986,6 +1986,66 @@ func (c *collector) handleStopwatch(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, stopwatchHTML)
 }
 
+// ── WORK — the shared task surface ───────────────────────────────────────────
+// The operator writes work INTO the witness (top-right widget); agents read it
+// FROM the witness before starting their own (the queue an agent checks FIRST).
+// Persisted ~/.8/work.json; every add/status change is published to the feed.
+type workItem struct {
+	ID     int64  `json:"id"`
+	Text   string `json:"text"`
+	Status string `json:"status"` // todo → doing → done
+	By     string `json:"by"`
+	TS     string `json:"ts"`
+}
+
+func workFile() string { return os.ExpandEnv("$HOME/.8/work.json") }
+
+func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
+	c.tmu.Lock()
+	defer c.tmu.Unlock()
+	var items []workItem
+	if b, err := os.ReadFile(workFile()); err == nil {
+		json.Unmarshal(b, &items)
+	}
+	if r.Method == http.MethodPost {
+		var p struct {
+			ID     int64  `json:"id"`
+			Text   string `json:"text"`
+			Status string `json:"status"`
+			By     string `json:"by"`
+		}
+		json.NewDecoder(r.Body).Decode(&p)
+		now := time.Now().UTC().Format(time.RFC3339)
+		if p.Text != "" && p.ID == 0 { // add
+			var max int64
+			for _, it := range items {
+				if it.ID > max {
+					max = it.ID
+				}
+			}
+			if p.By == "" {
+				p.By = "operator"
+			}
+			items = append(items, workItem{ID: max + 1, Text: p.Text, Status: "todo", By: p.By, TS: now})
+			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.add","params":{"text":%q,"by":%q}}}`, p.Text, p.By))
+		} else if p.ID > 0 && p.Status != "" { // status change
+			for i := range items {
+				if items[i].ID == p.ID {
+					items[i].Status = p.Status
+					items[i].TS = now
+					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":%q}}}`, p.ID, p.Status))
+				}
+			}
+		}
+		os.MkdirAll(os.ExpandEnv("$HOME/.8"), 0o755)
+		if b, err := json.MarshalIndent(items, "", " "); err == nil {
+			os.WriteFile(workFile(), b, 0o644)
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"work": items})
+}
+
 // handleManifest — GET returns the full manifest (the answer to how-many/what/where/
 // who/why/when). POST {agent, why} declares intent BEFORE opening a tab, so the
 // next-born tab is attributed to that agent instead of "human" (provenance capture).
@@ -3541,6 +3601,7 @@ func main() {
 	mux.HandleFunc("/tmuxsend", c.handleTmuxSend) // the tmux seat's CONTROL verb (seen ⇒ controllable)
 	mux.HandleFunc("/daemonframe", c.handleDaemonFrame) // a daemon's frame: ps line + log tail
 	mux.HandleFunc("/stopwatch", c.handleStopwatch)     // experiri: the witness's staleness made readable
+	mux.HandleFunc("/work", c.handleWork)               // the shared task surface — operator writes, agents check FIRST
 
 	allow := map[string]bool{}
 	for _, o := range strings.Split(*origins, ",") {

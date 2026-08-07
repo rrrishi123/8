@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Viewport } from './Viewport';
+import { Instruments } from './Instruments';
 import { Resources } from './Resources';
 import { PasteCurl } from './PasteCurl';
 import { WireLog } from './WireLog';
@@ -408,6 +409,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
         <button className={showSelf ? 'on' : ''} onClick={() => setShowSelf((v) => !v)} title="reflexive: let this 8 see its OWN tab (1 tab → 2 panes → controls itself)">⟲ self</button>
         <span className="persp-z">{stacks.length} decks · {cells.length} cards · {Math.round(cam.z * 100)}%</span>
       </div>
+      <Instruments />
       <WireLog />
       {vpRect && worldW > 0 && (
         <svg className="minimap" viewBox={`0 0 ${worldW} ${worldH}`}

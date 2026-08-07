@@ -311,7 +311,7 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
   }, [useFx, fxNeedle, session]);
 
   return (
-    <section className="panel viewport">
+    <section className={`panel viewport${(cardUrl || '').includes('/stopwatch') ? ' vp-inst' : ''}`}>
       <div className="panel-h">
         <span className={`vp-title${pinned ? ' pinned' : ''}`} onClick={onPin} title={onPin ? 'pin as hero (live)' : undefined}>{pinned ? '★ ' : ''}{title || 'viewport'}</span> {err ? '· ✗' : streaming ? '· ●' : '· ◌'}
         {/* browser chrome: back · reload · full URL — a card is a real tab now */}
