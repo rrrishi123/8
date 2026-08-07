@@ -2055,6 +2055,11 @@ var daemonSpecs = []daemonSpec{
 	{"ollama", "ollama serve", "", false},
 	{"tailscaled", "tailscaled", "", false},
 	{"claude-deck", "claude-deck", "", false},
+	// HOST INFRA the witness SEES but the system does NOT own (office-private,
+	// provider/auth-bound — must never ship in the single binary; witnessable,
+	// not absorbable — the eight.db-vs-tunnel boundary, 2026-08-07 work #8):
+	{"adaptive-tunnel", "AdaptiveDesktop.app.*adaptive connect", "$HOME/.lt-tunnels/adaptive-supervisor.log", false},
+	{"dbeaver", "DBeaver.app", "", false},
 }
 
 type daemonRec struct{ Name, Pid, Info string }
@@ -2182,7 +2187,7 @@ func (c *collector) handleDaemonFrame(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if d.log != "" {
-			b.WriteString("\n── log ──\n" + tailFile(d.log, 24))
+			b.WriteString("\n── log ──\n" + tailFile(os.ExpandEnv(d.log), 24))
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		io.WriteString(w, b.String())
