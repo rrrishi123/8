@@ -26,7 +26,7 @@ const SELF_ID = (() => {
 // Everything you do — driving a tab, ADDING a tab, RECORDING a case — happens IN
 // this canvas (pretext's whole point: it doesn't escape to another page).
 interface Seat { id: string; physics: string; hub: string; status: string; stream?: string }
-interface Tab { context: string; url: string }
+interface Tab { context: string; url: string; title?: string }
 interface Cell { key: string; session: string; context?: string; url?: string; title: string; device?: boolean }
 interface Stack { key: string; session: string; isBrowser: boolean; isCDP: boolean; label: string; cells: Cell[] }
 interface PaneRect { id: string; x: number; y: number; w: number; h: number; z?: number; node: ReactNode; gravity?: boolean }
@@ -185,8 +185,15 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   const stacks: Stack[] = [];
   for (const s of seats) {
     if (s.physics === 'channel') {
-      const cells: Cell[] = (tabsBy[s.id] || []).map((tab) => ({ key: s.id + tab.context, session: s.id, context: tab.context, url: tab.url, title: host(tab.url) }));
-      const label = s.stream === 'cdp' ? 'chrome' : s.id === 'fox' ? 'firefox' : s.id === 'tmux' ? 'agents · tmux' : s.id;
+      // a card carries its NAME: browser tabs show their host; a tmux pane shows
+      // its %id + location ("you are pane %5"); a daemon shows its name.
+      const cells: Cell[] = (tabsBy[s.id] || []).map((tab) => ({
+        key: s.id + tab.context, session: s.id, context: tab.context, url: tab.url,
+        title: s.id === 'tmux' ? `${tab.context} · ${tab.url.replace('tmux://', '')}`
+          : s.id === 'daemons' ? (tab.title || tab.context)
+          : host(tab.url),
+      }));
+      const label = s.stream === 'cdp' ? 'chrome' : s.id === 'fox' ? 'firefox' : s.id === 'tmux' ? 'agents · tmux' : s.id === 'daemons' ? 'daemons · host' : s.id;
       stacks.push({ key: s.id, session: s.id, isBrowser: true, isCDP: s.stream === 'cdp', label, cells });
     } else {
       const device = !!s.stream;
@@ -263,7 +270,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     const live = isFox ? inSet : (L.top && L.vis);
     // tmux panes are TEXT frames (capture-pane) — pennies, not compositor surfaces —
     // so every on-screen pane polls; the bounded-set economy is a pixels problem.
-    const streams = (L.c.session === 'tmux' ? true : (isFox ? inSet : L.top)) && L.vis;
+    const streams = (L.c.session === 'tmux' || L.c.session === 'daemons' ? true : (isFox ? inSet : L.top)) && L.vis;
     return {
       id: 'seat-' + L.c.key, x: L.x, y: L.y, w: L.w, h: H, z: L.z, gravity: hero,
       node: <Viewport session={L.c.session} context={L.c.context} title={L.c.title} url={L.c.url}

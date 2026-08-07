@@ -1555,6 +1555,15 @@ func (c *collector) handleTabs(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"tabs": tabs})
 		return
 	}
+	if r.URL.Query().Get("session") == "daemons" { // the host's background minds
+		tabs := make([]map[string]string, 0, 8)
+		for _, d := range daemonList() {
+			tabs = append(tabs, map[string]string{"context": "d-" + d.Name, "url": "daemon://" + d.Name + " · pid " + d.Pid + " · " + d.Info, "title": d.Name})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"tabs": tabs})
+		return
+	}
 	b := c.find(r.URL.Query().Get("session"))
 	if b == nil {
 		http.Error(w, `{"error":"unknown session"}`, http.StatusNotFound)
@@ -1841,6 +1850,129 @@ func (c *collector) handleTmuxPane(w http.ResponseWriter, r *http.Request) {
 	w.Write(out)
 }
 
+// handleTmuxSend — the tmux seat's CONTROL verb (seen ⇒ controllable, the seat
+// contract's third leg). GET /tmuxsend?pane=%25N&keys=...&enter=1 → send-keys -l
+// (literal). Witnessed: publishes a tmux.send frame to the feed.
+func (c *collector) handleTmuxSend(w http.ResponseWriter, r *http.Request) {
+	pane, keys := r.URL.Query().Get("pane"), r.URL.Query().Get("keys")
+	ok := strings.HasPrefix(pane, "%") && len(pane) > 1
+	for _, ch := range pane[1:] {
+		if ch < '0' || ch > '9' {
+			ok = false
+			break
+		}
+	}
+	tb := tmuxBin()
+	if !ok || tb == "" || keys == "" {
+		http.Error(w, `{"error":"need pane=%N and keys="}`, http.StatusBadRequest)
+		return
+	}
+	if err := exec.Command(tb, "send-keys", "-t", pane, "-l", keys).Run(); err != nil {
+		http.Error(w, `{"error":"send failed"}`, http.StatusBadGateway)
+		return
+	}
+	if r.URL.Query().Get("enter") == "1" {
+		exec.Command(tb, "send-keys", "-t", pane, "Enter").Run()
+	}
+	c.publish(fmt.Sprintf(`{"session":"tmux","origin":"COLLECTOR","frame":{"method":"tmux.send","params":{"pane":%q,"keys":%q}}}`, pane, keys))
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"sent":%q}`, pane)
+}
+
+// ── DAEMONS — the host's background minds, 8's own body included ─────────────
+// Browsers and tmux are NOT part of the four-body system; they are SURFACES it
+// witnesses via the seat contract: {enumerate, frame, control}. Daemons are one
+// more kind: enumerate = pgrep, frame = ps line + log tail, control = signals
+// (not yet wired — an honest seat-contract gap).
+type daemonSpec struct{ name, pat, log string }
+
+var daemonSpecs = []daemonSpec{
+	{"collector", "collector/collector -listen", "/tmp/collector-8.log"},
+	{"broker-fox", "channel -ws", "/tmp/broker-8.log"},
+	{"geckodriver", "geckodriver --port", "/tmp/geckodriver.log"},
+	{"cockpit-vite", "vite", ""},
+	{"watchdog", "scripts/watchdog.sh", "/tmp/watchdog-8.log"},
+	{"pilot", "pilot -daemon", ""},
+	{"ollama", "ollama serve", ""},
+	{"tailscaled", "tailscaled", ""},
+	{"claude-deck", "claude-deck", ""},
+}
+
+type daemonRec struct{ Name, Pid, Info string }
+
+func daemonList() []daemonRec {
+	var out []daemonRec
+	for _, d := range daemonSpecs {
+		pb, err := exec.Command("pgrep", "-f", d.pat).Output()
+		if err != nil {
+			continue
+		}
+		pids := strings.Fields(strings.TrimSpace(string(pb)))
+		if len(pids) == 0 {
+			continue
+		}
+		info := ""
+		if ib, e := exec.Command("ps", "-o", "rss=,etime=", "-p", pids[0]).Output(); e == nil {
+			if f := strings.Fields(string(ib)); len(f) >= 2 {
+				if kb, _ := strconv.Atoi(f[0]); kb > 0 {
+					info = fmt.Sprintf("%dMB · up %s", kb/1024, f[1])
+				}
+			}
+		}
+		out = append(out, daemonRec{d.name, pids[0], info})
+	}
+	return out
+}
+
+// tailFile returns the last n lines of a file, reading at most 16KB from its end.
+func tailFile(p string, n int) string {
+	f, err := os.Open(p)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	var off int64
+	if st.Size() > 16384 {
+		off = st.Size() - 16384
+	}
+	buf := make([]byte, st.Size()-off)
+	f.ReadAt(buf, off)
+	lines := strings.Split(string(buf), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// handleDaemonFrame — a daemon's "frame": its ps line + the tail of its log.
+func (c *collector) handleDaemonFrame(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("d")
+	for _, d := range daemonSpecs {
+		if d.name != name {
+			continue
+		}
+		var b strings.Builder
+		if pb, err := exec.Command("pgrep", "-f", d.pat).Output(); err == nil {
+			if pids := strings.Fields(strings.TrimSpace(string(pb))); len(pids) > 0 {
+				if ib, e := exec.Command("ps", "-o", "pid=,rss=,etime=,command=", "-p", pids[0]).Output(); e == nil {
+					b.WriteString(strings.TrimSpace(string(ib)) + "\n")
+				}
+			}
+		}
+		if d.log != "" {
+			b.WriteString("\n── log ──\n" + tailFile(d.log, 24))
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		io.WriteString(w, b.String())
+		return
+	}
+	http.Error(w, `{"error":"unknown daemon"}`, http.StatusNotFound)
+}
+
 // handleManifest — GET returns the full manifest (the answer to how-many/what/where/
 // who/why/when). POST {agent, why} declares intent BEFORE opening a tab, so the
 // next-born tab is attributed to that agent instead of "human" (provenance capture).
@@ -2050,6 +2182,11 @@ func (c *collector) handleSessions(w http.ResponseWriter, r *http.Request) {
 	if len(tmuxPanes()) > 0 {
 		byID["tmux"] = sessionRec{ID: "tmux", Hub: "tmux://local", Kind: "local", Physics: "channel", Stream: "text"}
 	}
+	// DAEMONS SEAT — the host's background minds (always ≥1: the collector sees
+	// ITSELF here — the witness's own body is one of its surfaces).
+	if len(daemonList()) > 0 {
+		byID["daemons"] = sessionRec{ID: "daemons", Hub: "host://daemons", Kind: "local", Physics: "channel", Stream: "text"}
+	}
 	if data, err := os.ReadFile(sessionsFile()); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			if line = strings.TrimSpace(line); line == "" {
@@ -2108,6 +2245,30 @@ func (c *collector) handleSessions(w http.ResponseWriter, r *http.Request) {
 		live = append(live, s)
 	}
 	rewriteRegistry(keepCalls)
+	// DETERMINISTIC ORDER (2026-08-07): sessions came off a map + a channel —
+	// random per request — so the cockpit's decks reshuffled rows on every poll.
+	// Position isn't FIXED, it's DETERMINISTIC: a stable rank makes "tmux renders
+	// below fox" a verifiable (falsifiable) statement. Browsers, then agents,
+	// then daemons, then the rest a-z.
+	rank := func(id string) int {
+		switch id {
+		case "fox":
+			return 0
+		case "chrome":
+			return 1
+		case "tmux":
+			return 2
+		case "daemons":
+			return 3
+		}
+		return 4
+	}
+	sort.Slice(live, func(i, j int) bool {
+		if ri, rj := rank(live[i].ID), rank(live[j].ID); ri != rj {
+			return ri < rj
+		}
+		return live[i].ID < live[j].ID
+	})
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"sessions": live})
 }
@@ -3364,6 +3525,8 @@ func main() {
 	mux.HandleFunc("/health", c.handleHealth)
 	mux.HandleFunc("/manifest", c.handleManifest) // durable tab manifest: how-many/what/where/who/why/when
 	mux.HandleFunc("/tmuxpane", c.handleTmuxPane) // a tmux pane's visible text — the agents' surface frame
+	mux.HandleFunc("/tmuxsend", c.handleTmuxSend) // the tmux seat's CONTROL verb (seen ⇒ controllable)
+	mux.HandleFunc("/daemonframe", c.handleDaemonFrame) // a daemon's frame: ps line + log tail
 
 	allow := map[string]bool{}
 	for _, o := range strings.Split(*origins, ",") {

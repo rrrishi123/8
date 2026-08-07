@@ -35,19 +35,24 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
       body: JSON.stringify({ method, params }),
     }).catch(() => {});
   const agent = man?.opened_by && man.opened_by !== 'human' && man.opened_by !== 'unknown' && man.opened_by !== 'system' ? man.opened_by : '';
-  // TMUX: a pane's FRAME is its visible text (capture-pane) — the agents' surface.
-  // Text costs pennies (no compositor surface), so poll whenever on-screen.
+  // TEXT SEATS (tmux panes, host daemons): the FRAME is text — capture-pane for a
+  // pane, ps+log-tail for a daemon. Text costs pennies (no compositor surface),
+  // so poll whenever on-screen.
   const isTmux = session === 'tmux';
+  const isText = isTmux || session === 'daemons';
   const [tmuxText, setTmuxText] = useState('');
   useEffect(() => {
-    if (!isTmux || !fixedCtx || !(visible ?? true)) return;
+    if (!isText || !fixedCtx || !(visible ?? true)) return;
     let alive = true;
-    const pull = () => fetch(`${BASE}/tmuxpane?pane=${encodeURIComponent(fixedCtx)}`)
+    const ep = isTmux
+      ? `${BASE}/tmuxpane?pane=${encodeURIComponent(fixedCtx)}`
+      : `${BASE}/daemonframe?d=${encodeURIComponent(fixedCtx.replace(/^d-/, ''))}`;
+    const pull = () => fetch(ep)
       .then((r) => r.text()).then((t) => { if (alive) setTmuxText(t); }).catch(() => {});
     pull();
     const iv = setInterval(pull, 2000);
     return () => { alive = false; clearInterval(iv); };
-  }, [isTmux, fixedCtx, visible]);
+  }, [isText, isTmux, fixedCtx, visible]);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [ctx, setCtx] = useState(fixedCtx || '');
   const [reqSeat, setReqSeat] = useState('');
@@ -298,7 +303,7 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
       <div className="panel-h">
         <span className={`vp-title${pinned ? ' pinned' : ''}`} onClick={onPin} title={onPin ? 'pin as hero (live)' : undefined}>{pinned ? '★ ' : ''}{title || 'viewport'}</span> {err ? '· ✗' : streaming ? '· ●' : '· ◌'}
         {/* browser chrome: back · reload · full URL — a card is a real tab now */}
-        {ctx && !isTmux && <>
+        {ctx && !isText && <>
           <button className="vp-nav" title="back" onClick={() => wire('browsingContext.traverseHistory', { context: ctx, delta: -1 })}>◀</button>
           <button className="vp-nav" title="reload" onClick={() => wire('browsingContext.reload', { context: ctx })}>⟳</button>
         </>}
@@ -306,12 +311,12 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
         {/* WHO / WHY / WHEN + a live badge when an AGENT (not human/system) opened it */}
         {agent && <span className="vp-agent" title={`${man?.why || ''} · ${man?.first_seen || ''}`}>🤖 {agent}</span>}
         {man && !agent && <span className="vp-prov" title={`opened_by ${man.opened_by} · ${man.why} · ${man.first_seen}`}>{man.opened_by}</span>}
-        {!isTmux && <span className="seeing-tabs">
+        {!isText && <span className="seeing-tabs">
           {(['pixels', 'channel', 'request'] as Seeing[]).map((s) => (
             <button key={s} className={seeing === s ? 'on' : ''} onClick={() => setSeeing(s)} title={s === 'pixels' ? 'live stream' : s === 'channel' ? 'BiDi DOM' : 'classic source'}>{s}</button>
           ))}
         </span>}
-        {!isTmux && seeing === 'pixels' && <>
+        {!isText && seeing === 'pixels' && <>
           <button className={`act-toggle${interact ? ' on' : ''}`} onClick={() => setInteract((v) => { const nv = !v; if (nv) onPin?.(); return nv; })} title="arm THIS seat: pin it live + drive it (tap/type/scroll → /act)">{interact ? '✋ live' : '👁 watch'}</button>
           {fpsProp == null
             ? <select className="tab-pick fps-pick" value={fps} onChange={(e) => setFps(Number(e.target.value))} title="stream frame rate">
@@ -325,8 +330,8 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
           </select>
         )}
       </div>
-      {isTmux
-        ? <pre className="vp-text vp-tmux">{tmuxText || 'reading pane…'}</pre>
+      {isText
+        ? <pre className="vp-text vp-tmux">{tmuxText || 'reading…'}</pre>
         : seeing === 'pixels'
         ? ((frameSrc || useFx)
             ? <div className="vp-stage">
