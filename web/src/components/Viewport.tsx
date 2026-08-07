@@ -48,11 +48,23 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
       ? `${BASE}/tmuxpane?pane=${encodeURIComponent(fixedCtx)}`
       : `${BASE}/daemonframe?d=${encodeURIComponent(fixedCtx.replace(/^d-/, ''))}`;
     const pull = () => fetch(ep)
-      .then((r) => r.text()).then((t) => { if (alive) setTmuxText(t); }).catch(() => {});
+      .then((r) => r.text()).then((t) => {
+        if (!alive) return;
+        setTmuxText(t);
+        // NEED-BASED SIZE (2026-08-07): a card takes the shape its content needs,
+        // bounded by limits — never static, never unbounded. Content lines/cols →
+        // aspect, clamped; the Canvas turns aspect into card width like it does
+        // for a browser frame's true pixels.
+        const ls = t.split('\n');
+        const lines = Math.max(8, Math.min(48, ls.length));
+        let cols = 40;
+        for (const l of ls) if (l.length > cols) cols = Math.min(220, l.length);
+        onAspect?.(Math.max(0.6, Math.min(2.4, (cols * 5.8) / (lines * 12.2))));
+      }).catch(() => {});
     pull();
     const iv = setInterval(pull, 2000);
     return () => { alive = false; clearInterval(iv); };
-  }, [isText, isTmux, fixedCtx, visible]);
+  }, [isText, isTmux, fixedCtx, visible]); // eslint-disable-line react-hooks/exhaustive-deps
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [ctx, setCtx] = useState(fixedCtx || '');
   const [reqSeat, setReqSeat] = useState('');

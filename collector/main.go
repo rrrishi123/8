@@ -1973,6 +1973,19 @@ func (c *collector) handleDaemonFrame(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, `{"error":"unknown daemon"}`, http.StatusNotFound)
 }
 
+// ── EXPERIRI: the stopwatch — the witness's calibration instrument ────────────
+// "Realtime" is invisible on a static page but SELF-EVIDENT on a clock: point 8
+// at a surface whose content IS time, and staleness becomes a readable number
+// (displayed − true). Served by the collector itself so the one binary carries
+// its own falsification instrument. Operational definition under test:
+// to OBSERVE = to hold a frame whose staleness is bounded and KNOWN.
+const stopwatchHTML = `<!doctype html><html><head><meta charset="utf-8"><title>experiri · stopwatch</title><style>body{margin:0;background:#000;color:#39ff14;font-family:ui-monospace,Menlo,monospace;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh}#wall{font-size:11vw;font-weight:700;letter-spacing:.04em}#el{font-size:4.5vw;color:#9ece6a;opacity:.85}#note{font-size:1.5vw;color:#666;margin-top:3vh;max-width:80vw;text-align:center}</style></head><body><div id="wall"></div><div id="el"></div><div id="note">experiri · compare these digits AS SEEN THROUGH 8 against the true clock at capture — the difference IS the witness's staleness</div><script>const t0=performance.now();const p=(n,w)=>String(n).padStart(w,"0");function tick(){const d=new Date();wall.textContent=p(d.getHours(),2)+":"+p(d.getMinutes(),2)+":"+p(d.getSeconds(),2)+"."+p(d.getMilliseconds(),3);const e=performance.now()-t0,s=Math.floor(e/1000);el.textContent="elapsed "+p(Math.floor(s/60),2)+":"+p(s%60,2)+"."+p(Math.floor(e%1000),3);}tick();setInterval(tick,16)</script></body></html>`
+
+func (c *collector) handleStopwatch(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	io.WriteString(w, stopwatchHTML)
+}
+
 // handleManifest — GET returns the full manifest (the answer to how-many/what/where/
 // who/why/when). POST {agent, why} declares intent BEFORE opening a tab, so the
 // next-born tab is attributed to that agent instead of "human" (provenance capture).
@@ -3527,6 +3540,7 @@ func main() {
 	mux.HandleFunc("/tmuxpane", c.handleTmuxPane) // a tmux pane's visible text — the agents' surface frame
 	mux.HandleFunc("/tmuxsend", c.handleTmuxSend) // the tmux seat's CONTROL verb (seen ⇒ controllable)
 	mux.HandleFunc("/daemonframe", c.handleDaemonFrame) // a daemon's frame: ps line + log tail
+	mux.HandleFunc("/stopwatch", c.handleStopwatch)     // experiri: the witness's staleness made readable
 
 	allow := map[string]bool{}
 	for _, o := range strings.Split(*origins, ",") {
