@@ -503,3 +503,7 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .vp-age.stale { color: #ff6b6b; background: #200b0b; }
 .vp-pin { background: none; border: none; cursor: pointer; font-size: 10px; padding: 0 2px; opacity: .4; }
 .vp-pin.on { opacity: 1; }
+
+/* draggable decks (work #2): the header is the handle */
+.deck-head { cursor: grab; }
+.deck-head:active { cursor: grabbing; }

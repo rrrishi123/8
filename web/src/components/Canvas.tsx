@@ -49,6 +49,12 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   // on arrival so the jump lands ON the thing you were looking at, not a default.
   useEffect(() => { if (focusKey) setPinnedKey(focusKey); }, [focusKey]);
   const [spreadBy, setSpreadBy] = useLocal<Record<string, boolean>>('spreadBy', {}); // fanned decks
+  // WORK #2 — DRAGGABLE DECKS. The law: LAYOUT IS THE DEFAULT, POSITION IS THE
+  // OPERATOR'S. The computed layout stays deterministic (verifiable); a drag adds
+  // a persisted per-deck OFFSET on top; "⌂ layout" forgets all offsets. Offsets
+  // don't disturb the flow — undragged decks keep their computed rows.
+  const [posBy, setPosBy] = useLocal<Record<string, { x: number; y: number }>>('posBy', {});
+  const dragDeck = useRef<{ key: string; px: number; py: number; bx: number; by: number } | null>(null);
   const [showSelf, setShowSelf] = useLocal<boolean>('showSelf', false); // reflexive breakpoint: let this 8 SEE its own tab (1 tab → 2 panes → controls itself)
   const [addFor, setAddFor] = useState('');       // which deck's "+ tab" input is open
   const [addUrl, setAddUrl] = useState('https://www.airbnb.com');
@@ -238,19 +244,20 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     const fpW = spread ? Math.max(w0, st.cells.reduce((a, c) => a + cardW(c) + 16, -16)) : w0 + OFFX * (st.cells.length - 1);
     if (x > X0 && x + fpW > X0 + WORLD_W) { x = X0; y += rowH; }
     const ox = x, oy = y + HEADER;
+    const offD = posBy[st.key] || { x: 0, y: 0 };
     const topKey = st.cells.some((c) => c.key === heroKey) ? heroKey : st.cells[0]?.key;
     const others = st.cells.filter((c) => c.key !== topKey);
-    let sx = ox;
+    let sx = ox + offD.x;
     st.cells.forEach((c) => {
-      if (spread) { laid.push({ c, x: sx, y: oy, w: cardW(c), z: 1, top: c.key === topKey }); sx += cardW(c) + 16; }
+      if (spread) { laid.push({ c, x: sx, y: oy + offD.y, w: cardW(c), z: 1, top: c.key === topKey }); sx += cardW(c) + 16; }
       else {
         const isTop = c.key === topKey;
         const oi = isTop ? 0 : others.indexOf(c) + 1;
         const z = isTop ? others.length + 2 : others.length - others.indexOf(c);
-        laid.push({ c, x: ox + OFFX * oi, y: oy + OFFY * oi, w: w0, z, top: isTop });
+        laid.push({ c, x: ox + offD.x + OFFX * oi, y: oy + offD.y + OFFY * oi, w: w0, z, top: isTop });
       }
     });
-    decks.push({ st, x: ox, y, w: fpW, spread });
+    decks.push({ st, x: ox + offD.x, y: y + offD.y, w: fpW, spread });
     x = ox + fpW + GAP;
   }
 
@@ -363,7 +370,18 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
       <div className="world" style={{ transform: `translate(${cam.x}px,${cam.y}px) scale(${cam.z})` }}>
         {/* deck headers — name · tab count · fan · add tab */}
         {decks.map((d) => (
-          <div key={'h-' + d.st.key} className="deck-head" style={{ left: d.x, top: d.y, width: d.w }}>
+          <div key={'h-' + d.st.key} className="deck-head" style={{ left: d.x, top: d.y, width: d.w }}
+            onPointerDown={(e) => {
+              if ((e.target as HTMLElement).closest('button, input')) return; // buttons still click
+              try { (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId); } catch { /* synthetic/pen pointers may lack capture — drag works regardless */ }
+              const cur = posBy[d.st.key] || { x: 0, y: 0 };
+              dragDeck.current = { key: d.st.key, px: e.clientX, py: e.clientY, bx: cur.x, by: cur.y };
+            }}
+            onPointerMove={(e) => {
+              const g = dragDeck.current; if (!g || g.key !== d.st.key) return;
+              setPosBy((p) => ({ ...p, [g.key]: { x: g.bx + (e.clientX - g.px) / cam.z, y: g.by + (e.clientY - g.py) / cam.z } }));
+            }}
+            onPointerUp={() => { dragDeck.current = null; }}>
             <span className={`deck-name ${d.st.isCDP ? 'chrome' : d.st.isBrowser ? 'firefox' : 'seat'}`}>{d.st.label}</span>
             {d.st.isBrowser && <span className="deck-count">{d.st.cells.length} tab{d.st.cells.length === 1 ? '' : 's'}</span>}
             {d.st.isBrowser && d.st.cells.length > 1 && (
@@ -407,6 +425,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
         <button onClick={persp.p2} title="all decks, side by side">P2 · decks</button>
         <button onClick={persp.bird} title="see everything">◇ bird's-eye</button>
         <button className={showSelf ? 'on' : ''} onClick={() => setShowSelf((v) => !v)} title="reflexive: let this 8 see its OWN tab (1 tab → 2 panes → controls itself)">⟲ self</button>
+        <button onClick={() => setPosBy({})} title="forget operator positions — return to the deterministic layout">⌂ layout</button>
         <span className="persp-z">{stacks.length} decks · {cells.length} cards · {Math.round(cam.z * 100)}%</span>
       </div>
       <Instruments />
