@@ -329,6 +329,10 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
         <span className={`vp-title${pinned ? ' pinned' : ''}`} onClick={onPin} title={onPin ? 'pin as hero (live)' : undefined}>{title || 'viewport'}</span> {err ? '· ✗' : streaming ? '· ●' : '· ◌'}
         {ageMs >= 0 && <span className={`vp-age ${ageCls}`} title="staleness of what this card shows — time since its frame landed">{(ageMs / 1000).toFixed(1)}s</span>}
         {/* browser chrome: back · reload · full URL — a card is a real tab now */}
+        {session === 'daemons' && fixedCtx && (
+          <button className="vp-nav" title="restart — TERM; the reviver brings it back (watchdog is protected)"
+            onClick={() => fetch(`${BASE}/daemonsignal?d=${encodeURIComponent(fixedCtx.replace(/^d-/, ''))}&sig=TERM&by=operator`)}>⟳</button>
+        )}
         {ctx && !isText && <>
           <button className="vp-nav" title="back" onClick={() => wire('browsingContext.traverseHistory', { context: ctx, delta: -1 })}>◀</button>
           <button className="vp-nav" title="reload" onClick={() => wire('browsingContext.reload', { context: ctx })}>⟳</button>
