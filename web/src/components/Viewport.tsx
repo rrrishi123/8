@@ -49,13 +49,15 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
   // pane, ps+log-tail for a daemon. Text costs pennies (no compositor surface),
   // so poll whenever on-screen.
   const isTmux = session === 'tmux';
-  const isText = isTmux || session === 'daemons';
+  const isText = isTmux || session === 'daemons' || session === 'nvim';
   const [tmuxText, setTmuxText] = useState('');
   useEffect(() => {
     if (!isText || !fixedCtx || !(visible ?? true)) return;
     let alive = true;
     const ep = isTmux
       ? `${BASE}/tmuxpane?pane=${encodeURIComponent(fixedCtx)}`
+      : session === 'nvim'
+      ? `${BASE}/nvimbuf?buf=${encodeURIComponent(fixedCtx.replace(/^nvim-/, ''))}`
       : `${BASE}/daemonframe?d=${encodeURIComponent(fixedCtx.replace(/^d-/, ''))}`;
     const pull = () => fetch(ep)
       .then((r) => r.text()).then((t) => {
@@ -329,6 +331,10 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
         <span className={`vp-title${pinned ? ' pinned' : ''}`} onClick={onPin} title={onPin ? 'pin as hero (live)' : undefined}>{title || 'viewport'}</span> {err ? '· ✗' : streaming ? '· ●' : '· ◌'}
         {ageMs >= 0 && <span className={`vp-age ${ageCls}`} title="staleness of what this card shows — time since its frame landed">{(ageMs / 1000).toFixed(1)}s</span>}
         {/* browser chrome: back · reload · full URL — a card is a real tab now */}
+        {session === 'nvim' && fixedCtx && (
+          <button className="vp-nav" title="make this the active buffer (:buffer N) — the active buffer moves, visibly"
+            onClick={() => fetch(`${BASE}/nvimopen?buf=${encodeURIComponent(fixedCtx.replace(/^nvim-/, ''))}`)}>⇲ open</button>
+        )}
         {session === 'daemons' && fixedCtx && (
           <button className="vp-nav" title="restart — TERM; the reviver brings it back (watchdog is protected)"
             onClick={() => fetch(`${BASE}/daemonsignal?d=${encodeURIComponent(fixedCtx.replace(/^d-/, ''))}&sig=TERM&by=operator`)}>⟳</button>

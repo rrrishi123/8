@@ -197,10 +197,11 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
       const cells: Cell[] = (tabsBy[s.id] || []).map((tab) => ({
         key: s.id + tab.context, session: s.id, context: tab.context, url: tab.url,
         title: s.id === 'tmux' ? `${tab.context} · ${tab.url.replace('tmux://', '')}`
+          : s.id === 'nvim' ? (tab.title || tab.context)
           : s.id === 'daemons' ? (tab.title || tab.context)
           : host(tab.url),
       }));
-      const label = s.stream === 'cdp' ? 'chrome' : s.id === 'fox' ? 'firefox' : s.id === 'tmux' ? 'agents · tmux' : s.id === 'daemons' ? 'daemons · host' : s.id;
+      const label = s.stream === 'cdp' ? 'chrome' : s.id === 'fox' ? 'firefox' : s.id === 'tmux' ? 'agents · tmux' : s.id === 'daemons' ? 'daemons · host' : s.id === 'nvim' ? 'nvim · editor' : s.id;
       stacks.push({ key: s.id, session: s.id, isBrowser: true, isCDP: s.stream === 'cdp', label, cells });
     } else {
       const device = !!s.stream;
@@ -278,7 +279,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     const live = isFox ? inSet : (L.top && L.vis);
     // tmux panes are TEXT frames (capture-pane) — pennies, not compositor surfaces —
     // so every on-screen pane polls; the bounded-set economy is a pixels problem.
-    const streams = (L.c.session === 'tmux' || L.c.session === 'daemons' ? true : (isFox ? inSet : L.top)) && L.vis;
+    const streams = (L.c.session === 'tmux' || L.c.session === 'daemons' || L.c.session === 'nvim' ? true : (isFox ? inSet : L.top)) && L.vis;
     return {
       id: 'seat-' + L.c.key, x: L.x, y: L.y, w: L.w, h: H, z: L.z, gravity: hero,
       node: <Viewport session={L.c.session} context={L.c.context} title={L.c.title} url={L.c.url}
