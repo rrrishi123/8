@@ -2435,6 +2435,93 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 // {ctx, agent} stamps claimed_by + claim_at=now; re-post = heartbeat. This makes
 // "no other agent is using this tab" FALSIFIABLE (check for a live claim) instead
 // of assumed — the same law the other Claude found the channel path violating.
+// handleMatrix — the SURFACES × SENSES coverage matrix: the map of the unfound.
+// Rows are the live surface-kinds (seats); columns are the senses/verbs. The
+// point is the DIFFERENCE between empty cells:
+//   live    — probed just now, works (carries a count/proof)
+//   yes     — built and declared
+//   na      — structurally inapplicable (pixels of a text seat)
+//   unfound — PLAUSIBLE but not built: a sense this surface COULD expose and
+//             doesn't — where something can stand seen-able-but-unseen. Each is
+//             a candidate work item; these cells ARE the map.
+func (c *collector) handleMatrix(w http.ResponseWriter, r *http.Request) {
+	cols := []string{"enumerate", "frame·pixels", "frame·text", "symbol·eval", "control", "events·push", "memory·ledger"}
+	type cell struct {
+		S      string `json:"s"`
+		Detail string `json:"detail"`
+	}
+	type row struct {
+		Kind  string          `json:"kind"`
+		Cells map[string]cell `json:"cells"`
+	}
+	mk := func(vals ...string) map[string]cell {
+		m := map[string]cell{}
+		for i, cn := range cols {
+			m[cn] = cell{S: vals[2*i], Detail: vals[2*i+1]}
+		}
+		return m
+	}
+	foxN := 0
+	c.tmu.Lock()
+	for _, t := range c.manifest {
+		if t.Status == "live" && t.Session == "fox" {
+			foxN++
+		}
+	}
+	c.tmu.Unlock()
+	tmuxN, nvimN, dmnN := len(tmuxPanes()), len(nvimBufs()), len(daemonList())
+	rows := []row{}
+	live := map[string]bool{}
+	for _, b := range c.brokers {
+		live[b.id] = true
+	}
+	if live["fox"] {
+		rows = append(rows, row{"fox · browser", mk(
+			"live", fmt.Sprintf("getTree · %d tabs", foxN),
+			"yes", "drawSnapshot→jpeg", "yes", "channel DOM source", "yes", "script.evaluate",
+			"yes", "/act /run (BiDi input)", "yes", "BiDi subscribe → broker push", "yes", "ledger + manifest")})
+	}
+	if tmuxN > 0 {
+		rows = append(rows, row{"tmux · agents", mk(
+			"live", fmt.Sprintf("list-panes · %d", tmuxN),
+			"unfound", "could render text→img; not built", "yes", "capture-pane",
+			"unfound", "shell has no eval-returns-value; control-mode query?",
+			"yes", "send-keys", "unfound", "tmux control-mode CAN push; we POLL",
+			"unfound", "in manifest; NOT in ledger (no per-pane events)")})
+	}
+	if nvimN > 0 {
+		rows = append(rows, row{"nvim · editor", mk(
+			"live", fmt.Sprintf("getbufinfo · %d bufs", nvimN),
+			"unfound", "TUI has no raster; could screencap the pane", "yes", "getbufline",
+			"yes", "remote-expr (real eval!)", "yes", ":buffer / remote-send",
+			"unfound", "msgpack notifications EXIST; not subscribed", "unfound", "in manifest; NOT in ledger")})
+	}
+	if dmnN > 0 {
+		rows = append(rows, row{"daemons · host", mk(
+			"live", fmt.Sprintf("pgrep · %d", dmnN),
+			"na", "a process has no surface", "yes", "ps + log tail",
+			"na", "no eval into a foreign process", "yes", "signals (TERM/HUP)",
+			"unfound", "could tail→push log lines; we POLL", "unfound", "in manifest; NOT in ledger")})
+	}
+	if data, err := os.ReadFile(sessionsFile()); err == nil && strings.Contains(string(data), `"call"`) {
+		rows = append(rows, row{"device · appium", mk(
+			"live", "session probe", "yes", "mjpeg / screenshot", "yes", "page source",
+			"yes", "execute script", "yes", "/act (appium)",
+			"unfound", "no event push from the device", "yes", "ledger")})
+	}
+	unfound := 0
+	for _, rr := range rows {
+		for _, cn := range cols {
+			if rr.Cells[cn].S == "unfound" {
+				unfound++
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"cols": cols, "rows": rows, "unfound": unfound,
+		"legend": "live=probed now · yes=built · na=inapplicable · unfound=plausible-but-unbuilt (the map)"})
+}
+
 func (c *collector) handleClaim(w http.ResponseWriter, r *http.Request) {
 	var p struct{ Ctx, Agent string }
 	json.NewDecoder(r.Body).Decode(&p)
@@ -4101,6 +4188,7 @@ func main() {
 	mux.HandleFunc("/benches", c.handleBenches)
 	mux.HandleFunc("/focus", c.handleFocus)
 	mux.HandleFunc("/health", c.handleHealth)
+	mux.HandleFunc("/matrix", c.handleMatrix)           // surfaces × senses coverage — the map of the unfound
 	mux.HandleFunc("/claim", c.handleClaim)             // an agent leases a tab (verify/falsify: is anyone using it?)
 	mux.HandleFunc("/dedup", c.handleDedup)             // same-URL duplicates; close the unclaimed ones
 	mux.HandleFunc("/manifest", c.handleManifest) // durable tab manifest: how-many/what/where/who/why/when

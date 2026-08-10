@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Matrix } from './Matrix';
 
 const BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
 
@@ -69,6 +70,7 @@ export function Instruments() {
           onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
           placeholder="+ add work (Enter)" />
       </div>
+      <Matrix />
     </div>
   );
 }
