@@ -1582,6 +1582,60 @@ func (c *collector) handleTabs(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"tabs": tabs})
 		return
 	}
+	if r.URL.Query().Get("session") == "fox" {
+		// #7 — the deck eats the MANIFEST (all tabs), not just BiDi getTree
+		// (drivable-only). PARKED = SEEN minus DRIVABLE: a discarded tab has no
+		// BiDi context, so chrome-enumeration MINUS getTree IS the parked set — the
+		// seen-vs-drivable seam made computable. Loaded tabs carry their BiDi ctx
+		// (drivable); parked tabs carry "parked:<bcid>" and a parked flag → the web
+		// renders them frozen with a P badge and a click-to-wake.
+		urlToCtx := map[string]string{}
+		if tr, err := c.command(c.find("fox"), `{"method":"browsingContext.getTree","params":{}}`); err == nil {
+			var t struct {
+				Result struct {
+					Contexts []struct{ Context, URL string } `json:"contexts"`
+				} `json:"result"`
+			}
+			json.Unmarshal(tr, &t)
+			for _, ctx := range t.Result.Contexts {
+				urlToCtx[ctx.URL] = ctx.Context
+			}
+		}
+		tabs := make([]map[string]string, 0, 16)
+		if out, err := c.execChrome(chromeTabsScript); err == nil && strings.HasPrefix(strings.TrimSpace(out), "[") {
+			var ct []struct{ Bcid, URL, Title string }
+			if json.Unmarshal([]byte(out), &ct) == nil {
+				for _, t := range ct {
+					if t.URL == "" || strings.HasPrefix(t.URL, "about:") || strings.Contains(t.URL, ":8088") {
+						continue
+					}
+					rec := map[string]string{"url": t.URL, "title": t.Title}
+					if ctx, ok := urlToCtx[t.URL]; ok {
+						rec["context"], rec["parked"] = ctx, "false"
+					} else {
+						rec["context"], rec["parked"] = "parked:"+t.Bcid, "true"
+					}
+					tabs = append(tabs, rec)
+				}
+			}
+		}
+		if len(tabs) == 0 { // chrome enum unavailable — fall back to BiDi-only
+			if tr, err := c.command(c.find("fox"), `{"method":"browsingContext.getTree","params":{}}`); err == nil {
+				var t struct {
+					Result struct {
+						Contexts []struct{ Context, URL string } `json:"contexts"`
+					} `json:"result"`
+				}
+				json.Unmarshal(tr, &t)
+				for _, ctx := range t.Result.Contexts {
+					tabs = append(tabs, map[string]string{"context": ctx.Context, "url": ctx.URL, "parked": "false"})
+				}
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"tabs": tabs})
+		return
+	}
 	b := c.find(r.URL.Query().Get("session"))
 	if b == nil {
 		http.Error(w, `{"error":"unknown session"}`, http.StatusNotFound)
@@ -2355,14 +2409,67 @@ func (c *collector) handleDB(w http.ResponseWriter, r *http.Request) {
 // FROM the witness before starting their own (the queue an agent checks FIRST).
 // Persisted ~/.8/work.json; every add/status change is published to the feed.
 type workItem struct {
-	ID     int64  `json:"id"`
-	Text   string `json:"text"`
-	Status string `json:"status"` // todo → doing → done
-	By     string `json:"by"`
-	TS     string `json:"ts"`
+	ID     int64   `json:"id"`
+	Text   string  `json:"text"`
+	Status string  `json:"status"` // todo → doing → done
+	By     string  `json:"by"`
+	TS     string  `json:"ts"`
+	Deps   []int64 `json:"deps,omitempty"` // ids this task waits on — the PLAN's edges (a DAG)
 }
 
 func workFile() string { return os.ExpandEnv("$HOME/.8/work.json") }
+
+// summon delivers a task INTO the worker's tmux pane — the plan prompting the
+// agent. Used both by a manual flip-to-doing and by the auto-advance.
+func (c *collector) summon(item workItem, reason string) {
+	wb, err := os.ReadFile(os.ExpandEnv("$HOME/.8/worker.json"))
+	if err != nil {
+		return
+	}
+	var wk struct{ Pane, Agent string }
+	if json.Unmarshal(wb, &wk) != nil || wk.Pane == "" {
+		return
+	}
+	tb := tmuxBin()
+	if tb == "" {
+		return
+	}
+	msg := fmt.Sprintf("[8-plan #%d -> doing] %s -- %s; the plan: curl -s 127.0.0.1:7070/work", item.ID, item.Text, reason)
+	exec.Command(tb, "send-keys", "-t", wk.Pane, "-l", msg).Run()
+	exec.Command(tb, "send-keys", "-t", wk.Pane, "Enter").Run()
+	c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.summon","params":{"id":%d,"pane":%q,"reason":%q}}}`, item.ID, wk.Pane, reason))
+}
+
+// advancePlan — THE HABIT LOOP: after a task completes, promote every todo whose
+// deps are ALL done to "doing" and summon it. A blocked task (an unmet dep) does
+// NOT fire — that's the falsifiable invariant. Returns the promoted items.
+func advanceUnblocked(items []workItem, now string) []int {
+	done := map[int64]bool{}
+	for _, it := range items {
+		if it.Status == "done" {
+			done[it.ID] = true
+		}
+	}
+	promoted := []int{}
+	for i := range items {
+		if items[i].Status != "todo" {
+			continue
+		}
+		blocked := false
+		for _, d := range items[i].Deps {
+			if !done[d] {
+				blocked = true // an unmet dependency — stays todo (the invariant)
+				break
+			}
+		}
+		if !blocked && len(items[i].Deps) > 0 { // only auto-advance items that HAVE a plan-edge
+			items[i].Status = "doing"
+			items[i].TS = now
+			promoted = append(promoted, i)
+		}
+	}
+	return promoted
+}
 
 func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 	c.tmu.Lock()
@@ -2373,14 +2480,15 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPost {
 		var p struct {
-			ID     int64  `json:"id"`
-			Text   string `json:"text"`
-			Status string `json:"status"`
-			By     string `json:"by"`
+			ID     int64   `json:"id"`
+			Text   string  `json:"text"`
+			Status string  `json:"status"`
+			By     string  `json:"by"`
+			Deps   []int64 `json:"deps"`
 		}
 		json.NewDecoder(r.Body).Decode(&p)
 		now := time.Now().UTC().Format(time.RFC3339)
-		if p.Text != "" && p.ID == 0 { // add
+		if p.Text != "" && p.ID == 0 { // add (optionally with plan-edges: deps)
 			var max int64
 			for _, it := range items {
 				if it.ID > max {
@@ -2390,35 +2498,30 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			if p.By == "" {
 				p.By = "operator"
 			}
-			items = append(items, workItem{ID: max + 1, Text: p.Text, Status: "todo", By: p.By, TS: now})
-			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.add","params":{"text":%q,"by":%q}}}`, p.Text, p.By))
+			items = append(items, workItem{ID: max + 1, Text: p.Text, Status: "todo", By: p.By, TS: now, Deps: p.Deps})
+			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.add","params":{"text":%q,"by":%q,"deps":%v}}}`, p.Text, p.By, p.Deps))
 		} else if p.ID > 0 && p.Status != "" { // status change
 			for i := range items {
 				if items[i].ID == p.ID {
 					items[i].Status = p.Status
 					items[i].TS = now
 					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":%q}}}`, p.ID, p.Status))
-					// THE SUMMONS (2026-08-07): the work surface is 2-WAY. When the
-					// OPERATOR flips an item to "doing" (the cockpit sends no `by`),
-					// the witness delivers the work INTO the assigned agent's pane —
-					// a literal prompt, via the control verb the tmux seat already
-					// has. Agent-driven changes (by=claude…) don't self-summon.
+					// Manual flip-to-doing by the OPERATOR still summons (the 2-way
+					// surface); agent-driven flips don't self-summon.
 					if p.Status == "doing" && (p.By == "" || p.By == "operator") {
-						if wb, err := os.ReadFile(os.ExpandEnv("$HOME/.8/worker.json")); err == nil {
-							var wk struct {
-								Pane  string `json:"pane"`
-								Agent string `json:"agent"`
-							}
-							if json.Unmarshal(wb, &wk) == nil && wk.Pane != "" {
-								if tb := tmuxBin(); tb != "" {
-									msg := fmt.Sprintf("[8-work #%d -> doing] %s -- assigned via the cockpit; queue: curl -s 127.0.0.1:7070/work", items[i].ID, items[i].Text)
-									exec.Command(tb, "send-keys", "-t", wk.Pane, "-l", msg).Run()
-									exec.Command(tb, "send-keys", "-t", wk.Pane, "Enter").Run()
-									c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.summon","params":{"id":%d,"pane":%q,"agent":%q}}}`, items[i].ID, wk.Pane, wk.Agent))
-								}
-							}
-						}
+						c.summon(items[i], "assigned via the cockpit")
 					}
+				}
+			}
+			// THE HABIT LOOP: completing a task auto-advances the plan — every todo
+			// whose deps are now ALL done flips to doing and SUMMONS the worker on
+			// tmux. A task with an unmet dep does NOT fire (the falsifiable invariant).
+			// This is the plan driving the agent, not Anthropic's task tool: it lives
+			// in the witness, on the feed, and prompts through the real tmux seat.
+			if p.Status == "done" {
+				for _, idx := range advanceUnblocked(items, now) {
+					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":"doing"}}}`, items[idx].ID))
+					c.summon(items[idx], fmt.Sprintf("auto-advanced: dep #%d done", p.ID))
 				}
 			}
 		}
@@ -2435,6 +2538,28 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 // {ctx, agent} stamps claimed_by + claim_at=now; re-post = heartbeat. This makes
 // "no other agent is using this tab" FALSIFIABLE (check for a live claim) instead
 // of assumed — the same law the other Claude found the channel path violating.
+// handleWake — un-park a parked tab (#7): select it in chrome, which reloads the
+// discarded browser and gives it a BiDi context again → it becomes drivable. GET
+// /wake?bcid=<id>. The paired sense-change is visible: next enumerate shows it
+// with a real ctx and parked=false.
+func (c *collector) handleWake(w http.ResponseWriter, r *http.Request) {
+	bcid := r.URL.Query().Get("bcid")
+	if bcid == "" {
+		http.Error(w, `{"error":"need bcid"}`, http.StatusBadRequest)
+		return
+	}
+	// select the tab whose linkedBrowser.browsingContext.id matches → un-parks it
+	script := `const cb=arguments[arguments.length-1];const want=` + strconv.Quote(bcid) + `;try{for(let w of Services.wm.getEnumerator("navigator:browser")){for(let t of w.gBrowser.tabs){let b=t.linkedBrowser;if(b.browsingContext&&String(b.browsingContext.id)===want){w.gBrowser.selectedTab=t;cb("woke:"+b.currentURI.spec);return;}}}cb("not-found");}catch(e){cb("ERR:"+e);}`
+	out, err := c.execChrome(script)
+	if err != nil {
+		http.Error(w, `{"error":"wake failed"}`, http.StatusBadGateway)
+		return
+	}
+	c.publish(fmt.Sprintf(`{"session":"fox","origin":"COLLECTOR","frame":{"method":"tab.wake","params":{"bcid":%q}}}`, bcid))
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"woke":%q,"result":%q}`, bcid, strings.TrimSpace(out))
+}
+
 // handleMatrix — the SURFACES × SENSES coverage matrix: the map of the unfound.
 // Rows are the live surface-kinds (seats); columns are the senses/verbs. The
 // point is the DIFFERENCE between empty cells:
@@ -4188,6 +4313,7 @@ func main() {
 	mux.HandleFunc("/benches", c.handleBenches)
 	mux.HandleFunc("/focus", c.handleFocus)
 	mux.HandleFunc("/health", c.handleHealth)
+	mux.HandleFunc("/wake", c.handleWake)               // un-park a parked tab (#7 click-to-wake)
 	mux.HandleFunc("/matrix", c.handleMatrix)           // surfaces × senses coverage — the map of the unfound
 	mux.HandleFunc("/claim", c.handleClaim)             // an agent leases a tab (verify/falsify: is anyone using it?)
 	mux.HandleFunc("/dedup", c.handleDedup)             // same-URL duplicates; close the unclaimed ones
