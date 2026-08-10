@@ -1664,6 +1664,19 @@ type tabRec struct {
 	LastSeen  string `json:"last_seen"`
 	Status    string `json:"status"` // live | closed
 	ClosedAt  string `json:"closed_at,omitempty"`
+	ClaimedBy string `json:"claimed_by,omitempty"` // an agent CURRENTLY using this tab (a lease)
+	ClaimAt   string `json:"claim_at,omitempty"`   // heartbeat — a claim is LIVE only if fresh (<90s)
+}
+
+// claimLive reports whether a tab's lease is fresh — the FALSIFIABLE basis for
+// "an agent is using this tab" (vs the unverified assumption it isn't). A claim
+// older than 90s is stale (the agent left / died) and the tab is free.
+func claimLive(r *tabRec) bool {
+	if r == nil || r.ClaimAt == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, r.ClaimAt)
+	return err == nil && time.Since(t) < 90*time.Second
 }
 
 type pendAttr struct {
@@ -2418,6 +2431,86 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"work": items})
 }
 
+// handleClaim — an agent LEASES a tab it is actively using. POST /claim
+// {ctx, agent} stamps claimed_by + claim_at=now; re-post = heartbeat. This makes
+// "no other agent is using this tab" FALSIFIABLE (check for a live claim) instead
+// of assumed — the same law the other Claude found the channel path violating.
+func (c *collector) handleClaim(w http.ResponseWriter, r *http.Request) {
+	var p struct{ Ctx, Agent string }
+	json.NewDecoder(r.Body).Decode(&p)
+	if p.Ctx == "" || p.Agent == "" {
+		http.Error(w, `{"error":"need {ctx, agent}"}`, http.StatusBadRequest)
+		return
+	}
+	c.tmu.Lock()
+	rec := c.manifest[p.Ctx]
+	if rec != nil {
+		rec.ClaimedBy, rec.ClaimAt = p.Agent, time.Now().UTC().Format(time.RFC3339)
+	}
+	c.tmu.Unlock()
+	if rec == nil {
+		http.Error(w, `{"error":"unknown ctx"}`, http.StatusNotFound)
+		return
+	}
+	c.publish(fmt.Sprintf(`{"session":%q,"origin":"COLLECTOR","frame":{"method":"tab.claim","params":{"ctx":%q,"agent":%q}}}`, rec.Session, p.Ctx, p.Agent))
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"claimed":%q,"by":%q}`, p.Ctx, p.Agent)
+}
+
+// handleDedup — find same-URL duplicate live tabs and (when asked=&close=1)
+// close the ones SAFE to close: a duplicate with NO live claim by another agent.
+// GET reports candidates without closing; the verify/falsify gate is claimLive.
+func (c *collector) handleDedup(w http.ResponseWriter, r *http.Request) {
+	me := r.URL.Query().Get("agent")
+	doClose := r.URL.Query().Get("close") == "1"
+	c.tmu.Lock()
+	byURL := map[string][]*tabRec{}
+	for _, rec := range c.manifest {
+		if rec.Status == "live" && rec.Session == "fox" {
+			byURL[rec.URL] = append(byURL[rec.URL], rec)
+		}
+	}
+	type cand struct{ URL, Ctx, ClaimedBy string; Claimed bool; Kept bool }
+	var out []cand
+	var toClose []string
+	for url, recs := range byURL {
+		if len(recs) < 2 {
+			continue
+		}
+		// keep exactly one: prefer a live-claimed tab, else the most-recently-seen.
+		keepIdx := 0
+		for i, rec := range recs {
+			if claimLive(rec) {
+				keepIdx = i
+				break
+			}
+			if rec.LastSeen > recs[keepIdx].LastSeen {
+				keepIdx = i
+			}
+		}
+		for i, rec := range recs {
+			busyByOther := claimLive(rec) && rec.ClaimedBy != me
+			out = append(out, cand{url, rec.Ctx, rec.ClaimedBy, claimLive(rec), i == keepIdx})
+			if doClose && i != keepIdx && !busyByOther {
+				toClose = append(toClose, rec.Ctx)
+			}
+		}
+	}
+	c.tmu.Unlock()
+	closed := []string{}
+	if doClose {
+		if b := c.find("fox"); b != nil {
+			for _, ctx := range toClose {
+				if _, err := c.command(b, fmt.Sprintf(`{"method":"browsingContext.close","params":{"context":%q}}`, ctx)); err == nil {
+					closed = append(closed, ctx)
+				}
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"duplicates": out, "closed": closed})
+}
+
 // handleManifest — GET returns the full manifest (the answer to how-many/what/where/
 // who/why/when). POST {agent, why} declares intent BEFORE opening a tab, so the
 // next-born tab is attributed to that agent instead of "human" (provenance capture).
@@ -2657,6 +2750,29 @@ func (c *collector) handleSessions(w http.ResponseWriter, r *http.Request) {
 	ch := make(chan sessionRec, len(byID))
 	for _, rec := range byID {
 		if rec.Physics != "call" {
+			// CHANNEL LIVENESS (2026-08-10) — the other Claude, running this code on
+			// its own machine, found the bug: channel sessions were marked live
+			// UNCONDITIONALLY ("alive by the broker holding their socket"), an
+			// UNVERIFIED prior that my own law forbids — a dead broker showed live
+			// forever. Fix per its suggestion: a broker (http hub) is probed at
+			// /health, exactly as call sessions are probed at /window/rect. The local
+			// text seats (tmux://, host://, nvim://) are verified by their enumerators
+			// when added, so they stay live without an http probe.
+			if strings.HasPrefix(rec.Hub, "http") {
+				go func(rec sessionRec) {
+					cl := &http.Client{Timeout: 3 * time.Second}
+					resp, err := cl.Get(rec.Hub + "/health")
+					rec.Status = "disconnected" // dead/absent broker => not live (was: forever-live)
+					if err == nil {
+						if resp.StatusCode == 200 {
+							rec.Status = "live"
+						}
+						resp.Body.Close()
+					}
+					ch <- rec
+				}(rec)
+				continue
+			}
 			rec.Status = "live"
 			ch <- rec
 			continue
@@ -3985,6 +4101,8 @@ func main() {
 	mux.HandleFunc("/benches", c.handleBenches)
 	mux.HandleFunc("/focus", c.handleFocus)
 	mux.HandleFunc("/health", c.handleHealth)
+	mux.HandleFunc("/claim", c.handleClaim)             // an agent leases a tab (verify/falsify: is anyone using it?)
+	mux.HandleFunc("/dedup", c.handleDedup)             // same-URL duplicates; close the unclaimed ones
 	mux.HandleFunc("/manifest", c.handleManifest) // durable tab manifest: how-many/what/where/who/why/when
 	mux.HandleFunc("/tmuxpane", c.handleTmuxPane) // a tmux pane's visible text — the agents' surface frame
 	mux.HandleFunc("/tmuxsend", c.handleTmuxSend) // the tmux seat's CONTROL verb (seen ⇒ controllable)
