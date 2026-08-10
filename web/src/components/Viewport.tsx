@@ -10,9 +10,9 @@ type Seeing = 'pixels' | 'channel' | 'request';
 // live stream stops being a mirror and becomes hands: a click on the <img> maps
 // to the target's pixels and fires /act (tap), keystrokes fire /act (type). Same
 // surface drives a Firefox tab (BiDi) OR a real device (Appium) — one wire.
-export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAspect, hud, visible, live, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle }:
+export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAspect, hud, visible, live, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle, hiRes }:
   { session: string | null; title?: string; url?: string; context?: string;
-    onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; live?: boolean; fps?: number; act?: boolean; pinned?: boolean; onPin?: () => void; lodW?: number; fx?: boolean; fxNeedle?: string }) {
+    onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; live?: boolean; fps?: number; act?: boolean; pinned?: boolean; onPin?: () => void; lodW?: number; fx?: boolean; fxNeedle?: string; hiRes?: boolean }) {
   // MANIFEST: the card's identity — who opened it, why, when — matched by URL
   // (manifest keys by chrome bcid, cards by BiDi ctx, so URL is the join key).
   const [man, setMan] = useState<{ opened_by?: string; why?: string; first_seen?: string } | null>(null);
@@ -206,11 +206,15 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
       // stops; drawSnapshot frees on idle — only CONTINUOUS hi-res many-tab
       // streaming balloons the parent).
       const foot = (lodW || 480) * dpr;
-      const targetDev = persistent ? Math.min(1400, Math.max(180, foot)) : Math.min(760, Math.max(240, foot * 0.6));
+      // THEATER (hiRes): a single card filling the viewport 1:1 with the real tab
+      // — raise the cap to 2400 device px so it's crisp at full size (one card,
+      // memory bounded). Normal hero caps 1400; frozen periphery ~760.
+      const cap = hiRes ? 2400 : 1400;
+      const targetDev = persistent ? Math.min(cap, Math.max(180, foot)) : Math.min(760, Math.max(240, foot * 0.6));
       const lastNat = natRef.current;
       // first guess (no frame yet): estimate doc width ~1000 → scale ≈ target/1000
       let sc = lastNat > 60 ? fxScaleRef.current * (targetDev / lastNat) : targetDev / 1000;
-      sc = Math.max(0.08, Math.min(1.25, sc));
+      sc = Math.max(0.08, Math.min(hiRes ? 2 : 1.25, sc));
       sc = Math.round(sc * 20) / 20;
       fxScaleRef.current = sc;
       return sc;

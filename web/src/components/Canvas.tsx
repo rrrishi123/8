@@ -56,6 +56,8 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   const [posBy, setPosBy] = useLocal<Record<string, { x: number; y: number }>>('posBy', {});
   const dragDeck = useRef<{ key: string; px: number; py: number; bx: number; by: number } | null>(null);
   const [showSelf, setShowSelf] = useLocal<boolean>('showSelf', false); // reflexive breakpoint: let this 8 SEE its own tab (1 tab → 2 panes → controls itself)
+  const [theater, setTheater] = useState(false); // watch the pinned card at the real tab's full size (1:1)
+  useEffect(() => { if (!theater) return; const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setTheater(false); }; window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey); }, [theater]);
   const [addFor, setAddFor] = useState('');       // which deck's "+ tab" input is open
   const [addUrl, setAddUrl] = useState('https://www.airbnb.com');
   const [liveKeys, setLiveKeys] = useState<string[]>([]); // recent-set: last 3 focused fox cards stay LIVE
@@ -426,9 +428,31 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
         <button onClick={persp.p2} title="all decks, side by side">P2 · decks</button>
         <button onClick={persp.bird} title="see everything">◇ bird's-eye</button>
         <button className={showSelf ? 'on' : ''} onClick={() => setShowSelf((v) => !v)} title="reflexive: let this 8 see its OWN tab (1 tab → 2 panes → controls itself)">⟲ self</button>
+        <button className={theater ? 'on' : ''} onClick={() => setTheater((v) => !v)} title="watch the pinned card at the real tab's full size (1:1) — stay on 8, see the action live">⛶ watch</button>
         <button onClick={() => setPosBy({})} title="forget operator positions — return to the deterministic layout">⌂ layout</button>
         <span className="persp-z">{stacks.length} decks · {cells.length} cards · {Math.round(cam.z * 100)}%</span>
       </div>
+      {theater && (() => {
+        // THEATER — the watched card at the real tab's full size (1:1). You stay
+        // on 8; a tab you're driving fills 8's viewport at ITS real aspect,
+        // streamed crisp (hiRes). "as big as the actual tab when opened."
+        const h = cells.find((c) => c.key === heroKey) || cells[0];
+        if (!h) return null;
+        const vw = vpRect?.width || 1200, vh = vpRect?.height || 800;
+        const aspect = aspectBy[h.key] || 1.6;
+        let W = vw - 48, H2 = W / aspect;
+        if (H2 > vh - 96) { H2 = vh - 96; W = H2 * aspect; }
+        return (
+          <div className="theater" onPointerDown={(e) => { if (e.target === e.currentTarget) setTheater(false); }}>
+            <div className="theater-frame" style={{ width: Math.round(W), height: Math.round(H2) }}>
+              <Viewport session={h.session} context={h.context} url={h.url} title={h.title}
+                visible live fps={12} lodW={Math.round(W)} hiRes
+                fx={h.session === 'fox' && !!h.context} fxNeedle={h.url} />
+            </div>
+            <button className="theater-exit" onClick={() => setTheater(false)} title="exit theater (Esc)">✕ exit</button>
+          </div>
+        );
+      })()}
       <Instruments />
       <WireLog />
       {vpRect && worldW > 0 && (
