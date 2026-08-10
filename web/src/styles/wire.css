@@ -480,7 +480,8 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .vp-tmux { background: #0b0f14; color: #9ece6a; font-size: 9.5px; line-height: 1.28; padding: 10px 12px; height: 100%; overflow: hidden; white-space: pre-wrap; word-break: break-all; }
 
 /* INSTRUMENTS — the witness's own gauges, top-right, distinct from world cards (2026-08-07) */
-.instruments { position: absolute; top: 10px; right: 10px; width: 300px; z-index: 60; display: flex; flex-direction: column; gap: 8px; }
+.instruments { position: absolute; top: 10px; right: 10px; width: 300px; z-index: 60; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; max-height: 92vh; }
+.instruments > div:not(.inst-chips) { width: 300px; }
 .inst-clock { border: 1px solid #f08c00; background: #14100a; border-radius: 6px; padding: 8px; text-align: center; box-shadow: 0 0 14px #f08c0033; }
 .inst-sw { width: 100%; border-radius: 4px; display: block; min-height: 60px; background: #000; }
 .inst-true { color: #39ff14; font-size: 15px; font-weight: 700; margin-top: 4px; letter-spacing: .05em; font-family: ui-monospace, Menlo, monospace; }
@@ -523,3 +524,8 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .mx-na { color: #4a4f57; }
 .mx-unfound { color: #ffa94d; background: #241a0a; font-weight: 700; }
 .mx-legend { color: #7a8291; font-size: 8.5px; margin-top: 5px; min-height: 12px; }
+
+/* instruments collapsed to a chip row — the world is the view, not the gauges (2026-08-10) */
+.inst-chips { display: flex; gap: 6px; justify-content: flex-end; }
+.inst-chip { background: #10131a; border: 1px solid #2a3040; color: #9aa4b8; font-size: 10px; font-family: ui-monospace, monospace; padding: 3px 8px; border-radius: 12px; cursor: pointer; }
+.inst-chip.on { border-color: #4c6ef5; color: #c5cbe3; background: #141a2c; }
