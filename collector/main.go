@@ -2653,6 +2653,89 @@ func (c *collector) handleAttention(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(packet)
 }
 
+// ── #35 FIX #30: NATIVE tmux CHANNEL (control mode) ─────────────────────────
+// The #30 anomaly proved watch-then-publish (the 1.5s poll) is NOT the CHANNEL
+// atom. tmux control mode (-C) IS: a held bidirectional client to which tmux
+// PUSHES %output/%window-* frames unsolicited. This holds that client and
+// publishes those frames into 8's feed as native tmux.output/tmux.changed — the
+// atom realized off-browser, not emulated.
+var tmuxChMu sync.Mutex
+var tmuxChOn = map[string]bool{}
+
+func (c *collector) tmuxControlChannel(socketName, target string) {
+	key := socketName + "/" + target
+	tmuxChMu.Lock()
+	if tmuxChOn[key] {
+		tmuxChMu.Unlock()
+		return
+	}
+	tmuxChOn[key] = true
+	tmuxChMu.Unlock()
+	defer func() { tmuxChMu.Lock(); delete(tmuxChOn, key); tmuxChMu.Unlock() }()
+
+	tb := tmuxBin()
+	if tb == "" {
+		return
+	}
+	args := []string{}
+	if socketName != "" {
+		args = append(args, "-L", socketName)
+	}
+	args = append(args, "-C", "attach", "-t", target)
+	cmd := exec.Command(tb, args...)
+	stdin, err := cmd.StdinPipe() // held open so the control client stays attached
+	if err != nil {
+		return
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		return
+	}
+	defer cmd.Process.Kill()
+	defer stdin.Close()
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	for sc.Scan() {
+		line := sc.Text()
+		switch {
+		case strings.HasPrefix(line, "%output "):
+			rest := line[len("%output "):]
+			pane, data := rest, ""
+			if sp := strings.IndexByte(rest, ' '); sp >= 0 {
+				pane, data = rest[:sp], rest[sp+1:]
+			}
+			db, _ := json.Marshal(data)
+			c.publish(fmt.Sprintf(`{"session":"tmux","origin":"COLLECTOR","physics":"channel","frame":{"method":"tmux.output","params":{"pane":%q,"data":%s,"native":true}}}`, pane, string(db)))
+		case strings.HasPrefix(line, "%window-add"), strings.HasPrefix(line, "%window-close"),
+			strings.HasPrefix(line, "%window-renamed"), strings.HasPrefix(line, "%session-window-changed"),
+			strings.HasPrefix(line, "%layout-change"), strings.HasPrefix(line, "%unlinked-window"):
+			evt := strings.Fields(line)[0]
+			c.publish(fmt.Sprintf(`{"session":"tmux","origin":"COLLECTOR","physics":"channel","frame":{"method":"tmux.changed","params":{"native":true,"evt":%q}}}`, evt))
+		}
+	}
+}
+
+// handleTmuxChannel starts the native channel. GATED: refuses the LIVE default
+// server (a -C client perturbs the working tmux 8 lives in) unless
+// EIGHT_TMUX_CHANNEL_LIVE=1. Pass ?socket=<name> to prove on a dedicated server.
+func (c *collector) handleTmuxChannel(w http.ResponseWriter, r *http.Request) {
+	sock := r.URL.Query().Get("socket")
+	sess := r.URL.Query().Get("session")
+	if sess == "" {
+		sess = "0"
+	}
+	if sock == "" && os.Getenv("EIGHT_TMUX_CHANNEL_LIVE") != "1" {
+		http.Error(w, `{"error":"refusing a control client on the LIVE tmux server (would perturb it). Pass ?socket=<name> for a dedicated server, or set EIGHT_TMUX_CHANNEL_LIVE=1 to opt in."}`, http.StatusForbidden)
+		return
+	}
+	go c.tmuxControlChannel(sock, sess)
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"started":true,"socket":%q,"session":%q,"native_channel":true}`, sock, sess)
+}
+
 // ── NVIM — the editor seat, over msgpack-rpc WITHOUT a msgpack codec ─────────
 // nvim's own binary is the msgpack client: `nvim --server <sock> --remote-expr`
 // evaluates vimscript against a running nvim over its socket, and `--remote-send`
@@ -3180,6 +3263,19 @@ func anyDoing(items []workItem) bool {
 // pickNext — the QUEUE PICKER (a CALL over the plan): the next UNBLOCKED todo
 // (all deps done), ordered by prio desc then id asc. Returns index or -1. This
 // is "get pending items one by one" — a worker loops pick→do→done→pick.
+// isRecord marks queue items that are DOCUMENTATION (a verdict/finding/act), not
+// actionable work — the picker skips them so the playlist only summons real
+// tasks (BUILD/FIX/verify/ANOMALY-to-attend), instead of churning verdicts.
+func isRecord(text string) bool {
+	t := strings.TrimSpace(text)
+	for _, p := range []string{"FINDING", "ACT (", "AUDIT", "GUARD"} {
+		if strings.HasPrefix(t, p) {
+			return true
+		}
+	}
+	return false
+}
+
 func pickNext(items []workItem) int {
 	done := map[int64]bool{}
 	for _, it := range items {
@@ -3190,6 +3286,9 @@ func pickNext(items []workItem) int {
 	best := -1
 	for i := range items {
 		if items[i].Status != "todo" {
+			continue
+		}
+		if isRecord(items[i].Text) { // records are documentation, never summoned
 			continue
 		}
 		blocked := false
@@ -3355,6 +3454,9 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 				p.By = "operator"
 			}
 			ni := workItem{ID: max + 1, Text: p.Text, Status: "todo", By: p.By, TS: now, Deps: p.Deps, Assignee: p.Assignee}
+			if isRecord(p.Text) { // a FINDING/ACT/AUDIT/GUARD is a record, born done — it lands on the surface but is never summoned as work
+				ni.Status = "done"
+			}
 			if p.Prio != nil {
 				ni.Prio = *p.Prio
 			}
@@ -3427,7 +3529,10 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 				// nothing dep-advanced, pull the NEXT unblocked todo (prio order) and
 				// summon it — pick→do→done→pick, hands-free. New tasks added mid-play
 				// just join the queue and get picked in turn.
-				if len(advanced) == 0 && playlistOn() {
+				// WIP=1: only pull the next when NOTHING is already doing. Without this
+				// gate, rapid completions each pulled a fresh task, flooding the queue
+				// with dozens of concurrent "doing" — the playlist must SERIALIZE.
+				if len(advanced) == 0 && playlistOn() && !anyDoing(items) {
 					if idx := pickNext(items); idx >= 0 {
 						items[idx].Status = "doing"
 						items[idx].TS = now
@@ -5325,6 +5430,7 @@ func main() {
 	mux.HandleFunc("/tmuxpane", c.handleTmuxPane)
 	mux.HandleFunc("/tmuxsummary", c.handleTmuxSummary) // a tmux pane's visible text — the agents' surface frame
 	mux.HandleFunc("/attention", c.handleAttention)     // #22a the research-programme READING packet (Lakatos/Kuhn), witness-only
+	mux.HandleFunc("/tmuxchannel", c.handleTmuxChannel) // #35 native tmux CHANNEL (control-mode push), gated off the live server
 	mux.HandleFunc("/tmuxsend", c.handleTmuxSend) // the tmux seat's CONTROL verb (seen ⇒ controllable)
 	mux.HandleFunc("/nvimbuf", c.handleNvimBuf)   // an nvim buffer's lines — the editor seat's frame
 	mux.HandleFunc("/nvimopen", c.handleNvimOpen) // the editor seat's CONTROL verb (:buffer N)
