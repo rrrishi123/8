@@ -91,6 +91,9 @@ type collector struct {
 	pendOpen       []pendAttr // an agent declares intent before opening; the next-born tab claims it (provenance)
 	manifestSeeded bool       // first reconcile after (re)start captures already-open tabs as "unknown" — the witness didn't see them born, so it must NOT claim "human"
 
+	wmu     sync.Mutex        // #12 change-detector: a tab you WATCH pushes tab.changed on DOM shift
+	watched map[string]string // ctx -> last DOM signature (opt-in; only watched tabs are read)
+
 	bmu     sync.Mutex
 	benches []benchRec // benchmark batch results — clubbed + filterable on 8
 	bseq    int64
@@ -1890,7 +1893,84 @@ func (c *collector) seatWatchLoop() {
 			}
 			lastDaemon = sig
 		}
+		// #12 CHANGE-DETECTOR: for tabs an agent asked to WATCH, read a cheap DOM
+		// signature (title · text-length · tail-hash) every ~3rd tick and PUSH a
+		// tab.changed with the DELTA when it shifts — so "a reply arrived on the
+		// claude tab" is a push, not a poll (the way its frontend loaded it too).
+		// Opt-in: only watched tabs are read, so it stays lean.
+		if tick%3 == 0 {
+			c.wmu.Lock()
+			watch := make(map[string]string, len(c.watched))
+			for k, v := range c.watched {
+				watch[k] = v
+			}
+			c.wmu.Unlock()
+			if len(watch) > 0 {
+				if b := c.find("fox"); b != nil {
+					for ctx, prev := range watch {
+						q := fmt.Sprintf(`{"method":"script.evaluate","params":{"awaitPromise":true,"target":{"context":%q},"expression":"(()=>{const x=(document.body&&document.body.innerText)||'';return JSON.stringify({t:document.title,n:x.length,tail:x.slice(-160)})})()"}}`, ctx)
+						out, err := c.command(b, q)
+						if err != nil {
+							continue
+						}
+						var r struct {
+							Result struct {
+								Result struct {
+									Value string `json:"value"`
+								} `json:"result"`
+							} `json:"result"`
+						}
+						if json.Unmarshal(out, &r) != nil || r.Result.Result.Value == "" {
+							continue
+						}
+						sig := strconv.FormatUint(fnv1a([]byte(r.Result.Result.Value)), 16)
+						if prev != "" && prev != sig {
+							var d struct {
+								T    string `json:"t"`
+								N    int    `json:"n"`
+								Tail string `json:"tail"`
+							}
+							json.Unmarshal([]byte(r.Result.Result.Value), &d)
+							c.publish(fmt.Sprintf(`{"session":"fox","origin":"COLLECTOR","frame":{"method":"tab.changed","params":{"context":%q,"title":%q,"len":%d}}}`, ctx, d.T, d.N))
+						}
+						c.wmu.Lock()
+						if _, still := c.watched[ctx]; still {
+							c.watched[ctx] = sig
+						}
+						c.wmu.Unlock()
+					}
+				}
+			}
+		}
 	}
+}
+
+// handleWatch — #12: register a tab to WATCH (its DOM changes get pushed as
+// tab.changed) or stop. GET/POST /watch?context=<ctx>[&off=1]. GET with no ctx
+// lists the watched set. The change-detector turns the witness into a passive
+// ping for tabs you're NOT looking at (a reply landed on claude/deepseek).
+func (c *collector) handleWatch(w http.ResponseWriter, r *http.Request) {
+	ctx := r.URL.Query().Get("context")
+	c.wmu.Lock()
+	if c.watched == nil {
+		c.watched = map[string]string{}
+	}
+	if ctx != "" {
+		if r.URL.Query().Get("off") == "1" {
+			delete(c.watched, ctx)
+		} else {
+			if _, ok := c.watched[ctx]; !ok {
+				c.watched[ctx] = "" // empty sig → first read establishes baseline (no false first event)
+			}
+		}
+	}
+	list := make([]string, 0, len(c.watched))
+	for k := range c.watched {
+		list = append(list, k)
+	}
+	c.wmu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"watching": list})
 }
 
 func (c *collector) reconcileLoop() {
@@ -4651,7 +4731,8 @@ func main() {
 	mux.HandleFunc("/stopwatch", c.handleStopwatch)     // experiri: the witness's staleness made readable
 	mux.HandleFunc("/work", c.handleWork)
 	mux.HandleFunc("/work/next", c.handleWorkNext)
-	mux.HandleFunc("/work/playlist", c.handlePlaylist) // run the queue hands-free, one-by-one like a playlist     // the queue PICKER — next unblocked todo, one by one               // the shared task surface — operator writes, agents check FIRST
+	mux.HandleFunc("/work/playlist", c.handlePlaylist)
+	mux.HandleFunc("/watch", c.handleWatch)               // #12 change-detector: push tab.changed for a watched tab // run the queue hands-free, one-by-one like a playlist     // the queue PICKER — next unblocked todo, one by one               // the shared task surface — operator writes, agents check FIRST
 
 	allow := map[string]bool{}
 	for _, o := range strings.Split(*origins, ",") {
