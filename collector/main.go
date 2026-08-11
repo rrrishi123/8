@@ -2153,13 +2153,114 @@ func (c *collector) handleTmuxPane(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"bad pane id"}`, http.StatusBadRequest)
 		return
 	}
-	out, err := exec.Command(tb, "capture-pane", "-p", "-t", pane).Output()
+	// -S -3000 captures scrollback, not just the visible screen — the pane's
+	// FULL recent history (the card was showing only the visible slice before).
+	out, err := exec.Command(tb, "capture-pane", "-p", "-S", "-3000", "-t", pane).Output()
 	if err != nil {
 		http.Error(w, `{"error":"capture failed"}`, http.StatusBadGateway)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Write(out)
+}
+
+// handleTmuxSummary — WHAT HAS THIS CLAUDE BEEN DOING. A tmux pane running a
+// sibling Claude has its own jsonl transcript; this reads it (pane cwd → the
+// project dir → the newest session) and returns a summary: recent prompts, the
+// tool-use count, the last thing it said. Refreshed on request from 8 so we can
+// focus attention on a sibling's conversation without commanding it — the
+// witness READS a peer's history, it doesn't drive it. GET /tmuxsummary?pane=%N.
+func (c *collector) handleTmuxSummary(w http.ResponseWriter, r *http.Request) {
+	pane := r.URL.Query().Get("pane")
+	tb := tmuxBin()
+	if !strings.HasPrefix(pane, "%") || tb == "" {
+		http.Error(w, `{"error":"need pane=%N"}`, http.StatusBadRequest)
+		return
+	}
+	cwdb, err := exec.Command(tb, "display-message", "-p", "-t", pane, "#{pane_current_path}").Output()
+	if err != nil {
+		http.Error(w, `{"error":"no such pane"}`, http.StatusNotFound)
+		return
+	}
+	cwd := strings.TrimSpace(string(cwdb))
+	// Claude Code encodes a project's cwd by replacing every '/' with '-'.
+	projDir := os.ExpandEnv("$HOME/.claude/projects/") + strings.ReplaceAll(cwd, "/", "-")
+	entries, _ := os.ReadDir(projDir)
+	var newest string
+	var newestT time.Time
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		if fi, e2 := e.Info(); e2 == nil && fi.ModTime().After(newestT) {
+			newestT, newest = fi.ModTime(), projDir+"/"+e.Name()
+		}
+	}
+	resp := map[string]any{"pane": pane, "cwd": cwd}
+	if newest == "" {
+		resp["note"] = "no Claude transcript for this pane's cwd — not a Claude session, or a fresh one"
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+	data, _ := os.ReadFile(newest)
+	prompts := []string{}
+	tools, turns := 0, 0
+	lastAsst := ""
+	for _, ln := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(ln) == "" {
+			continue
+		}
+		var o struct {
+			Type    string `json:"type"`
+			Message struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(ln), &o) != nil {
+			continue
+		}
+		role := o.Message.Role
+		if role == "" {
+			role = o.Type
+		}
+		if role == "user" {
+			var s string
+			if json.Unmarshal(o.Message.Content, &s) == nil {
+				if s = strings.TrimSpace(s); s != "" && !strings.HasPrefix(s, "<") && !strings.HasPrefix(s, "[Request") {
+					prompts = append(prompts, firstN(s, 120))
+				}
+			}
+		} else if role == "assistant" {
+			turns++
+			var blocks []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(o.Message.Content, &blocks) == nil {
+				for _, b := range blocks {
+					if b.Type == "tool_use" {
+						tools++
+					} else if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
+						lastAsst = firstN(strings.TrimSpace(b.Text), 200)
+					}
+				}
+			}
+		}
+	}
+	if len(prompts) > 5 {
+		prompts = prompts[len(prompts)-5:]
+	}
+	resp["jsonl"] = newest
+	resp["session"] = strings.TrimSuffix(filepath.Base(newest), ".jsonl")
+	resp["updated"] = newestT.UTC().Format(time.RFC3339)
+	resp["turns"] = turns
+	resp["tool_uses"] = tools
+	resp["recent_prompts"] = prompts
+	resp["last_said"] = lastAsst
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 // ── NVIM — the editor seat, over msgpack-rpc WITHOUT a msgpack codec ─────────
@@ -4816,7 +4917,8 @@ func main() {
 	mux.HandleFunc("/claim", c.handleClaim)             // an agent leases a tab (verify/falsify: is anyone using it?)
 	mux.HandleFunc("/dedup", c.handleDedup)             // same-URL duplicates; close the unclaimed ones
 	mux.HandleFunc("/manifest", c.handleManifest) // durable tab manifest: how-many/what/where/who/why/when
-	mux.HandleFunc("/tmuxpane", c.handleTmuxPane) // a tmux pane's visible text — the agents' surface frame
+	mux.HandleFunc("/tmuxpane", c.handleTmuxPane)
+	mux.HandleFunc("/tmuxsummary", c.handleTmuxSummary) // a tmux pane's visible text — the agents' surface frame
 	mux.HandleFunc("/tmuxsend", c.handleTmuxSend) // the tmux seat's CONTROL verb (seen ⇒ controllable)
 	mux.HandleFunc("/nvimbuf", c.handleNvimBuf)   // an nvim buffer's lines — the editor seat's frame
 	mux.HandleFunc("/nvimopen", c.handleNvimOpen) // the editor seat's CONTROL verb (:buffer N)
