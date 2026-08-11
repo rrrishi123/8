@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Matrix } from './Matrix';
 import { useLocal } from './Dock';
 
@@ -39,6 +39,20 @@ export function Instruments() {
   const cycle = (it: WorkItem) => fetch(`${BASE}/work`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: it.id, status: NEXT[it.status] || 'todo' }) }).then(refresh).catch(() => {});
   const reprio = (it: WorkItem, d: number) =>
     fetch(`${BASE}/work`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: it.id, prio: (it.prio || 0) + d }) }).then(refresh).catch(() => {});
+  const dragId = useRef<number | null>(null);
+  // DRAG-DROP reorder: drop the dragged todo before the target, then reassign
+  // descending prios across all todos so the visual order sticks in the picker.
+  const dropOn = (target: WorkItem) => {
+    const src = dragId.current; dragId.current = null;
+    if (!src || src === target.id || target.status !== 'todo') return;
+    const ids = ordered.filter((w) => w.status === 'todo').map((t) => t.id).filter((id) => id !== src);
+    const ti = ids.indexOf(target.id);
+    ids.splice(ti < 0 ? ids.length : ti, 0, src);
+    Promise.all(ids.map((id, i) => fetch(`${BASE}/work`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, prio: ids.length - i }) }))).then(refresh).catch(() => {});
+  };
+  const [playlist, setPlaylist] = useState(false);
+  useEffect(() => { fetch(`${BASE}/work/playlist`).then((r) => r.json()).then((j) => setPlaylist(!!j.playlist)).catch(() => {}); }, []);
+  const togglePlaylist = () => fetch(`${BASE}/work/playlist?on=${playlist ? 0 : 1}`).then((r) => r.json()).then((j) => { setPlaylist(!!j.playlist); refresh(); }).catch(() => {});
   // ORDER the queue the way the PICKER sees it: todos by prio desc then id;
   // done/doing keep their place after. The operator's ↑↓ move the queue visibly.
   const ordered = [...work].sort((a, b) => {
@@ -65,14 +79,22 @@ export function Instruments() {
       )}
       {open === 'work' && (
         <div className="inst-work">
-          <div className="inst-h">work · {openCount} open · ↑↓ to reorder the queue</div>
+          <div className="inst-h">
+            work · {openCount} open · drag to reorder
+            <button className={`work-play${playlist ? ' on' : ''}`} title={playlist ? 'playlist ON — the queue runs itself, one by one' : '▶ run all: pick→do→done→pick, hands-free'}
+              onClick={togglePlaylist}>{playlist ? '⏸ playing' : '▶ run all'}</button>
+          </div>
           {ordered.map((it) => (
-            <div key={it.id} className={`work-row ${it.status}`}>
-              <button className="work-dot" title={`${it.status} → ${NEXT[it.status]}`} onClick={() => cycle(it)}>{it.status === 'todo' ? '○' : it.status === 'doing' ? '◐' : '●'}</button>
-              <span className="work-text" title={`${it.by} · ${it.ts}${it.prio ? ' · prio ' + it.prio : ''}`}>{it.text}</span>
+            <div key={it.id} className={`work-row ${it.status}`}
+              draggable={it.status === 'todo'}
+              onDragStart={() => { dragId.current = it.id; }}
+              onDragOver={(e) => { if (it.status === 'todo') e.preventDefault(); }}
+              onDrop={() => dropOn(it)}>
+              <button className="work-dot" title={`${it.status} → ${NEXT[it.status]}`} onClick={() => cycle(it)}>{it.status === 'todo' ? '•' : it.status === 'doing' ? '◐' : '✓'}</button>
+              <span className="work-text" title={`#${it.id} · ${it.by} · ${it.ts}${it.prio ? ' · prio ' + it.prio : ''}`}>{it.text}</span>
               {it.status === 'todo' && (
                 <span className="work-prio">
-                  <button title="raise priority (picked sooner)" onClick={() => reprio(it, 1)}>▲</button>
+                  <button title="raise priority" onClick={() => reprio(it, 1)}>▲</button>
                   <button title="lower priority" onClick={() => reprio(it, -1)}>▼</button>
                 </span>
               )}

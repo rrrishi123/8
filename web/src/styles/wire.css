@@ -547,3 +547,9 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .work-prio { display: inline-flex; flex-direction: column; margin-left: 4px; }
 .work-prio button { background: none; border: none; color: #6a7280; cursor: pointer; font-size: 7px; line-height: 1; padding: 0 2px; }
 .work-prio button:hover { color: #91a7ff; }
+
+/* playlist + drag reorder (2026-08-11) */
+.work-play { float: right; background: #0b1f14; border: 1px solid #2f6b47; color: #69db7c; font-size: 8.5px; padding: 1px 6px; border-radius: 8px; cursor: pointer; }
+.work-play.on { background: #201b0b; border-color: #b8901f; color: #ffd43b; }
+.work-row[draggable="true"] { cursor: grab; }
+.work-row.todo:hover { background: #0f1320; }

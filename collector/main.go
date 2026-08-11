@@ -2421,6 +2421,48 @@ type workItem struct {
 
 func workFile() string { return os.ExpandEnv("$HOME/.8/work.json") }
 
+// PLAYLIST — a persisted flag: when on, completing a task auto-pulls the next
+// unblocked todo and summons it (run the queue hands-free, like a playlist).
+func playlistFile() string { return os.ExpandEnv("$HOME/.8/playlist.on") }
+func playlistOn() bool     { _, err := os.Stat(playlistFile()); return err == nil }
+
+func (c *collector) handlePlaylist(w http.ResponseWriter, r *http.Request) {
+	if v := r.URL.Query().Get("on"); v != "" {
+		os.MkdirAll(os.ExpandEnv("$HOME/.8"), 0o755)
+		if v == "1" {
+			os.WriteFile(playlistFile(), []byte("on"), 0o644)
+			// starting the playlist: pull the first track now
+			var items []workItem
+			if b, e := os.ReadFile(workFile()); e == nil {
+				json.Unmarshal(b, &items)
+			}
+			if !anyDoing(items) {
+				if idx := pickNext(items); idx >= 0 {
+					items[idx].Status = "doing"
+					items[idx].TS = time.Now().UTC().Format(time.RFC3339)
+					if b, e := json.MarshalIndent(items, "", " "); e == nil {
+						os.WriteFile(workFile(), b, 0o644)
+					}
+					c.summon(items[idx], "▶ playlist started")
+				}
+			}
+		} else {
+			os.Remove(playlistFile())
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"playlist":%v}`, playlistOn())
+}
+
+func anyDoing(items []workItem) bool {
+	for _, it := range items {
+		if it.Status == "doing" {
+			return true
+		}
+	}
+	return false
+}
+
 // pickNext — the QUEUE PICKER (a CALL over the plan): the next UNBLOCKED todo
 // (all deps done), ordered by prio desc then id asc. Returns index or -1. This
 // is "get pending items one by one" — a worker loops pick→do→done→pick.
@@ -2619,9 +2661,22 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			// This is the plan driving the agent, not Anthropic's task tool: it lives
 			// in the witness, on the feed, and prompts through the real tmux seat.
 			if p.Status == "done" {
-				for _, idx := range advanceUnblocked(items, now) {
+				advanced := advanceUnblocked(items, now)
+				for _, idx := range advanced {
 					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":"doing"}}}`, items[idx].ID))
 					c.summon(items[idx], fmt.Sprintf("auto-advanced: dep #%d done", p.ID))
+				}
+				// PLAYLIST MODE: run the queue one-by-one like a playlist. When ON and
+				// nothing dep-advanced, pull the NEXT unblocked todo (prio order) and
+				// summon it — pick→do→done→pick, hands-free. New tasks added mid-play
+				// just join the queue and get picked in turn.
+				if len(advanced) == 0 && playlistOn() {
+					if idx := pickNext(items); idx >= 0 {
+						items[idx].Status = "doing"
+						items[idx].TS = now
+						c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":"doing"}}}`, items[idx].ID))
+						c.summon(items[idx], "▶ playlist: next in queue")
+					}
 				}
 			}
 		}
@@ -4484,7 +4539,8 @@ func main() {
 	mux.HandleFunc("/db", c.handleDB)                     // project the scattered stores into ~/.8/eight.db for DBeaver
 	mux.HandleFunc("/stopwatch", c.handleStopwatch)     // experiri: the witness's staleness made readable
 	mux.HandleFunc("/work", c.handleWork)
-	mux.HandleFunc("/work/next", c.handleWorkNext)     // the queue PICKER — next unblocked todo, one by one               // the shared task surface — operator writes, agents check FIRST
+	mux.HandleFunc("/work/next", c.handleWorkNext)
+	mux.HandleFunc("/work/playlist", c.handlePlaylist) // run the queue hands-free, one-by-one like a playlist     // the queue PICKER — next unblocked todo, one by one               // the shared task surface — operator writes, agents check FIRST
 
 	allow := map[string]bool{}
 	for _, o := range strings.Split(*origins, ",") {
