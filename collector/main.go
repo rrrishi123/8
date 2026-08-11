@@ -1112,13 +1112,27 @@ func (c *collector) handleProvenance(w http.ResponseWriter, r *http.Request) {
 	copy(led, c.ledger)
 	c.lmu.Unlock()
 
+	// #29b: an actor is AUTHENTICATED if it holds a LIVE lease (a claimed tab,
+	// fresh <90s). The witness does NOT reject a spoofed actor (open model) — it
+	// SHOWS the trust bit, so a declared-but-unleased "rishi-the-operator" is
+	// visibly authenticated:false. Attributable AND (where leased) authenticated.
+	leased := map[string]bool{}
+	c.tmu.Lock()
+	for _, rec := range c.manifest {
+		if rec != nil && rec.ClaimedBy != "" && claimLive(rec) {
+			leased[rec.ClaimedBy] = true
+		}
+	}
+	c.tmu.Unlock()
+
 	only := r.URL.Query().Get("actor")
 	type actorFlow struct {
-		Actor    string         `json:"actor"` // "" = undeclared
-		Acts     int            `json:"acts"`
-		Atoms    map[string]int `json:"atoms"`    // call | channel → count
-		Surfaces map[string]int `json:"surfaces"` // session/tab → count
-		Methods  map[string]int `json:"methods"`  // the operations they fired
+		Actor         string         `json:"actor"`         // "" = undeclared
+		Authenticated bool           `json:"authenticated"` // #29b: holds a live lease (not just declared)
+		Acts          int            `json:"acts"`
+		Atoms         map[string]int `json:"atoms"`    // call | channel → count
+		Surfaces      map[string]int `json:"surfaces"` // session/tab/host → count
+		Methods       map[string]int `json:"methods"`  // the operations they fired
 	}
 	flows := map[string]*actorFlow{}
 	declared, undeclared := 0, 0
@@ -1133,13 +1147,18 @@ func (c *collector) handleProvenance(w http.ResponseWriter, r *http.Request) {
 		}
 		f := flows[e.Actor]
 		if f == nil {
-			f = &actorFlow{Actor: e.Actor, Atoms: map[string]int{}, Surfaces: map[string]int{}, Methods: map[string]int{}}
+			f = &actorFlow{Actor: e.Actor, Authenticated: leased[e.Actor], Atoms: map[string]int{}, Surfaces: map[string]int{}, Methods: map[string]int{}}
 			flows[e.Actor] = f
 		}
 		f.Acts++
 		f.Atoms[e.Physics]++
-		if e.Session != "" {
+		switch {
+		case e.Session != "":
 			f.Surfaces[e.Session]++
+		case e.URL != "": // #29b: a CALL atom's surface is its URL host — fold it in so actor→atom→surface is complete for BOTH atoms
+			if u, err := url.Parse(e.URL); err == nil && u.Host != "" {
+				f.Surfaces[u.Host]++
+			}
 		}
 		if e.Method != "" {
 			f.Methods[e.Method]++
