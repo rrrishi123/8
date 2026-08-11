@@ -2409,35 +2409,117 @@ func (c *collector) handleDB(w http.ResponseWriter, r *http.Request) {
 // FROM the witness before starting their own (the queue an agent checks FIRST).
 // Persisted ~/.8/work.json; every add/status change is published to the feed.
 type workItem struct {
-	ID     int64   `json:"id"`
-	Text   string  `json:"text"`
-	Status string  `json:"status"` // todo → doing → done
-	By     string  `json:"by"`
-	TS     string  `json:"ts"`
-	Deps   []int64 `json:"deps,omitempty"` // ids this task waits on — the PLAN's edges (a DAG)
+	ID       int64   `json:"id"`
+	Text     string  `json:"text"`
+	Status   string  `json:"status"` // todo → doing → done
+	By       string  `json:"by"`
+	TS       string  `json:"ts"`
+	Deps     []int64 `json:"deps,omitempty"`     // ids this task waits on — the PLAN's edges (a DAG)
+	Prio     int64   `json:"prio,omitempty"`     // higher = picked sooner; the operator/agent adjusts the queue
+	Assignee string  `json:"assignee,omitempty"` // a specific tmux pane (e.g. %13) — assign work to another Claude's pane
 }
 
 func workFile() string { return os.ExpandEnv("$HOME/.8/work.json") }
 
-// summon delivers a task INTO the worker's tmux pane — the plan prompting the
-// agent. Used both by a manual flip-to-doing and by the auto-advance.
-func (c *collector) summon(item workItem, reason string) {
-	wb, err := os.ReadFile(os.ExpandEnv("$HOME/.8/worker.json"))
-	if err != nil {
-		return
+// pickNext — the QUEUE PICKER (a CALL over the plan): the next UNBLOCKED todo
+// (all deps done), ordered by prio desc then id asc. Returns index or -1. This
+// is "get pending items one by one" — a worker loops pick→do→done→pick.
+func pickNext(items []workItem) int {
+	done := map[int64]bool{}
+	for _, it := range items {
+		if it.Status == "done" {
+			done[it.ID] = true
+		}
 	}
-	var wk struct{ Pane, Agent string }
-	if json.Unmarshal(wb, &wk) != nil || wk.Pane == "" {
-		return
+	best := -1
+	for i := range items {
+		if items[i].Status != "todo" {
+			continue
+		}
+		blocked := false
+		for _, d := range items[i].Deps {
+			if !done[d] {
+				blocked = true
+				break
+			}
+		}
+		if blocked {
+			continue
+		}
+		if best == -1 || items[i].Prio > items[best].Prio ||
+			(items[i].Prio == items[best].Prio && items[i].ID < items[best].ID) {
+			best = i
+		}
+	}
+	return best
+}
+
+// summon delivers a task INTO a tmux pane — the plan prompting the agent. The
+// task's own Assignee pane wins (assign work to ANOTHER Claude's pane); else the
+// default worker.json. Used by manual flip, auto-advance, and the picker.
+func (c *collector) summon(item workItem, reason string) {
+	pane := item.Assignee
+	if pane == "" {
+		if wb, err := os.ReadFile(os.ExpandEnv("$HOME/.8/worker.json")); err == nil {
+			var wk struct{ Pane, Agent string }
+			if json.Unmarshal(wb, &wk) == nil {
+				pane = wk.Pane
+			}
+		}
 	}
 	tb := tmuxBin()
-	if tb == "" {
+	if pane == "" || tb == "" {
 		return
 	}
 	msg := fmt.Sprintf("[8-plan #%d -> doing] %s -- %s; the plan: curl -s 127.0.0.1:7070/work", item.ID, item.Text, reason)
-	exec.Command(tb, "send-keys", "-t", wk.Pane, "-l", msg).Run()
-	exec.Command(tb, "send-keys", "-t", wk.Pane, "Enter").Run()
-	c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.summon","params":{"id":%d,"pane":%q,"reason":%q}}}`, item.ID, wk.Pane, reason))
+	exec.Command(tb, "send-keys", "-t", pane, "-l", msg).Run()
+	exec.Command(tb, "send-keys", "-t", pane, "Enter").Run()
+	c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.summon","params":{"id":%d,"pane":%q,"reason":%q}}}`, item.ID, pane, reason))
+}
+
+// handleWorkNext — GET /work/next[?claim=<agent>&assignee=<pane>] returns the
+// next unblocked todo (the picker). With ?claim it flips that item to doing,
+// records who, optionally assigns a pane, and summons — so an idle worker pulls
+// its next task in one call. Without claim it just peeks.
+func (c *collector) handleWorkNext(w http.ResponseWriter, r *http.Request) {
+	c.tmu.Lock()
+	var items []workItem
+	if b, err := os.ReadFile(workFile()); err == nil {
+		json.Unmarshal(b, &items)
+	}
+	idx := pickNext(items)
+	claim := r.URL.Query().Get("claim")
+	var picked *workItem
+	if idx >= 0 {
+		if claim != "" {
+			items[idx].Status = "doing"
+			items[idx].By = claim
+			items[idx].TS = time.Now().UTC().Format(time.RFC3339)
+			if a := r.URL.Query().Get("assignee"); a != "" {
+				items[idx].Assignee = a
+			}
+			if b, e := json.MarshalIndent(items, "", " "); e == nil {
+				os.WriteFile(workFile(), b, 0o644)
+			}
+		}
+		it := items[idx]
+		picked = &it
+	}
+	c.tmu.Unlock()
+	if picked != nil && claim != "" {
+		c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.claim","params":{"id":%d,"by":%q}}}`, picked.ID, claim))
+		c.summon(*picked, "picked from the queue by "+claim)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"next": picked, "remaining_todo": func() int {
+		n := 0
+		for _, it := range items {
+			if it.Status == "todo" {
+				n++
+			}
+		}
+		return n
+	}()})
 }
 
 // advancePlan — THE HABIT LOOP: after a task completes, promote every todo whose
@@ -2480,15 +2562,17 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPost {
 		var p struct {
-			ID     int64   `json:"id"`
-			Text   string  `json:"text"`
-			Status string  `json:"status"`
-			By     string  `json:"by"`
-			Deps   []int64 `json:"deps"`
+			ID       int64   `json:"id"`
+			Text     string  `json:"text"`
+			Status   string  `json:"status"`
+			By       string  `json:"by"`
+			Deps     []int64 `json:"deps"`
+			Prio     *int64  `json:"prio"`     // pointer: present-but-0 is a real reorder
+			Assignee string  `json:"assignee"` // route this task to a specific tmux pane
 		}
 		json.NewDecoder(r.Body).Decode(&p)
 		now := time.Now().UTC().Format(time.RFC3339)
-		if p.Text != "" && p.ID == 0 { // add (optionally with plan-edges: deps)
+		if p.Text != "" && p.ID == 0 { // add (optionally with plan-edges: deps, prio, assignee)
 			var max int64
 			for _, it := range items {
 				if it.ID > max {
@@ -2498,8 +2582,24 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			if p.By == "" {
 				p.By = "operator"
 			}
-			items = append(items, workItem{ID: max + 1, Text: p.Text, Status: "todo", By: p.By, TS: now, Deps: p.Deps})
+			ni := workItem{ID: max + 1, Text: p.Text, Status: "todo", By: p.By, TS: now, Deps: p.Deps, Assignee: p.Assignee}
+			if p.Prio != nil {
+				ni.Prio = *p.Prio
+			}
+			items = append(items, ni)
 			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.add","params":{"text":%q,"by":%q,"deps":%v}}}`, p.Text, p.By, p.Deps))
+		} else if p.ID > 0 && (p.Prio != nil || p.Assignee != "") && p.Status == "" { // ADJUST THE QUEUE (reorder / reassign) — operator or agent
+			for i := range items {
+				if items[i].ID == p.ID {
+					if p.Prio != nil {
+						items[i].Prio = *p.Prio
+					}
+					if p.Assignee != "" {
+						items[i].Assignee = p.Assignee
+					}
+					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.reorder","params":{"id":%d,"prio":%d,"assignee":%q}}}`, items[i].ID, items[i].Prio, items[i].Assignee))
+				}
+			}
 		} else if p.ID > 0 && p.Status != "" { // status change
 			for i := range items {
 				if items[i].ID == p.ID {
@@ -4383,7 +4483,8 @@ func main() {
 	mux.HandleFunc("/daemonsignal", c.handleDaemonSignal) // the daemons seat's CONTROL verb (watchdog protected)
 	mux.HandleFunc("/db", c.handleDB)                     // project the scattered stores into ~/.8/eight.db for DBeaver
 	mux.HandleFunc("/stopwatch", c.handleStopwatch)     // experiri: the witness's staleness made readable
-	mux.HandleFunc("/work", c.handleWork)               // the shared task surface — operator writes, agents check FIRST
+	mux.HandleFunc("/work", c.handleWork)
+	mux.HandleFunc("/work/next", c.handleWorkNext)     // the queue PICKER — next unblocked todo, one by one               // the shared task surface — operator writes, agents check FIRST
 
 	allow := map[string]bool{}
 	for _, o := range strings.Split(*origins, ",") {
