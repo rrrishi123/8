@@ -2515,7 +2515,23 @@ func (c *collector) summon(item workItem, reason string) {
 	}
 	msg := fmt.Sprintf("[8-plan #%d -> doing] %s -- %s; the plan: curl -s 127.0.0.1:7070/work", item.ID, item.Text, reason)
 	exec.Command(tb, "send-keys", "-t", pane, "-l", msg).Run()
-	exec.Command(tb, "send-keys", "-t", pane, "Enter").Run()
+	// SETTLE BEFORE ENTER (2026-08-11): send-keys returns once keys are QUEUED,
+	// not once the TUI has INGESTED them. For a long paste the Enter beat the
+	// ingest and submitted empty/partial — then the text landed and just sat in
+	// the prompt (#16 never fired). Fix: wait for the TUI to absorb the paste
+	// (delay scales with length), THEN Enter; a backup Enter after another beat
+	// catches a still-settling ingest. A second Enter is safe — Claude Code
+	// ignores an empty submit, so it can't double-post.
+	settle := 700*time.Millisecond + time.Duration(len(msg)/4)*time.Millisecond
+	if settle > 4000*time.Millisecond {
+		settle = 4000 * time.Millisecond
+	}
+	go func() {
+		time.Sleep(settle)
+		exec.Command(tb, "send-keys", "-t", pane, "Enter").Run()
+		time.Sleep(500 * time.Millisecond)
+		exec.Command(tb, "send-keys", "-t", pane, "Enter").Run()
+	}()
 	c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.summon","params":{"id":%d,"pane":%q,"reason":%q}}}`, item.ID, pane, reason))
 }
 
