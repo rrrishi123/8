@@ -486,7 +486,7 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .inst-sw { width: 100%; border-radius: 4px; display: block; min-height: 60px; background: #000; }
 .inst-true { color: #39ff14; font-size: 15px; font-weight: 700; margin-top: 4px; letter-spacing: .05em; font-family: ui-monospace, Menlo, monospace; }
 .inst-note { color: #7a6a4f; font-size: 9px; margin-top: 3px; }
-.inst-work { border: 1px solid #4c6ef5; background: #0c0f1a; border-radius: 6px; padding: 8px; max-height: 46vh; overflow-y: auto; }
+.inst-work { border: 1px solid #4c6ef5; background: #0c0f1a; border-radius: 6px; padding: 8px; max-height: 60vh; overflow-y: auto; overscroll-behavior: contain; }
 .inst-h { color: #91a7ff; font-size: 11px; font-weight: 700; margin-bottom: 6px; }
 .work-row { display: flex; gap: 6px; align-items: flex-start; margin: 3px 0; }
 .work-row.done .work-text { opacity: .35; text-decoration: line-through; }
@@ -514,7 +514,7 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .vp-url:hover { max-width: 80vw; overflow: visible; background: #0b0f14; position: relative; z-index: 20; padding-right: 6px; }
 
 /* surfaces × senses matrix — the map of the unfound (work #6) */
-.inst-matrix { border: 1px solid #5c5f66; background: #0c0e12; border-radius: 6px; padding: 8px; margin-top: 8px; }
+.inst-matrix { border: 1px solid #5c5f66; background: #0c0e12; border-radius: 6px; padding: 8px; margin-top: 8px; max-height: 60vh; overflow: auto; }
 .mx-tbl { border-collapse: collapse; font-size: 9px; width: 100%; }
 .mx-tbl th { color: #8a8f98; font-weight: 500; padding: 1px 3px; text-align: center; transform: rotate(-0deg); font-size: 8px; }
 .mx-kind { color: #c5cbe3; white-space: nowrap; padding-right: 6px; font-size: 8.5px; }

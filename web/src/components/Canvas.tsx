@@ -329,7 +329,12 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   useEffect(() => {
     const el = wrap.current; if (!el) return;
     const onWheel = (e: WheelEvent) => {
-      if ((e.target as HTMLElement).closest('.vp-interactive')) return;
+      // OVERLAY WIDGETS scroll NATIVELY — the canvas must not steal their wheel.
+      // (2026-08-11: scrolling the work/matrix widget panned the MAP instead of
+      // the list, because this handler preventDefault'd everything but the live
+      // image. Now any floating panel — instruments, feed, minimap — keeps its
+      // own scroll; only the world (the "actual thing loaded") pans/zooms.)
+      if ((e.target as HTMLElement).closest('.vp-interactive, .instruments, .wire-log, .rec-bar, .minimap, .persp-bar')) return;
       e.preventDefault();
       if (e.ctrlKey || e.metaKey) {
         const r = el.getBoundingClientRect(); const mx = e.clientX - r.left, my = e.clientY - r.top;
