@@ -2637,6 +2637,13 @@ type workItem struct {
 
 func workFile() string { return os.ExpandEnv("$HOME/.8/work.json") }
 
+func firstN(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
 // PLAYLIST — a persisted flag: when on, completing a task auto-pulls the next
 // unblocked todo and summons it (run the queue hands-free, like a playlist).
 func playlistFile() string { return os.ExpandEnv("$HOME/.8/playlist.on") }
@@ -2893,6 +2900,33 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			// This is the plan driving the agent, not Anthropic's task tool: it lives
 			// in the witness, on the feed, and prompts through the real tmux seat.
 			if p.Status == "done" {
+				// AUTO-PROPAGATION (2026-08-11): a completed claim is not DONE until it
+				// has spawned its own falsification — the queue must not drain to empty
+				// (Rishi's point). Completing a SUBSTANTIVE task auto-seeds one bounded
+				// "[verify]" follow-up. Bounded: a verify/guard/finding task does NOT
+				// spawn another (prefix guard), so each real task yields exactly one
+				// verification, never a flood or a loop.
+				var justDone *workItem
+				for i := range items {
+					if items[i].ID == p.ID {
+						justDone = &items[i]
+					}
+				}
+				if justDone != nil {
+					t := justDone.Text
+					meta := strings.HasPrefix(t, "[verify") || strings.HasPrefix(t, "GUARD") || strings.HasPrefix(t, "FINDING") || strings.HasPrefix(t, "AUDIT")
+					if !meta {
+						var max int64
+						for _, it := range items {
+							if it.ID > max {
+								max = it.ID
+							}
+						}
+						vtext := fmt.Sprintf("[verify #%d] falsify/verify that '%s' actually holds — independently, with evidence; find where it breaks.", justDone.ID, firstN(t, 90))
+						items = append(items, workItem{ID: max + 1, Text: vtext, Status: "todo", By: "auto", TS: now, Prio: 2})
+						c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.spawn","params":{"of":%d,"verify":%d}}}`, justDone.ID, max+1))
+					}
+				}
 				advanced := advanceUnblocked(items, now)
 				for _, idx := range advanced {
 					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":"doing"}}}`, items[idx].ID))
