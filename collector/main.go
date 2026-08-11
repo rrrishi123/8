@@ -94,6 +94,9 @@ type collector struct {
 	wmu     sync.Mutex        // #12 change-detector: a tab you WATCH pushes tab.changed on DOM shift
 	watched map[string]string // ctx -> last DOM signature (opt-in; only watched tabs are read)
 
+	xmu       sync.Mutex // #13 cross-substrate timeline: every seat's .changed in one line
+	xtimeline []xEvent
+
 	bmu     sync.Mutex
 	benches []benchRec // benchmark batch results — clubbed + filterable on 8
 	bseq    int64
@@ -1037,6 +1040,19 @@ func (c *collector) streamCDP(w http.ResponseWriter, r *http.Request, b *broker,
 // publish fans one frame to every /feed subscriber, non-blocking so a slow
 // consumer never stalls the wire.
 func (c *collector) publish(frame string) {
+	// #13 CROSS-SUBSTRATE TIMELINE: every `<seat>.changed` push (tmux/nvim/daemons/
+	// tab) is one substrate's tick in ONE interleaved, replayable line — a human
+	// types in nvim, a tmux agent runs a command, a tab navigates, all one sequence.
+	// Capture them (ts-stamped) into a bounded ring; /timeline serves it; two
+	// captures diff to show "what an agent did differently this run."
+	if strings.Contains(frame, ".changed") {
+		c.xmu.Lock()
+		c.xtimeline = append(c.xtimeline, xEvent{TS: time.Now().UTC().Format("15:04:05.000"), Frame: frame})
+		if len(c.xtimeline) > 800 {
+			c.xtimeline = c.xtimeline[len(c.xtimeline)-800:]
+		}
+		c.xmu.Unlock()
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, ch := range c.subs {
@@ -1045,6 +1061,41 @@ func (c *collector) publish(frame string) {
 		default:
 		}
 	}
+}
+
+type xEvent struct {
+	TS    string `json:"ts"`
+	Frame string `json:"frame"`
+}
+
+// handleTimeline — #13: the interleaved cross-substrate timeline (tmux · nvim ·
+// daemons · browser, one line). GET /timeline[?n=100&since=HH:MM:SS]. Two
+// captures compared client-side = the diff of "what changed between runs."
+func (c *collector) handleTimeline(w http.ResponseWriter, r *http.Request) {
+	c.xmu.Lock()
+	out := make([]xEvent, len(c.xtimeline))
+	copy(out, c.xtimeline)
+	c.xmu.Unlock()
+	if since := r.URL.Query().Get("since"); since != "" {
+		f := out[:0]
+		for _, e := range out {
+			if e.TS >= since {
+				f = append(f, e)
+			}
+		}
+		out = f
+	}
+	// distinct substrates present — the "cross" in cross-substrate, proven
+	kinds := map[string]int{}
+	for _, e := range out {
+		for _, k := range []string{"tmux", "nvim", "daemons", "tab"} {
+			if strings.Contains(e.Frame, `"`+k+`.changed"`) {
+				kinds[k]++
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"timeline": out, "substrates": kinds, "count": len(out)})
 }
 
 func (c *collector) subscribe() (int, chan string) {
@@ -4742,7 +4793,8 @@ func main() {
 	mux.HandleFunc("/work", c.handleWork)
 	mux.HandleFunc("/work/next", c.handleWorkNext)
 	mux.HandleFunc("/work/playlist", c.handlePlaylist)
-	mux.HandleFunc("/watch", c.handleWatch)               // #12 change-detector: push tab.changed for a watched tab // run the queue hands-free, one-by-one like a playlist     // the queue PICKER — next unblocked todo, one by one               // the shared task surface — operator writes, agents check FIRST
+	mux.HandleFunc("/watch", c.handleWatch)
+	mux.HandleFunc("/timeline", c.handleTimeline)       // #13 the interleaved cross-substrate timeline               // #12 change-detector: push tab.changed for a watched tab // run the queue hands-free, one-by-one like a playlist     // the queue PICKER — next unblocked todo, one by one               // the shared task surface — operator writes, agents check FIRST
 
 	allow := map[string]bool{}
 	for _, o := range strings.Split(*origins, ",") {
