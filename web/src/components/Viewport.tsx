@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { onSeatChange } from '../lib/feed';
 
 const BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
 
@@ -75,8 +76,16 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
         onAspect?.(Math.max(0.6, Math.min(2.4, (cols * 5.8) / (lines * 12.2))));
       }).catch(() => {});
     pull();
-    const iv = setInterval(pull, 2000);
-    return () => { alive = false; clearInterval(iv); };
+    // #20 PUSH over POLL: refresh the instant the collector pushes THIS unit's
+    // <seat>.changed, and keep only a slow 10s fallback poll (was 2s). The fast
+    // path is now the CHANNEL atom, not a client timer.
+    const myKind = isTmux ? 'tmux' : session === 'nvim' ? 'nvim' : 'daemons';
+    const myUnit = isTmux ? fixedCtx : session === 'nvim' ? fixedCtx.replace(/^nvim-/, '') : fixedCtx.replace(/^d-/, '');
+    const off = onSeatChange((kind, unit) => {
+      if (kind === myKind && (unit === myUnit || unit === '')) pull();
+    });
+    const iv = setInterval(pull, 10000);
+    return () => { alive = false; clearInterval(iv); off(); };
   }, [isText, isTmux, fixedCtx, visible]); // eslint-disable-line react-hooks/exhaustive-deps
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [ctx, setCtx] = useState(fixedCtx || '');

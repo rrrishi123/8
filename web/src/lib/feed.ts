@@ -49,6 +49,38 @@ export function mapFrame(ev: FeedEvent): CaptureRow | null {
   return { id: ++seq, origin, physics, session: ev.session, method, detail: detail.slice(0, 200), at: Date.now(), raw: f.params ?? f, tab, shot, ledgerId, latencyMs };
 }
 
+// #20 PUSH-DRIVEN REFRESH — ONE shared /feed subscription fans every
+// <seat>.changed event out to the text cards, so they refresh on the collector's
+// PUSH (the CHANNEL atom, #11/#12) instead of each polling every 2s. This is
+// "push replaces poll" enacted at the CLIENT, not just the collector.
+type ChangeCb = (kind: string, unit: string) => void;
+let changeSubs: ChangeCb[] = [];
+let changeES: EventSource | null = null;
+function ensureChangeFeed() {
+  if (changeES) return;
+  changeES = new EventSource(feedUrl);
+  changeES.onmessage = (e) => {
+    try {
+      const ev = JSON.parse(e.data);
+      const m: string | undefined = ev?.frame?.method;
+      if (typeof m === 'string' && m.endsWith('.changed')) {
+        const kind = m.slice(0, -'.changed'.length); // tmux | nvim | daemons | tab
+        const p = ev.frame.params || {};
+        const unit = p.pane || (p.buf != null ? String(p.buf) : '') || p.context || '';
+        for (const cb of changeSubs) cb(kind, unit);
+      }
+    } catch { /* keepalive / non-json */ }
+  };
+}
+export function onSeatChange(cb: ChangeCb): () => void {
+  ensureChangeFeed();
+  changeSubs.push(cb);
+  return () => {
+    changeSubs = changeSubs.filter((f) => f !== cb);
+    if (!changeSubs.length && changeES) { changeES.close(); changeES = null; }
+  };
+}
+
 // Subscribe to the collector's /feed. Returns an unsubscribe fn.
 export function openFeed(onRow: (row: CaptureRow) => void, onState: (live: boolean) => void): () => void {
   const es = new EventSource(feedUrl);
