@@ -10,9 +10,9 @@ type Seeing = 'pixels' | 'channel' | 'request';
 // live stream stops being a mirror and becomes hands: a click on the <img> maps
 // to the target's pixels and fires /act (tap), keystrokes fire /act (type). Same
 // surface drives a Firefox tab (BiDi) OR a real device (Appium) — one wire.
-export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAspect, hud, visible, live, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle, hiRes }:
+export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAspect, hud, visible, live, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle, hiRes, parked }:
   { session: string | null; title?: string; url?: string; context?: string;
-    onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; live?: boolean; fps?: number; act?: boolean; pinned?: boolean; onPin?: () => void; lodW?: number; fx?: boolean; fxNeedle?: string; hiRes?: boolean }) {
+    onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; live?: boolean; fps?: number; act?: boolean; pinned?: boolean; onPin?: () => void; lodW?: number; fx?: boolean; fxNeedle?: string; hiRes?: boolean; parked?: boolean }) {
   // MANIFEST: the card's identity — who opened it, why, when — matched by URL
   // (manifest keys by chrome bcid, cards by BiDi ctx, so URL is the join key).
   const [man, setMan] = useState<{ opened_by?: string; why?: string; first_seen?: string } | null>(null);
@@ -397,7 +397,14 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
           </select>
         )}
       </div>
-      {isText
+      {parked
+        ? <div className="vp-parked">
+            <div className="vp-parked-badge">🅿 PARKED</div>
+            <div className="vp-parked-url">{(cardUrl || '').replace(/^https?:\/\//, '')}</div>
+            <button className="vp-parked-wake" onClick={() => fetch(`${BASE}/wake?url=${encodeURIComponent(cardUrl || '')}`)}>⏻ wake — reload &amp; drive</button>
+            <div className="vp-parked-note">discarded from RAM (fair aperture) · seen, not yet drivable</div>
+          </div>
+        : isText
         ? <pre className="vp-text vp-tmux">{tmuxText || 'reading…'}</pre>
         : seeing === 'pixels'
         ? ((frameSrc || useFx)

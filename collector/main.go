@@ -2538,26 +2538,56 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 // {ctx, agent} stamps claimed_by + claim_at=now; re-post = heartbeat. This makes
 // "no other agent is using this tab" FALSIFIABLE (check for a live claim) instead
 // of assumed — the same law the other Claude found the channel path violating.
+// handlePark — manually park (discard) a tab: the aperture's on-demand sibling
+// and the symmetric partner of /wake. GET /park?url=<substr>. Runs through the
+// collector's OWN execChrome (whose marionette window stays on the cockpit), and
+// REFUSES the selected tab and the :8088 cockpit — so it never wedges the session
+// the way a naive discard through the shared driver does (learned 2026-08-10).
+func (c *collector) handlePark(w http.ResponseWriter, r *http.Request) {
+	sub := r.URL.Query().Get("url")
+	if sub == "" {
+		http.Error(w, `{"error":"need url=<substr>"}`, http.StatusBadRequest)
+		return
+	}
+	script := `const cb=arguments[arguments.length-1];const want=` + strconv.Quote(sub) + `;try{for(let w of Services.wm.getEnumerator("navigator:browser")){let gB=w.gBrowser;for(let t of Array.from(gB.tabs)){let b=t.linkedBrowser,u=b.currentURI?b.currentURI.spec:"";if(u.includes(want)&&!u.includes("8088")&&t!==gB.selectedTab){let id=String(b.browsingContext?b.browsingContext.id:"");gB.discardBrowser(t);cb("parked:"+id);return;}}}cb("none");}catch(e){cb("ERR:"+e);}`
+	out, err := c.execChrome(script)
+	if err != nil {
+		http.Error(w, `{"error":"park failed"}`, http.StatusBadGateway)
+		return
+	}
+	c.publish(fmt.Sprintf(`{"session":"fox","origin":"COLLECTOR","frame":{"method":"tab.park","params":{"url":%q,"result":%q}}}`, sub, strings.TrimSpace(out)))
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"parked":%q}`, strings.TrimSpace(out))
+}
+
 // handleWake — un-park a parked tab (#7): select it in chrome, which reloads the
 // discarded browser and gives it a BiDi context again → it becomes drivable. GET
 // /wake?bcid=<id>. The paired sense-change is visible: next enumerate shows it
 // with a real ctx and parked=false.
 func (c *collector) handleWake(w http.ResponseWriter, r *http.Request) {
 	bcid := r.URL.Query().Get("bcid")
-	if bcid == "" {
-		http.Error(w, `{"error":"need bcid"}`, http.StatusBadRequest)
+	url := r.URL.Query().Get("url")
+	if bcid == "" && url == "" {
+		http.Error(w, `{"error":"need bcid or url"}`, http.StatusBadRequest)
 		return
 	}
-	// select the tab whose linkedBrowser.browsingContext.id matches → un-parks it
-	script := `const cb=arguments[arguments.length-1];const want=` + strconv.Quote(bcid) + `;try{for(let w of Services.wm.getEnumerator("navigator:browser")){for(let t of w.gBrowser.tabs){let b=t.linkedBrowser;if(b.browsingContext&&String(b.browsingContext.id)===want){w.gBrowser.selectedTab=t;cb("woke:"+b.currentURI.spec);return;}}}cb("not-found");}catch(e){cb("ERR:"+e);}`
+	// A DISCARDED tab has NO browsingContext.id, so a parked tab must be woken by
+	// its stable URL, not bcid (2026-08-11). Match by bcid when given, else by URL
+	// substring; selecting the tab reloads the discarded browser → drivable again.
+	var script string
+	if bcid != "" {
+		script = `const cb=arguments[arguments.length-1];const want=` + strconv.Quote(bcid) + `;try{for(let w of Services.wm.getEnumerator("navigator:browser")){for(let t of w.gBrowser.tabs){let b=t.linkedBrowser;if(b.browsingContext&&String(b.browsingContext.id)===want){w.gBrowser.selectedTab=t;cb("woke:"+b.currentURI.spec);return;}}}cb("not-found");}catch(e){cb("ERR:"+e);}`
+	} else {
+		script = `const cb=arguments[arguments.length-1];const want=` + strconv.Quote(url) + `;try{for(let w of Services.wm.getEnumerator("navigator:browser")){for(let t of w.gBrowser.tabs){let b=t.linkedBrowser,u=b.currentURI?b.currentURI.spec:"";if(u.includes(want)){w.gBrowser.selectedTab=t;cb("woke:"+u);return;}}}cb("not-found");}catch(e){cb("ERR:"+e);}`
+	}
 	out, err := c.execChrome(script)
 	if err != nil {
 		http.Error(w, `{"error":"wake failed"}`, http.StatusBadGateway)
 		return
 	}
-	c.publish(fmt.Sprintf(`{"session":"fox","origin":"COLLECTOR","frame":{"method":"tab.wake","params":{"bcid":%q}}}`, bcid))
+	c.publish(fmt.Sprintf(`{"session":"fox","origin":"COLLECTOR","frame":{"method":"tab.wake","params":{"bcid":%q,"url":%q}}}`, bcid, url))
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"woke":%q,"result":%q}`, bcid, strings.TrimSpace(out))
+	fmt.Fprintf(w, `{"woke":%q,"result":%q}`, bcid+url, strings.TrimSpace(out))
 }
 
 // handleMatrix — the SURFACES × SENSES coverage matrix: the map of the unfound.
@@ -4339,6 +4369,7 @@ func main() {
 `)
 	})
 	mux.HandleFunc("/health", c.handleHealth)
+	mux.HandleFunc("/park", c.handlePark)               // manually park a tab (#7, symmetric with /wake)
 	mux.HandleFunc("/wake", c.handleWake)               // un-park a parked tab (#7 click-to-wake)
 	mux.HandleFunc("/matrix", c.handleMatrix)           // surfaces × senses coverage — the map of the unfound
 	mux.HandleFunc("/claim", c.handleClaim)             // an agent leases a tab (verify/falsify: is anyone using it?)

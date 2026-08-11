@@ -27,8 +27,8 @@ const SELF_ID = (() => {
 // Everything you do — driving a tab, ADDING a tab, RECORDING a case — happens IN
 // this canvas (pretext's whole point: it doesn't escape to another page).
 interface Seat { id: string; physics: string; hub: string; status: string; stream?: string }
-interface Tab { context: string; url: string; title?: string }
-interface Cell { key: string; session: string; context?: string; url?: string; title: string; device?: boolean }
+interface Tab { context: string; url: string; title?: string; parked?: string }
+interface Cell { key: string; session: string; context?: string; url?: string; title: string; device?: boolean; parked?: boolean }
 interface Stack { key: string; session: string; isBrowser: boolean; isCDP: boolean; label: string; cells: Cell[] }
 interface PaneRect { id: string; x: number; y: number; w: number; h: number; z?: number; node: ReactNode; gravity?: boolean }
 
@@ -197,7 +197,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
       // a card carries its NAME: browser tabs show their host; a tmux pane shows
       // its %id + location ("you are pane %5"); a daemon shows its name.
       const cells: Cell[] = (tabsBy[s.id] || []).map((tab) => ({
-        key: s.id + tab.context, session: s.id, context: tab.context, url: tab.url,
+        key: s.id + tab.context, session: s.id, context: tab.context, url: tab.url, parked: tab.parked === 'true',
         title: s.id === 'tmux' ? `${tab.context} · ${tab.url.replace('tmux://', '')}`
           : s.id === 'nvim' ? (tab.title || tab.context)
           : s.id === 'daemons' ? (tab.title || tab.context)
@@ -281,11 +281,15 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     const live = isFox ? inSet : (L.top && L.vis);
     // tmux panes are TEXT frames (capture-pane) — pennies, not compositor surfaces —
     // so every on-screen pane polls; the bounded-set economy is a pixels problem.
-    const streams = (L.c.session === 'tmux' || L.c.session === 'daemons' || L.c.session === 'nvim' ? true : (isFox ? inSet : L.top)) && L.vis;
+    // PARKED tabs (#7): discarded, no BiDi context — never stream; render frozen
+    // with a P badge + click-to-wake. parked = seen(chrome) minus drivable(BiDi).
+    const isParked = !!L.c.parked;
+    const streams = !isParked && (L.c.session === 'tmux' || L.c.session === 'daemons' || L.c.session === 'nvim' ? true : (isFox ? inSet : L.top)) && L.vis;
     return {
       id: 'seat-' + L.c.key, x: L.x, y: L.y, w: L.w, h: H, z: L.z, gravity: hero,
       node: <Viewport session={L.c.session} context={L.c.context} title={L.c.title} url={L.c.url}
-        visible={streams} live={live}
+        parked={isParked}
+        visible={streams} live={!isParked && live}
         fps={parentMem > 3500 ? (hero ? 1 : 0) : (hero ? 3 : (streams ? 0.4 : 0))} pinned={hero}
         lodW={lodBucket(L.w * cam.z)}
         fx={isFox} fxNeedle={L.c.url ? host(L.c.url) : ''}
