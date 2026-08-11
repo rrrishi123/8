@@ -52,6 +52,16 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
   const isTmux = session === 'tmux';
   const isText = isTmux || session === 'daemons' || session === 'nvim';
   const [tmuxText, setTmuxText] = useState('');
+  // #22b ◎ FOCUS — the research-programme READING packet for a sibling-claude
+  // pane. Read-only witness: fetch /attention (material + Lakatos/Kuhn scaffold);
+  // 8 NEVER sends commands to the pane. A mind reads the packet; 8 only assembles.
+  const [focusPkt, setFocusPkt] = useState<any>(null);
+  const loadFocus = () => {
+    if (!fixedCtx) return;
+    if (focusPkt) { setFocusPkt(null); return; } // toggle off
+    fetch(`${BASE}/attention?pane=${encodeURIComponent(fixedCtx)}`)
+      .then((r) => r.json()).then((j) => setFocusPkt(j)).catch(() => {});
+  };
   useEffect(() => {
     if (!isText || !fixedCtx || !(visible ?? true)) return;
     let alive = true;
@@ -379,6 +389,10 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
           <button className="vp-nav" title="restart — TERM; the reviver brings it back (watchdog is protected)"
             onClick={() => fetch(`${BASE}/daemonsignal?d=${encodeURIComponent(fixedCtx.replace(/^d-/, ''))}&sig=TERM&by=operator`)}>⟳</button>
         )}
+        {isTmux && fixedCtx && (
+          <button className={`vp-nav${focusPkt ? ' on' : ''}`} title="◎ focus — this pane's research-programme reading (Lakatos/Kuhn), read-only. 8 never drives the pane."
+            onClick={loadFocus}>◎</button>
+        )}
         {ctx && !isText && <>
           <button className="vp-nav" title="back" onClick={() => wire('browsingContext.traverseHistory', { context: ctx, delta: -1 })}>◀</button>
           <button className="vp-nav" title="reload" onClick={() => wire('browsingContext.reload', { context: ctx })}>⟳</button>
@@ -414,7 +428,21 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
             <div className="vp-parked-note">discarded from RAM (fair aperture) · seen, not yet drivable</div>
           </div>
         : isText
-        ? <pre className="vp-text vp-tmux">{tmuxText || 'reading…'}</pre>
+        ? (focusPkt
+            ? <div className="vp-focus" style={{ overflow: 'auto', height: '100%', padding: '8px', font: '11px/1.5 ui-monospace,monospace' }}>
+                <div style={{ opacity: 0.7, marginBottom: 6 }}>◎ research-programme reading · <b>{String(focusPkt.session || '').slice(0, 8)}</b> · {focusPkt?.material?.turns ?? '?'} turns · <i>read-only</i></div>
+                {focusPkt.note && <div style={{ color: '#e88', marginBottom: 6 }}>{focusPkt.note}</div>}
+                <div style={{ opacity: 0.85, marginBottom: 4 }}><b>lens:</b> {focusPkt?.reading?.lens}</div>
+                <div style={{ opacity: 0.85, marginBottom: 4 }}><b>instruction:</b> {focusPkt?.reading?.instruction}</div>
+                <ol style={{ margin: '4px 0 8px 16px', padding: 0 }}>
+                  {(focusPkt?.reading?.scaffold || []).map((s: string, i: number) => <li key={i} style={{ marginBottom: 2 }}>{s}</li>)}
+                </ol>
+                <div style={{ opacity: 0.6, marginBottom: 2 }}>— tool arc —</div>
+                <div style={{ marginBottom: 6, wordBreak: 'break-word' }}>{(focusPkt?.material?.tool_arc || []).join(' → ')}</div>
+                <div style={{ opacity: 0.6, marginBottom: 2 }}>— recent said —</div>
+                {(focusPkt?.material?.recent_said || []).map((s: string, i: number) => <div key={i} style={{ marginBottom: 3, opacity: 0.9 }}>· {s}</div>)}
+              </div>
+            : <pre className="vp-text vp-tmux" style={{ overflow: 'auto' }}>{tmuxText || 'reading…'}</pre>)
         : seeing === 'pixels'
         ? ((frameSrc || useFx)
             ? <div className="vp-stage">
