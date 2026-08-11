@@ -4582,5 +4582,23 @@ func main() {
 		originState = *origins
 	}
 	log.Printf("collector: %d session(s), serving on %s — auth %s, cors origins %s", len(brokers), *listen, authState, originState)
-	log.Fatal(http.ListenAndServe(*listen, cors(allow, auth(*token, mux))))
+	// BIND-RETRY (#18, 2026-08-11): a redeploy (kill old → start new) can race the
+	// OS releasing the port, so a plain ListenAndServe would exit 'address already
+	// in use' and leave a ~3s gap until the watchdog revived it. Retry the bind for
+	// ~3s first; the old process's TIME_WAIT clears well within that, so deploys are
+	// seamless instead of a blip. (The audit's closest-to-broken finding.)
+	handler := cors(allow, auth(*token, mux))
+	var ln net.Listener
+	var lerr error
+	for i := 0; i < 30; i++ {
+		if ln, lerr = net.Listen("tcp", *listen); lerr == nil {
+			break
+		}
+		log.Printf("bind %s busy (%v) — retrying %d/30", *listen, lerr, i+1)
+		time.Sleep(100 * time.Millisecond)
+	}
+	if lerr != nil {
+		log.Fatalf("could not bind %s after ~3s of retries: %v", *listen, lerr)
+	}
+	log.Fatal(http.Serve(ln, handler))
 }
