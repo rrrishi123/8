@@ -51,6 +51,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -2237,6 +2238,218 @@ func (c *collector) handleTmuxPane(w http.ResponseWriter, r *http.Request) {
 	w.Write(out)
 }
 
+// fileBirth returns a file's CREATION time (darwin birthtime), falling back to
+// modtime. The jsonl of a Claude session is born when that session starts — so
+// birth time is the stable per-session fingerprint that modtime is not (modtime
+// churns on every append, so the newest-modtime jsonl is just whoever wrote last).
+func fileBirth(path string) time.Time {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		return time.Unix(st.Birthtimespec.Sec, st.Birthtimespec.Nsec)
+	}
+	return fi.ModTime()
+}
+
+// binOr returns the first existing absolute path, else the bare name (last hope
+// via PATH). Lets the collector exec system tools regardless of its launchd PATH.
+func binOr(name string, abs ...string) string {
+	for _, p := range abs {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+	return name
+}
+
+// paneClaudeStart returns when the Claude process in a tmux pane started. The
+// pane's root is a shell; claude is a descendant — so we walk two levels of
+// children and take the earliest claude/node start. Empty when no Claude runs.
+func paneClaudeStart(tb, pane string) (time.Time, bool) {
+	ppb, err := exec.Command(tb, "display-message", "-p", "-t", pane, "#{pane_pid}").Output()
+	if err != nil {
+		return time.Time{}, false
+	}
+	pp := strings.TrimSpace(string(ppb))
+	// ABSOLUTE paths: the collector is launched by launchd/watchdog with a minimal
+	// PATH that lacks /usr/bin, so bare "pgrep"/"ps" fail to exec (tmux only works
+	// because tmuxBin() is absolute). This was the same-cwd fix's silent failure.
+	pgrepBin, psBin := binOr("pgrep", "/usr/bin/pgrep"), binOr("ps", "/bin/ps")
+	pids := []string{pp}
+	for _, parent := range []string{pp} {
+		if ch, e := exec.Command(pgrepBin, "-P", parent).Output(); e == nil {
+			for _, k := range strings.Fields(string(ch)) {
+				pids = append(pids, k)
+				if gc, e2 := exec.Command(pgrepBin, "-P", k).Output(); e2 == nil {
+					pids = append(pids, strings.Fields(string(gc))...)
+				}
+			}
+		}
+	}
+	var best time.Time
+	found := false
+	for _, pid := range pids {
+		out, e := exec.Command(psBin, "-o", "lstart=,comm=", "-p", pid).Output()
+		if e != nil {
+			continue
+		}
+		line := strings.TrimSpace(string(out))
+		idx := strings.LastIndex(line, " ")
+		if idx < 0 {
+			continue
+		}
+		comm := strings.ToLower(line[idx+1:])
+		if !strings.Contains(comm, "claude") && !strings.Contains(comm, "node") {
+			continue
+		}
+		lstart := strings.Join(strings.Fields(line[:idx]), " ")
+		t, e2 := time.Parse("Mon 2 Jan 15:04:05 2006", lstart)
+		if e2 != nil {
+			continue
+		}
+		if !found || t.Before(best) {
+			best, found = t, true
+		}
+	}
+	return best, found
+}
+
+// normAlnum lowercases and drops EVERYTHING but [a-z0-9]. Stripping all
+// whitespace + punctuation from both a wrapped tmux pane AND a jsonl makes the
+// pane's line-wrapping (and box chrome) irrelevant: "foo\nbar" and "foo bar"
+// both become "foobar", so a fingerprint taken from the screen matches the file.
+func normAlnum(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r + 32)
+		}
+	}
+	return b.String()
+}
+
+// paneJsonlByContent maps a pane to its transcript by MATCHING what the pane is
+// currently showing against each jsonl's tail — resume-proof and pane-specific
+// (birthtime breaks when a session is resumed; the process hides its sessionId).
+// Returns "" if nothing matches (fresh pane, or output too short to fingerprint).
+func paneJsonlByContent(tb, pane, projDir string) string {
+	cap, err := exec.Command(tb, "capture-pane", "-p", "-S", "-200", "-t", pane).Output()
+	if err != nil {
+		return ""
+	}
+	pn := normAlnum(string(cap))
+	if len(pn) < 80 {
+		return ""
+	}
+	// several fingerprints from the RECENT (tail) portion of the screen
+	var fps []string
+	for _, off := range []int{len(pn) - 60, len(pn) - 180, len(pn) - 340, len(pn) - 520} {
+		if off >= 0 && off+44 <= len(pn) {
+			fps = append(fps, pn[off:off+44])
+		}
+	}
+	if len(fps) == 0 {
+		return ""
+	}
+	entries, _ := os.ReadDir(projDir)
+	type fe struct {
+		path string
+		mod  time.Time
+	}
+	var fs []fe
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		if fi, er := e.Info(); er == nil {
+			fs = append(fs, fe{projDir + "/" + e.Name(), fi.ModTime()})
+		}
+	}
+	sort.Slice(fs, func(i, j int) bool { return fs[i].mod.After(fs[j].mod) })
+	for _, f := range fs {
+		data, _ := os.ReadFile(f.path)
+		if len(data) > 1<<20 { // only the last 1MB — the pane shows RECENT output
+			data = data[len(data)-(1<<20):]
+		}
+		dn := normAlnum(string(data))
+		for _, fp := range fps {
+			if strings.Contains(dn, fp) {
+				return f.path
+			}
+		}
+	}
+	return ""
+}
+
+// paneJsonl maps a tmux PANE to ITS OWN Claude transcript — the fix for the
+// same-cwd collision (many claude panes share one cwd, so newest-by-modtime
+// picks whichever mind wrote last, NOT this pane). Primary signal: CONTENT match
+// (resume-proof); then jsonl BIRTH nearest claude START; last, newest-by-modtime.
+func paneJsonl(tb, pane, projDir string) (string, time.Time) {
+	if p := paneJsonlByContent(tb, pane, projDir); p != "" {
+		mt := time.Time{}
+		if fi, err := os.Stat(p); err == nil {
+			mt = fi.ModTime()
+		}
+		return p, mt
+	}
+	entries, _ := os.ReadDir(projDir)
+	var newest string
+	var newestT time.Time
+	type cand struct {
+		path  string
+		birth time.Time
+		mod   time.Time
+	}
+	var cands []cand
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		fi, err := e.Info()
+		if err != nil {
+			continue
+		}
+		p := projDir + "/" + e.Name()
+		cands = append(cands, cand{p, fileBirth(p), fi.ModTime()})
+		if fi.ModTime().After(newestT) {
+			newestT, newest = fi.ModTime(), p
+		}
+	}
+	if start, ok := paneClaudeStart(tb, pane); ok {
+		best := ""
+		var bestD time.Duration = 1 << 62
+		for _, cd := range cands {
+			d := cd.birth.Sub(start)
+			if d < 0 {
+				d = -d
+			}
+			if d < bestD {
+				bestD, best = d, cd.path
+			}
+		}
+		// only trust the match if it's within a few minutes of claude start —
+		// otherwise the pane's claude predates all transcripts we can see.
+		if best != "" && bestD < 10*time.Minute {
+			for _, cd := range cands {
+				if cd.path == best {
+					return best, cd.mod
+				}
+			}
+		}
+	}
+	return newest, newestT
+}
+
 // handleTmuxSummary — WHAT HAS THIS CLAUDE BEEN DOING. A tmux pane running a
 // sibling Claude has its own jsonl transcript; this reads it (pane cwd → the
 // project dir → the newest session) and returns a summary: recent prompts, the
@@ -2258,17 +2471,7 @@ func (c *collector) handleTmuxSummary(w http.ResponseWriter, r *http.Request) {
 	cwd := strings.TrimSpace(string(cwdb))
 	// Claude Code encodes a project's cwd by replacing every '/' with '-'.
 	projDir := os.ExpandEnv("$HOME/.claude/projects/") + strings.ReplaceAll(cwd, "/", "-")
-	entries, _ := os.ReadDir(projDir)
-	var newest string
-	var newestT time.Time
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".jsonl") {
-			continue
-		}
-		if fi, e2 := e.Info(); e2 == nil && fi.ModTime().After(newestT) {
-			newestT, newest = fi.ModTime(), projDir+"/"+e.Name()
-		}
-	}
+	newest, newestT := paneJsonl(tb, pane, projDir) // THIS pane's own transcript, not newest-by-mtime
 	resp := map[string]any{"pane": pane, "cwd": cwd}
 	if newest == "" {
 		resp["note"] = "no Claude transcript for this pane's cwd — not a Claude session, or a fresh one"
@@ -2334,6 +2537,120 @@ func (c *collector) handleTmuxSummary(w http.ResponseWriter, r *http.Request) {
 	resp["last_said"] = lastAsst
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// handleFocus (#22a) — FOCUSED ATTENTION, not a chat summary. /tmuxsummary gives
+// the observations (Tycho); this assembles a packet a MIND reads to derive the
+// laws (Kepler): the pane's own words+acts PLUS the dynamic research-programme
+// scaffold (Lakatos/Kuhn). The collector is a witness, not a mind — so it does
+// NOT write the reading; it hands the material and the lens to whoever will.
+// The instruction is deliberately "read the NATURE OF THE WORDS", never
+// "summarise": the reading must be dynamic to what this pane is actually doing.
+// GET /attention?pane=%N. Witness-only: reading never drives the pane.
+func (c *collector) handleAttention(w http.ResponseWriter, r *http.Request) {
+	pane := r.URL.Query().Get("pane")
+	tb := tmuxBin()
+	if !strings.HasPrefix(pane, "%") || tb == "" {
+		http.Error(w, `{"error":"need pane=%N"}`, http.StatusBadRequest)
+		return
+	}
+	cwdb, err := exec.Command(tb, "display-message", "-p", "-t", pane, "#{pane_current_path}").Output()
+	if err != nil {
+		http.Error(w, `{"error":"no such pane"}`, http.StatusNotFound)
+		return
+	}
+	cwd := strings.TrimSpace(string(cwdb))
+	projDir := os.ExpandEnv("$HOME/.claude/projects/") + strings.ReplaceAll(cwd, "/", "-")
+	newest, newestT := paneJsonl(tb, pane, projDir) // THIS pane's own transcript (same-cwd fix)
+	packet := map[string]any{"pane": pane, "cwd": cwd}
+	if newest == "" {
+		packet["note"] = "no Claude transcript for this pane's cwd — nothing to focus on yet"
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(packet)
+		return
+	}
+	// richer material than /tmuxsummary: the ARC (ordered tool sequence reveals
+	// what it's DOING), fuller prompts, and the last several things it SAID — the
+	// raw vocabulary the reading is derived from.
+	data, _ := os.ReadFile(newest)
+	prompts, saids, toolSeq := []string{}, []string{}, []string{}
+	tools, turns := 0, 0
+	for _, ln := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(ln) == "" {
+			continue
+		}
+		var o struct {
+			Type    string `json:"type"`
+			Message struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(ln), &o) != nil {
+			continue
+		}
+		role := o.Message.Role
+		if role == "" {
+			role = o.Type
+		}
+		if role == "user" {
+			var s string
+			if json.Unmarshal(o.Message.Content, &s) == nil {
+				if s = strings.TrimSpace(s); s != "" && !strings.HasPrefix(s, "<") && !strings.HasPrefix(s, "[Request") {
+					prompts = append(prompts, firstN(s, 240))
+				}
+			}
+		} else if role == "assistant" {
+			turns++
+			var blocks []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+				Name string `json:"name"`
+			}
+			if json.Unmarshal(o.Message.Content, &blocks) == nil {
+				for _, b := range blocks {
+					if b.Type == "tool_use" {
+						tools++
+						if b.Name != "" {
+							toolSeq = append(toolSeq, b.Name)
+						}
+					} else if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
+						saids = append(saids, firstN(strings.TrimSpace(b.Text), 240))
+					}
+				}
+			}
+		}
+	}
+	tail := func(s []string, n int) []string {
+		if len(s) > n {
+			return s[len(s)-n:]
+		}
+		return s
+	}
+	packet["jsonl"] = newest
+	packet["session"] = strings.TrimSuffix(filepath.Base(newest), ".jsonl")
+	packet["updated"] = newestT.UTC().Format(time.RFC3339)
+	packet["material"] = map[string]any{
+		"turns": turns, "tool_uses": tools,
+		"recent_prompts": tail(prompts, 10),
+		"recent_said":    tail(saids, 6),
+		"tool_arc":       tail(toolSeq, 40), // the ORDER of acts — what it's been doing, not just how much
+	}
+	// The lens is the deliverable's spine: a mind reads the material ABOVE through
+	// THIS frame, filling each slot from the pane's own words+acts.
+	packet["reading"] = map[string]any{
+		"lens":        "research-programme (Lakatos/Kuhn) — dynamic, derived from the nature of the words this pane used",
+		"instruction": "Do NOT summarise the conversation. Read THIS pane's own prompts, statements, and the ORDER of its acts, and articulate its research programme: what it treats as unfalsifiable vs. adjustable, whether it is predicting-then-verifying or only patching, what it is driving toward, and — most important — what its own words reveal it is NOT yet attending to.",
+		"scaffold": []string{
+			"hard_core — the commitments this pane will not abandon (visible in what it never questions)",
+			"protective_belt — the auxiliary moves it makes to defend the core (the fixes, the reframings)",
+			"progressive_or_degenerating — is it predicting novel facts then verifying them, or only absorbing anomalies after the fact?",
+			"projected_result — what outcome the trajectory of its acts is aimed at",
+			"anomalies_unattended — what the words surface but the pane has not turned to (the frontier it is ignoring)",
+		},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(packet)
 }
 
 // ── NVIM — the editor seat, over msgpack-rpc WITHOUT a msgpack codec ─────────
@@ -5007,6 +5324,7 @@ func main() {
 	mux.HandleFunc("/manifest", c.handleManifest) // durable tab manifest: how-many/what/where/who/why/when
 	mux.HandleFunc("/tmuxpane", c.handleTmuxPane)
 	mux.HandleFunc("/tmuxsummary", c.handleTmuxSummary) // a tmux pane's visible text — the agents' surface frame
+	mux.HandleFunc("/attention", c.handleAttention)     // #22a the research-programme READING packet (Lakatos/Kuhn), witness-only
 	mux.HandleFunc("/tmuxsend", c.handleTmuxSend) // the tmux seat's CONTROL verb (seen ⇒ controllable)
 	mux.HandleFunc("/nvimbuf", c.handleNvimBuf)   // an nvim buffer's lines — the editor seat's frame
 	mux.HandleFunc("/nvimopen", c.handleNvimOpen) // the editor seat's CONTROL verb (:buffer N)
