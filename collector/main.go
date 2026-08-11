@@ -4312,6 +4312,32 @@ func main() {
 	mux.HandleFunc("/replay-series", c.handleReplaySeries)
 	mux.HandleFunc("/benches", c.handleBenches)
 	mux.HandleFunc("/focus", c.handleFocus)
+	// SELF-DESCRIBING ROOT (2026-08-11): two fresh agents (and this session's own
+	// habituated author) hit bare 404s at / with zero discovery signal. The wire
+	// should tell a newcomer what it is and how to touch it — the same self-evidence
+	// `discover` gives, at the front door. GET / → what/how/endpoints.
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{
+  "what": "8 — the WITNESS. It watches every surface on this machine (browser tabs, tmux panes, nvim buffers, host daemons) as one provenance-tracked manifest, streams all traffic live, and replays it.",
+  "how": "The wire reduces to two atoms: CALL (one request/response) and CHANNEL (one held bidirectional socket). Prefer the http-mcp tools (http_request / bidi_command / discover) — they ARE the wire; discover self-describes any hub. curl works too, but discover beats guessing.",
+  "start_here": {
+    "what_is_alive": "GET /sessions   (seat ids: fox, tmux, nvim, daemons)",
+    "how_many_tabs": "GET /tabs?session=fox   (needs the session param)",
+    "who_opened_what": "GET /manifest   (uid/what/where/who/why/when)",
+    "the_map_of_gaps": "GET /matrix   (surfaces × senses — what is NOT yet seeable)",
+    "the_plan": "GET /work   (the dependency DAG that auto-advances)",
+    "drive_a_tab": "POST /run?session=fox {\"method\":\"...\",\"params\":{}}   (every op returns an X-8-Witness reafference receipt)",
+    "self_describe": "point http-mcp discover at http://127.0.0.1:4445"
+  },
+  "views": "the cockpit at http://localhost:8088 has four: feed · CANVAS (every tab a live card) · LAB · WIRE"
+}
+`)
+	})
 	mux.HandleFunc("/health", c.handleHealth)
 	mux.HandleFunc("/wake", c.handleWake)               // un-park a parked tab (#7 click-to-wake)
 	mux.HandleFunc("/matrix", c.handleMatrix)           // surfaces × senses coverage — the map of the unfound
