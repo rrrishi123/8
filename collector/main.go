@@ -1177,7 +1177,7 @@ func (c *collector) handleFeed(w http.ResponseWriter, r *http.Request) {
 func (c *collector) handleRun(w http.ResponseWriter, r *http.Request) {
 	b := c.find(r.URL.Query().Get("session"))
 	if b == nil {
-		http.Error(w, `{"error":"unknown session"}`, http.StatusNotFound)
+		http.Error(w, `{"error":"unknown or missing session — needs ?session=<id>. List live seats at /sessions (e.g. fox, tmux, nvim, daemons). If /sessions is empty this is a cold witness, not broken."}`, http.StatusNotFound)
 		return
 	}
 	body, _ := io.ReadAll(r.Body)
@@ -1485,7 +1485,7 @@ func (c *collector) handleShot(w http.ResponseWriter, r *http.Request) {
 	// CHANNEL session (BiDi): captureScreenshot on the held socket.
 	b := c.find(sid)
 	if b == nil {
-		http.Error(w, `{"error":"unknown session"}`, http.StatusNotFound)
+		http.Error(w, `{"error":"unknown or missing session — needs ?session=<id>. List live seats at /sessions (e.g. fox, tmux, nvim, daemons). If /sessions is empty this is a cold witness, not broken."}`, http.StatusNotFound)
 		return
 	}
 	ctx := r.URL.Query().Get("context")
@@ -1638,7 +1638,7 @@ func (c *collector) handleTabs(w http.ResponseWriter, r *http.Request) {
 	}
 	b := c.find(r.URL.Query().Get("session"))
 	if b == nil {
-		http.Error(w, `{"error":"unknown session"}`, http.StatusNotFound)
+		http.Error(w, `{"error":"unknown or missing session — needs ?session=<id>. List live seats at /sessions (e.g. fox, tmux, nvim, daemons). If /sessions is empty this is a cold witness, not broken."}`, http.StatusNotFound)
 		return
 	}
 	// BiDi first; if the broker errors on it, this is a CDP (Chrome) channel —
@@ -2828,8 +2828,13 @@ func (c *collector) handleMatrix(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"cols": cols, "rows": rows, "unfound": unfound,
-		"legend": "live=probed now · yes=built · na=inapplicable · unfound=plausible-but-unbuilt (the map)"})
+	resp := map[string]any{"cols": cols, "rows": rows, "unfound": unfound,
+		"legend": "live=probed now · yes=built · na=inapplicable · unfound=plausible-but-unbuilt (the map)"}
+	if len(rows) == 0 { // COLD-INSTANCE HONESTY (container-Claude's finding, 2026-08-11):
+		// empty ≠ broken. Tell a newcomer WHY it's empty and what to do.
+		resp["note"] = "empty is not broken — no live surfaces to map yet. Start a browser/tmux/nvim (or attach a session); the matrix populates as seats come alive. See /sessions."
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (c *collector) handleClaim(w http.ResponseWriter, r *http.Request) {
@@ -3234,7 +3239,11 @@ func (c *collector) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return live[i].ID < live[j].ID
 	})
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"sessions": live})
+	sresp := map[string]any{"sessions": live}
+	if len(live) == 0 { // cold instance: no seats. Empty ≠ broken.
+		sresp["note"] = "no live seats yet — this is a cold witness. Start the channel Firefox (scripts/up.sh), or run tmux/nvim; seats appear here as they come alive. This is empty, not broken."
+	}
+	json.NewEncoder(w).Encode(sresp)
 }
 
 // echoOut publishes one COLLECTOR-origin frame for a CONTROL call 8 itself made
@@ -3773,7 +3782,7 @@ func (c *collector) handleBench(w http.ResponseWriter, r *http.Request) {
 	}
 	b := c.find(sid)
 	if b == nil {
-		http.Error(w, `{"error":"unknown session"}`, http.StatusNotFound)
+		http.Error(w, `{"error":"unknown or missing session — needs ?session=<id>. List live seats at /sessions (e.g. fox, tmux, nvim, daemons). If /sessions is empty this is a cold witness, not broken."}`, http.StatusNotFound)
 		return
 	}
 	ctxID := r.URL.Query().Get("context")
