@@ -1808,6 +1808,91 @@ func (c *collector) reconcileManifest(session string, tabs []map[string]string) 
 // reconcileLoop keeps the manifest true even when NO cockpit is looking (fix for
 // background-throttling) AND enumerates from CHROME context — every tab in every
 // window — so the manifest finally sees ALL tabs, not just BiDi's session subset.
+// fnv1a — a fast inline content hash (no import), for change-detection.
+func fnv1a(b []byte) uint64 {
+	var h uint64 = 1469598103934665603
+	for _, c := range b {
+		h ^= uint64(c)
+		h *= 1099511628211
+	}
+	return h
+}
+
+// seatWatchLoop — REALIZE THE CHANNEL ATOM FOR EVERY SEAT (#11, 2026-08-11).
+// The browser already pushes (the broker holds its BiDi socket); the text seats
+// (tmux/nvim/daemons) were CALL-only — every client polled every surface. Now the
+// collector WATCHES once (cheap, one place) and PUSHES a `<seat>.changed` event
+// the instant a surface changes, to the broker's event stream. Clients subscribe
+// and are pushed a delta, then fetch just the changed frame — O(1) watch + push
+// instead of O(clients × surfaces) polling. The matrix's biggest amber stripe,
+// filled. (Change-detection uses the cheapest signal each seat exposes: tmux
+// pane_activity, nvim changedtick, the daemon pid-set — not a content re-read.)
+func (c *collector) seatWatchLoop() {
+	t := time.NewTicker(1500 * time.Millisecond)
+	defer t.Stop()
+	lastTmux := map[string]string{}
+	lastNvim := map[string]string{}
+	lastDaemon := ""
+	tick := 0
+	for range t.C {
+		tick++
+		// tmux: hash the visible content per pane. (pane_activity/history_size are
+		// unreliable — activity needs monitor-activity; history only grows on
+		// scroll-off. A capture hash is the honest "did this pane change" signal —
+		// one cheap capture per pane in ONE place beats every client polling.)
+		if tb := tmuxBin(); tb != "" {
+			if out, err := exec.Command(tb, "list-panes", "-a", "-F", "#{pane_id}").Output(); err == nil {
+				for _, pane := range strings.Fields(string(out)) {
+					if !strings.HasPrefix(pane, "%") {
+						continue
+					}
+					capd, e := exec.Command(tb, "capture-pane", "-p", "-t", pane).Output()
+					if e != nil {
+						continue
+					}
+					h := strconv.FormatUint(fnv1a(capd), 16)
+					if prev, seen := lastTmux[pane]; seen && prev != h {
+						c.publish(fmt.Sprintf(`{"session":"tmux","origin":"COLLECTOR","frame":{"method":"tmux.changed","params":{"pane":%q}}}`, pane))
+					}
+					lastTmux[pane] = h
+				}
+			}
+		}
+		// nvim: changedtick per buffer — bumps on every edit, cheap to read
+		if sock := nvimSock(); sock != "" {
+			expr := `json_encode(map(getbufinfo({"buflisted":1}),{i,b -> [b.bufnr, b.changedtick]}))`
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			out, err := exec.CommandContext(ctx, nvimBin(), "--server", sock, "--remote-expr", expr).Output()
+			cancel()
+			if err == nil {
+				var pairs [][]int64
+				if json.Unmarshal(out, &pairs) == nil {
+					for _, p := range pairs {
+						if len(p) == 2 {
+							k, v := strconv.FormatInt(p[0], 10), strconv.FormatInt(p[1], 10)
+							if prev, seen := lastNvim[k]; seen && prev != v {
+								c.publish(fmt.Sprintf(`{"session":"nvim","origin":"COLLECTOR","frame":{"method":"nvim.changed","params":{"buf":%d}}}`, p[0]))
+							}
+							lastNvim[k] = v
+						}
+					}
+				}
+			}
+		}
+		// daemons: watched less often (pgrep is heavier) — emit when the pid-set shifts
+		if tick%4 == 0 {
+			sig := ""
+			for _, d := range daemonList() {
+				sig += d.Name + ":" + d.Pid + ","
+			}
+			if lastDaemon != "" && lastDaemon != sig {
+				c.publish(`{"session":"daemons","origin":"COLLECTOR","frame":{"method":"daemons.changed","params":{}}}`)
+			}
+			lastDaemon = sig
+		}
+	}
+}
+
 func (c *collector) reconcileLoop() {
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
@@ -2812,7 +2897,7 @@ func (c *collector) handleMatrix(w http.ResponseWriter, r *http.Request) {
 			"live", fmt.Sprintf("list-panes · %d", tmuxN),
 			"unfound", "could render text→img; not built", "yes", "capture-pane",
 			"unfound", "shell has no eval-returns-value; control-mode query?",
-			"yes", "send-keys", "unfound", "tmux control-mode CAN push; we POLL",
+			"yes", "send-keys", "live", "collector watches pane_activity → tmux.changed push",
 			"unfound", "in manifest; NOT in ledger (no per-pane events)")})
 	}
 	if nvimN > 0 {
@@ -2820,14 +2905,14 @@ func (c *collector) handleMatrix(w http.ResponseWriter, r *http.Request) {
 			"live", fmt.Sprintf("getbufinfo · %d bufs", nvimN),
 			"unfound", "TUI has no raster; could screencap the pane", "yes", "getbufline",
 			"yes", "remote-expr (real eval!)", "yes", ":buffer / remote-send",
-			"unfound", "msgpack notifications EXIST; not subscribed", "unfound", "in manifest; NOT in ledger")})
+			"live", "collector watches changedtick → nvim.changed push", "unfound", "in manifest; NOT in ledger")})
 	}
 	if dmnN > 0 {
 		rows = append(rows, row{"daemons · host", mk(
 			"live", fmt.Sprintf("pgrep · %d", dmnN),
 			"na", "a process has no surface", "yes", "ps + log tail",
 			"na", "no eval into a foreign process", "yes", "signals (TERM/HUP)",
-			"unfound", "could tail→push log lines; we POLL", "unfound", "in manifest; NOT in ledger")})
+			"live", "collector watches pid-set → daemons.changed push", "unfound", "in manifest; NOT in ledger")})
 	}
 	if data, err := os.ReadFile(sessionsFile()); err == nil && strings.Contains(string(data), `"call"`) {
 		rows = append(rows, row{"device · appium", mk(
@@ -4479,6 +4564,7 @@ func main() {
 		time.Sleep(200 * time.Millisecond)
 		go c.memoryAperture(*apertureMB) // self-regulate parent memory (heap-minimize at the soft threshold)
 		go c.reconcileLoop()             // keep the tab manifest true even when no cockpit is watching
+		go c.seatWatchLoop()             // #11: PUSH change events for every seat (the CHANNEL atom, realized)
 		go func() {                      // project eight.db every 30s so DBeaver always sees fresh data
 			if _, err := exec.LookPath("sqlite3"); err != nil {
 				return
