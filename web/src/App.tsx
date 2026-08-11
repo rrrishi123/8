@@ -179,9 +179,13 @@ export default function App() {
         <span className={live ? 'live' : 'dead'}>{live ? '● LIVE' : '○ OFFLINE'}</span>
         <span>SESSIONS {sessions.length ? sessions.map((s) => s.id).join(', ') : '—'}</span>
         <span>CAPTURE {rows.length}</span>
-        <span className="canvas-toggle" onClick={() => setShowCanvas((v) => !v)}>{showCanvas ? '▣ CANVAS' : '▢ CANVAS'}</span>
-        <span className="lab-toggle" onClick={() => setShowLab((v) => !v)}>{showLab ? '▣ LAB' : '▢ LAB'}</span>
-        <span className="wire-toggle" onClick={() => setShowWire((v) => !v)}>{showWire ? '▣ WIRE' : '▢ WIRE'}</span>
+        {/* MUTUALLY EXCLUSIVE views (fix, 2026-08-11 — audit found these were
+            independent booleans + a priority chain, so clicking LAB while CANVAS
+            was on didn't switch). Selecting a view now deselects the others;
+            clicking the active one again returns to the feed. */}
+        <span className="canvas-toggle" onClick={() => setShowCanvas((v) => { if (!v) { setShowLab(false); setShowWire(false); } return !v; })}>{showCanvas ? '▣ CANVAS' : '▢ CANVAS'}</span>
+        <span className="lab-toggle" onClick={() => setShowLab((v) => { if (!v) { setShowCanvas(false); setShowWire(false); } return !v; })}>{showLab ? '▣ LAB' : '▢ LAB'}</span>
+        <span className="wire-toggle" onClick={() => setShowWire((v) => { if (!v) { setShowCanvas(false); setShowLab(false); } return !v; })}>{showWire ? '▣ WIRE' : '▢ WIRE'}</span>
         <span className="keys">click row → inspect · paste a curl → Fire</span>
       </header>
       <ThemePicker initial={themeBg} />
