@@ -1098,6 +1098,77 @@ func (c *collector) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"timeline": out, "substrates": kinds, "count": len(out)})
 }
 
+// handleProvenance (#29) is the anomaly's fix made into a real query: the
+// actor→atom→surface flow. The ledger recorded WHO (declared actor) fired WHICH
+// atom (call|channel) onto WHICH surface (session/tab). Previously provenance was
+// by SESSION, so every surface on one broker shared a count and the actor was
+// invisible. Now: group by declared actor; per actor, count atoms and list the
+// surfaces they touched. Acts with no declared actor land under "" (undeclared) —
+// counted honestly, never back-filled to "operator". ?actor= filters to one.
+func (c *collector) handleProvenance(w http.ResponseWriter, r *http.Request) {
+	c.lmu.Lock()
+	led := make([]reqRec, len(c.ledger))
+	copy(led, c.ledger)
+	c.lmu.Unlock()
+
+	only := r.URL.Query().Get("actor")
+	type actorFlow struct {
+		Actor    string         `json:"actor"` // "" = undeclared
+		Acts     int            `json:"acts"`
+		Atoms    map[string]int `json:"atoms"`    // call | channel → count
+		Surfaces map[string]int `json:"surfaces"` // session/tab → count
+		Methods  map[string]int `json:"methods"`  // the operations they fired
+	}
+	flows := map[string]*actorFlow{}
+	declared, undeclared := 0, 0
+	for _, e := range led {
+		if e.Actor == "" {
+			undeclared++
+		} else {
+			declared++
+		}
+		if only != "" && e.Actor != only {
+			continue
+		}
+		f := flows[e.Actor]
+		if f == nil {
+			f = &actorFlow{Actor: e.Actor, Atoms: map[string]int{}, Surfaces: map[string]int{}, Methods: map[string]int{}}
+			flows[e.Actor] = f
+		}
+		f.Acts++
+		f.Atoms[e.Physics]++
+		if e.Session != "" {
+			f.Surfaces[e.Session]++
+		}
+		if e.Method != "" {
+			f.Methods[e.Method]++
+		}
+	}
+	out := make([]*actorFlow, 0, len(flows))
+	for _, f := range flows {
+		out = append(out, f)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Acts > out[j].Acts })
+	w.Header().Set("Content-Type", "application/json")
+	// coverage is the honest headline: what fraction of witnessed acts actually
+	// declared who did them. This is the anomaly's own progress meter.
+	json.NewEncoder(w).Encode(map[string]any{
+		"flows":            out,
+		"declared":         declared,
+		"undeclared":       undeclared,
+		"declared_frac":    ratio(declared, declared+undeclared),
+		"ledger_in_window": len(led),
+		"note":             "actor→atom→surface. \"\" = undeclared (honest, not back-filled). Declare via the X-8-Actor header or an \"actor\" body field on /fetch /run /act.",
+	})
+}
+
+func ratio(a, total int) float64 {
+	if total == 0 {
+		return 0
+	}
+	return float64(a) / float64(total)
+}
+
 func (c *collector) subscribe() (int, chan string) {
 	id := int(atomic.AddInt64(&c.nextSub, 1))
 	ch := make(chan string, 256)
@@ -1237,6 +1308,7 @@ func (c *collector) handleRun(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	var probe struct {
 		Method string `json:"method"`
+		Actor  string `json:"actor"` // #29 declared actor (falls back to X-8-Actor header)
 	}
 	_ = json.Unmarshal(body, &probe)
 
@@ -1249,7 +1321,7 @@ func (c *collector) handleRun(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(resp.Body)
 	lat := float64(time.Since(start).Nanoseconds()) / 1000.0
-	id := c.record(reqRec{TS: nowNano(), Physics: "channel", Session: b.id, Method: probe.Method, URL: b.base + "/command", Body: string(body), Status: resp.StatusCode, LatUS: lat, RespLen: len(rb), RespHead: preview(rb)})
+	id := c.record(reqRec{TS: nowNano(), Physics: "channel", Session: b.id, Method: probe.Method, URL: b.base + "/command", Body: string(body), Status: resp.StatusCode, LatUS: lat, RespLen: len(rb), RespHead: preview(rb), Actor: actorOf(r, probe.Actor)})
 	// echo into view-1 carrying the ledger id, so the row links to its full payload + replay
 	c.publish(fmt.Sprintf(`{"session":%q,"physics":"channel","origin":"COLLECTOR","frame":{"method":%q,"params":{"ledger_id":%d,"status":%d,"latency_us":%.0f}}}`, b.id, probe.Method, id, resp.StatusCode, lat))
 	w.Header().Set("Content-Type", "application/json")
@@ -1337,6 +1409,7 @@ func (c *collector) handleFetch(w http.ResponseWriter, r *http.Request) {
 		URL     string            `json:"url"`
 		Headers map[string]string `json:"headers"`
 		Body    string            `json:"body"`
+		Actor   string            `json:"actor"` // #29 declared actor (falls back to X-8-Actor header)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.URL == "" {
 		http.Error(w, `{"error":"url is required"}`, http.StatusBadRequest)
@@ -1373,7 +1446,7 @@ func (c *collector) handleFetch(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	latency := time.Since(start).Milliseconds()
-	id := c.record(reqRec{TS: nowNano(), Physics: "call", Method: strings.ToUpper(in.Method), URL: in.URL, Headers: in.Headers, Body: in.Body, Status: resp.StatusCode, LatUS: float64(latency) * 1000, RespLen: len(rb), RespHead: preview(rb)})
+	id := c.record(reqRec{TS: nowNano(), Physics: "call", Method: strings.ToUpper(in.Method), URL: in.URL, Headers: in.Headers, Body: in.Body, Status: resp.StatusCode, LatUS: float64(latency) * 1000, RespLen: len(rb), RespHead: preview(rb), Actor: actorOf(r, in.Actor)})
 	c.publish(fmt.Sprintf(`{"session":"wire","physics":"call","origin":"COLLECTOR","frame":{"method":"http_request","params":{"http_method":%q,"url":%q,"ledger_id":%d,"status":%d,"latency_ms":%d}}}`, strings.ToUpper(in.Method), in.URL, id, resp.StatusCode, latency))
 
 	// auto-register (option b): a POST .../session that returned a session id is
@@ -3701,9 +3774,9 @@ func (c *collector) sourceChannel(w http.ResponseWriter, r *http.Request, b *bro
 // input.performActions, type via key actions, navigate via browsingContext.
 func (c *collector) actChannel(w http.ResponseWriter, r *http.Request, b *broker) {
 	var in struct {
-		Action, Text, Context, Seat string
-		X, Y, X2, Y2, Ms            int
-		Xr, Yr                      float64 // 0..1 ratio of the frame (resolution-independent)
+		Action, Text, Context, Seat, Actor string // #29 Actor = declared identity (falls back to X-8-Actor header)
+		X, Y, X2, Y2, Ms                   int
+		Xr, Yr                             float64 // 0..1 ratio of the frame (resolution-independent)
 	}
 	json.NewDecoder(r.Body).Decode(&in)
 	ctx := in.Context
@@ -3787,7 +3860,7 @@ func (c *collector) actChannel(w http.ResponseWriter, r *http.Request, b *broker
 	}
 	c.echoOut(b.id, "channel", "act", map[string]any{"action": in.Action, "context": ctx, "at": fmt.Sprintf("%d,%d", in.X, in.Y)}, 200, time.Since(start).Milliseconds())
 	// control is replayable + seat-attributed — folds into the active recording
-	id := c.record(reqRec{TS: nowNano(), Physics: "channel", Session: b.id, Method: "act:" + in.Action, URL: b.base + "/command", Body: cmd, Status: 200, Replayable: true, Seat: in.Seat})
+	id := c.record(reqRec{TS: nowNano(), Physics: "channel", Session: b.id, Method: "act:" + in.Action, URL: b.base + "/command", Body: cmd, Status: 200, Replayable: true, Seat: in.Seat, Actor: actorOf(r, in.Actor)})
 	w.Header().Set("Content-Type", "application/json")
 	c.witnessHeaders(w, id, "channel", time.Since(start).Milliseconds()) // reafference: what you did, replayable, gaze moved here
 	w.Write(tr)
@@ -3840,6 +3913,7 @@ func (c *collector) handleAct(w http.ResponseWriter, r *http.Request) {
 		El     string `json:"element"`
 		Text   string `json:"text"`
 		Seat   string `json:"seat"`
+		Actor  string `json:"actor"` // #29 declared actor (falls back to X-8-Actor header)
 	}
 	json.NewDecoder(r.Body).Decode(&in)
 	base := rec.Hub + "/session/" + sid
@@ -3891,7 +3965,7 @@ func (c *collector) handleAct(w http.ResponseWriter, r *http.Request) {
 	c.echoOut(sid, rec.Physics, "act", map[string]any{"action": in.Action, "from": fmt.Sprintf("%d,%d", in.X, in.Y), "to": fmt.Sprintf("%d,%d", in.X2, in.Y2)}, resp.StatusCode, time.Since(start).Milliseconds())
 	// request-physics control is replayable + seat-attributed — folds into series.
 	// Method is the HTTP verb (acts are POSTs) so replay re-fires correctly.
-	c.record(reqRec{TS: nowNano(), Physics: "call", Session: sid, Method: "POST", URL: url, Body: body, Status: resp.StatusCode, Replayable: true, Seat: in.Seat})
+	c.record(reqRec{TS: nowNano(), Physics: "call", Session: sid, Method: "POST", URL: url, Body: body, Status: resp.StatusCode, Replayable: true, Seat: in.Seat, Actor: actorOf(r, in.Actor)})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	w.Write(rb)
@@ -4310,7 +4384,21 @@ type reqRec struct {
 	RespLen    int               `json:"resp_bytes"`
 	RespHead   string            `json:"resp_preview,omitempty"`
 	Replayable bool              `json:"replayable"`
-	Seat       string            `json:"seat,omitempty"` // who acted: operator | pilot | adapter | ai
+	Seat       string            `json:"seat,omitempty"`  // COARSE category, may be guessed: operator | pilot | adapter | ai
+	Actor      string            `json:"actor,omitempty"` // #29 X-8-Actor: the DECLARED identity that fired this act. Never guessed — "" means undeclared, which is honest, not "operator".
+}
+
+// actorOf reads the DECLARED actor for one act (#29). Precedence: the X-8-Actor
+// request header, then an explicit "actor" field the caller put in the body,
+// then "" — undeclared. We NEVER infer it from the seat/session: a guessed actor
+// is exactly the false provenance this anomaly named. Declared, or nothing.
+func actorOf(r *http.Request, bodyActor string) string {
+	if r != nil {
+		if a := strings.TrimSpace(r.Header.Get("X-8-Actor")); a != "" {
+			return a
+		}
+	}
+	return strings.TrimSpace(bodyActor)
 }
 
 func nowNano() string { return time.Now().UTC().Format(time.RFC3339Nano) }
@@ -4930,7 +5018,8 @@ func main() {
 	mux.HandleFunc("/work/next", c.handleWorkNext)
 	mux.HandleFunc("/work/playlist", c.handlePlaylist)
 	mux.HandleFunc("/watch", c.handleWatch)
-	mux.HandleFunc("/timeline", c.handleTimeline)       // #13 the interleaved cross-substrate timeline               // #12 change-detector: push tab.changed for a watched tab // run the queue hands-free, one-by-one like a playlist     // the queue PICKER — next unblocked todo, one by one               // the shared task surface — operator writes, agents check FIRST
+	mux.HandleFunc("/timeline", c.handleTimeline)       // #13 the interleaved cross-substrate timeline
+	mux.HandleFunc("/provenance", c.handleProvenance)   // #29 actor→atom→surface flow (declared X-8-Actor)               // #12 change-detector: push tab.changed for a watched tab // run the queue hands-free, one-by-one like a playlist     // the queue PICKER — next unblocked todo, one by one               // the shared task surface — operator writes, agents check FIRST
 
 	allow := map[string]bool{}
 	for _, o := range strings.Split(*origins, ",") {
