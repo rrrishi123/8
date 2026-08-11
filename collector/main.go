@@ -1099,6 +1099,55 @@ func (c *collector) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"timeline": out, "substrates": kinds, "count": len(out)})
 }
 
+// handleWitnessed (#70 FIX #24) is the sink that turns cmd/wire (the transparent
+// MITM proxy) into a real 8 witness: the proxy POSTs each call it OBSERVED (it
+// already forwarded it — this only RECORDS it), and 8 folds it into the ledger/
+// provenance/timeline exactly like a /fetch, but WITHOUT re-executing. So a
+// MITM'd Selenium/Appium smoke becomes a witnessed replayable record. Credentials
+// in the URL (user:pass@host — LambdaTest's key) are REDACTED before recording:
+// the witness must never persist the secret it sees in transit (the I1 spirit).
+func (c *collector) handleWitnessed(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Physics  string  `json:"physics"` // call | channel
+		Method   string  `json:"method"`
+		URL      string  `json:"url"`
+		Status   int     `json:"status"`
+		LatUS    float64 `json:"latency_us"`
+		RespLen  int     `json:"resp_bytes"`
+		Session  string  `json:"session"`
+		Actor    string  `json:"actor"`
+	}
+	if json.NewDecoder(r.Body).Decode(&in) != nil || in.URL == "" {
+		http.Error(w, `{"error":"need {url,...}"}`, http.StatusBadRequest)
+		return
+	}
+	// REDACT credentials: strip user:pass@ from the URL so the key LambdaTest puts
+	// in the hub URL is never persisted in 8's ledger.
+	redacted := in.URL
+	if u, err := url.Parse(in.URL); err == nil && u.User != nil {
+		u.User = url.User("REDACTED")
+		redacted = u.String()
+	}
+	phys := in.Physics
+	if phys == "" {
+		phys = "call"
+	}
+	id := c.record(reqRec{TS: nowNano(), Physics: phys, Session: in.Session, Method: in.Method,
+		URL: redacted, Status: in.Status, LatUS: in.LatUS, RespLen: in.RespLen,
+		Actor: actorOf(r, in.Actor)})
+	c.publish(fmt.Sprintf(`{"session":%q,"physics":%q,"origin":"COLLECTOR","frame":{"method":"witnessed","params":{"route":%q,"ledger_id":%d,"status":%d,"mitm":true}}}`,
+		firstNonEmpty(in.Session, "wire"), phys, in.Method+" "+redacted, id, in.Status))
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"witnessed":true,"ledger_id":%d}`, id)
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
 // handleProvenance (#29) is the anomaly's fix made into a real query: the
 // actor→atom→surface flow. The ledger recorded WHO (declared actor) fired WHICH
 // atom (call|channel) onto WHICH surface (session/tab). Previously provenance was
@@ -5462,7 +5511,8 @@ func main() {
 	mux.HandleFunc("/work/playlist", c.handlePlaylist)
 	mux.HandleFunc("/watch", c.handleWatch)
 	mux.HandleFunc("/timeline", c.handleTimeline)       // #13 the interleaved cross-substrate timeline
-	mux.HandleFunc("/provenance", c.handleProvenance)   // #29 actor→atom→surface flow (declared X-8-Actor)               // #12 change-detector: push tab.changed for a watched tab // run the queue hands-free, one-by-one like a playlist     // the queue PICKER — next unblocked todo, one by one               // the shared task surface — operator writes, agents check FIRST
+	mux.HandleFunc("/provenance", c.handleProvenance)   // #29 actor→atom→surface flow (declared X-8-Actor)
+	mux.HandleFunc("/witnessed", c.handleWitnessed)     // #70 sink: cmd/wire POSTs observed MITM calls → 8 ledger (creds redacted)               // #12 change-detector: push tab.changed for a watched tab // run the queue hands-free, one-by-one like a playlist     // the queue PICKER — next unblocked todo, one by one               // the shared task surface — operator writes, agents check FIRST
 
 	allow := map[string]bool{}
 	for _, o := range strings.Split(*origins, ",") {
