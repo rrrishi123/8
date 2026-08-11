@@ -3025,16 +3025,26 @@ func (c *collector) handleClaim(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"need {ctx, agent}"}`, http.StatusBadRequest)
 		return
 	}
+	now := time.Now().UTC().Format(time.RFC3339)
 	c.tmu.Lock()
+	if c.manifest == nil {
+		c.manifest = map[string]*tabRec{}
+	}
 	rec := c.manifest[p.Ctx]
-	if rec != nil {
-		rec.ClaimedBy, rec.ClaimAt = p.Agent, time.Now().UTC().Format(time.RFC3339)
-	}
-	c.tmu.Unlock()
 	if rec == nil {
-		http.Error(w, `{"error":"unknown ctx"}`, http.StatusNotFound)
-		return
+		// LAZY CLAIM (2026-08-11): a JUST-created tab (e.g. one the git-broker's
+		// far-end Claude opened) isn't in the manifest yet — the reconcile runs
+		// every 5s, and it keys by chrome bcid while a fresh BiDi ctx is a uuid.
+		// So claim by ANY ctx creates a stub keyed by it: the lease + provenance
+		// stick immediately, and reconcile fills the rest. A claim never 404s on a
+		// real tab you just made.
+		c.tabseq++
+		rec = &tabRec{UID: c.tabseq, Ctx: p.Ctx, Session: "fox", OpenedBy: p.Agent,
+			Why: "claimed (lazy — not yet reconciled)", FirstSeen: now, Status: "live"}
+		c.manifest[p.Ctx] = rec
 	}
+	rec.ClaimedBy, rec.ClaimAt = p.Agent, now
+	c.tmu.Unlock()
 	c.publish(fmt.Sprintf(`{"session":%q,"origin":"COLLECTOR","frame":{"method":"tab.claim","params":{"ctx":%q,"agent":%q}}}`, rec.Session, p.Ctx, p.Agent))
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"claimed":%q,"by":%q}`, p.Ctx, p.Agent)
