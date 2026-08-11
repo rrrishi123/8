@@ -542,3 +542,8 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .vp-parked-url { font-size: 11px; color: #c5cbe3; word-break: break-all; max-width: 90%; }
 .vp-parked-wake { background: #14100a; border: 1px solid #f08c00; color: #ffd8a8; font-size: 11px; padding: 6px 14px; border-radius: 6px; cursor: pointer; }
 .vp-parked-note { font-size: 9px; color: #5a616e; }
+
+/* work-queue reorder controls (operator adjusts the queue, visibly — 2026-08-11) */
+.work-prio { display: inline-flex; flex-direction: column; margin-left: 4px; }
+.work-prio button { background: none; border: none; color: #6a7280; cursor: pointer; font-size: 7px; line-height: 1; padding: 0 2px; }
+.work-prio button:hover { color: #91a7ff; }

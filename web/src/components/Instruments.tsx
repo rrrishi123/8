@@ -4,7 +4,7 @@ import { useLocal } from './Dock';
 
 const BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
 
-interface WorkItem { id: number; text: string; status: string; by: string; ts: string }
+interface WorkItem { id: number; text: string; status: string; by: string; ts: string; prio?: number; deps?: number[] }
 const NEXT: Record<string, string> = { todo: 'doing', doing: 'done', done: 'todo' };
 
 // INSTRUMENTS — the witness's own gauges. They are NOT the world (that's the
@@ -37,6 +37,16 @@ export function Instruments() {
   const refresh = () => fetch(`${BASE}/work`).then((r) => r.json()).then((j) => setWork(j.work || [])).catch(() => {});
   const submit = () => { const t = add.trim(); if (!t) return; setAdd(''); fetch(`${BASE}/work`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: t, by: 'operator' }) }).then(refresh).catch(() => {}); };
   const cycle = (it: WorkItem) => fetch(`${BASE}/work`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: it.id, status: NEXT[it.status] || 'todo' }) }).then(refresh).catch(() => {});
+  const reprio = (it: WorkItem, d: number) =>
+    fetch(`${BASE}/work`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: it.id, prio: (it.prio || 0) + d }) }).then(refresh).catch(() => {});
+  // ORDER the queue the way the PICKER sees it: todos by prio desc then id;
+  // done/doing keep their place after. The operator's ↑↓ move the queue visibly.
+  const ordered = [...work].sort((a, b) => {
+    const rank = (w: WorkItem) => (w.status === 'todo' ? 0 : w.status === 'doing' ? 1 : 2);
+    if (rank(a) !== rank(b)) return rank(a) - rank(b);
+    if (a.status === 'todo') return (b.prio || 0) - (a.prio || 0) || a.id - b.id;
+    return a.id - b.id;
+  });
   const openCount = work.filter((w) => w.status !== 'done').length;
   const tog = (k: string) => setOpen((cur) => (cur === k ? '' : k));
 
@@ -55,11 +65,17 @@ export function Instruments() {
       )}
       {open === 'work' && (
         <div className="inst-work">
-          <div className="inst-h">work · {openCount} open · agents check this first</div>
-          {work.map((it) => (
+          <div className="inst-h">work · {openCount} open · ↑↓ to reorder the queue</div>
+          {ordered.map((it) => (
             <div key={it.id} className={`work-row ${it.status}`}>
               <button className="work-dot" title={`${it.status} → ${NEXT[it.status]}`} onClick={() => cycle(it)}>{it.status === 'todo' ? '○' : it.status === 'doing' ? '◐' : '●'}</button>
-              <span className="work-text" title={`${it.by} · ${it.ts}`}>{it.text}</span>
+              <span className="work-text" title={`${it.by} · ${it.ts}${it.prio ? ' · prio ' + it.prio : ''}`}>{it.text}</span>
+              {it.status === 'todo' && (
+                <span className="work-prio">
+                  <button title="raise priority (picked sooner)" onClick={() => reprio(it, 1)}>▲</button>
+                  <button title="lower priority" onClick={() => reprio(it, -1)}>▼</button>
+                </span>
+              )}
             </div>
           ))}
           <input className="work-add" value={add} onChange={(e) => setAdd(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} placeholder="+ add work (Enter)" />
