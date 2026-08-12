@@ -1914,8 +1914,9 @@ type tabRec struct {
 	LastSeen  string `json:"last_seen"`
 	Status    string `json:"status"` // live | closed
 	ClosedAt  string `json:"closed_at,omitempty"`
-	ClaimedBy string `json:"claimed_by,omitempty"` // an agent CURRENTLY using this tab (a lease)
-	ClaimAt   string `json:"claim_at,omitempty"`   // heartbeat — a claim is LIVE only if fresh (<90s)
+	ClaimedBy     string `json:"claimed_by,omitempty"`     // an agent CURRENTLY using this tab (a lease)
+	ClaimAt       string `json:"claim_at,omitempty"`       // heartbeat — a claim is LIVE only if fresh (<90s)
+	ClaimVerified bool   `json:"claim_verified,omitempty"` // #83 the lease was granted against a host-resolved credential (not a free-text name)
 }
 
 // claimLive reports whether a tab's lease is fresh — the FALSIFIABLE basis for
@@ -3767,12 +3768,45 @@ func (c *collector) handleMatrix(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// claimTokens reads the HOST-side agent→token map (~/.8/claim_tokens.json). The
+// map lives on the host and is NEVER in any public artifact — the I1 invariant.
+// Returns (tokens, enforced): enforced=false when the file is absent (open dev
+// model, unchanged); enforced=true means /claim must present a matching token.
+func claimTokens() (map[string]string, bool) {
+	b, err := os.ReadFile(dotDir() + "/claim_tokens.json")
+	if err != nil {
+		return nil, false
+	}
+	var m map[string]string
+	if json.Unmarshal(b, &m) != nil || len(m) == 0 {
+		return nil, false
+	}
+	return m, true
+}
+
 func (c *collector) handleClaim(w http.ResponseWriter, r *http.Request) {
-	var p struct{ Ctx, Agent string }
+	var p struct{ Ctx, Agent, Token string }
 	json.NewDecoder(r.Body).Decode(&p)
 	if p.Ctx == "" || p.Agent == "" {
 		http.Error(w, `{"error":"need {ctx, agent}"}`, http.StatusBadRequest)
 		return
+	}
+	// #83 real spoof closure: when tokens are configured, a claim must present the
+	// host-resolved credential for its agent, else it is REJECTED — /claim can no
+	// longer mint a lease for an arbitrary free-text name. Non-breaking: absent a
+	// tokens file, the open model is unchanged and the claim is marked unverified.
+	tokens, enforced := claimTokens()
+	tok := p.Token
+	if h := r.Header.Get("X-8-Token"); h != "" {
+		tok = h
+	}
+	verified := false
+	if enforced {
+		if want, ok := tokens[p.Agent]; !ok || subtle.ConstantTimeCompare([]byte(want), []byte(tok)) != 1 {
+			http.Error(w, `{"error":"claim rejected — bad or missing credential for this agent (spoof closed). Present X-8-Token or {token}."}`, http.StatusForbidden)
+			return
+		}
+		verified = true
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	c.tmu.Lock()
@@ -3792,11 +3826,11 @@ func (c *collector) handleClaim(w http.ResponseWriter, r *http.Request) {
 			Why: "claimed (lazy — not yet reconciled)", FirstSeen: now, Status: "live"}
 		c.manifest[p.Ctx] = rec
 	}
-	rec.ClaimedBy, rec.ClaimAt = p.Agent, now
+	rec.ClaimedBy, rec.ClaimAt, rec.ClaimVerified = p.Agent, now, verified
 	c.tmu.Unlock()
-	c.publish(fmt.Sprintf(`{"session":%q,"origin":"COLLECTOR","frame":{"method":"tab.claim","params":{"ctx":%q,"agent":%q}}}`, rec.Session, p.Ctx, p.Agent))
+	c.publish(fmt.Sprintf(`{"session":%q,"origin":"COLLECTOR","frame":{"method":"tab.claim","params":{"ctx":%q,"agent":%q,"verified":%v}}}`, rec.Session, p.Ctx, p.Agent, verified))
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"claimed":%q,"by":%q}`, p.Ctx, p.Agent)
+	fmt.Fprintf(w, `{"claimed":%q,"by":%q,"verified":%v}`, p.Ctx, p.Agent, verified)
 }
 
 // handleDedup — find same-URL duplicate live tabs and (when asked=&close=1)
