@@ -4608,6 +4608,7 @@ func main() {
 	mux.HandleFunc("/work/next", c.handleWorkNext)
 	mux.HandleFunc("/work/playlist", c.handlePlaylist)
 	mux.HandleFunc("/panes", c.handlePanes) // #277 witnessed pane roster (first_seen per pane)
+	mux.HandleFunc("/sql", c.handleSQL)     // #280 the DB ATOM: raw SQL over eight.db (modernc, witnessed)
 	mux.HandleFunc("/watch", c.handleWatch)
 	mux.HandleFunc("/timeline", c.handleTimeline)     // #13 the interleaved cross-substrate timeline
 	mux.HandleFunc("/provenance", c.handleProvenance) // #29 actor→atom→surface flow (declared X-8-Actor)
