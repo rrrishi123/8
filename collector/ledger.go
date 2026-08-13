@@ -108,6 +108,9 @@ func pickNext(items []workItem) int {
 		if isRecord(items[i].Text) { // records are documentation, never summoned
 			continue
 		}
+		if !paneAlive(items[i].Assignee) { // only auto-summon to a LIVE claude pane —
+			continue // a dead %N no-ops but jams WIP=1; a zsh pane runs the text as a shell cmd
+		}
 		blocked := false
 		for _, d := range items[i].Deps {
 			if !done[d] {
@@ -124,6 +127,27 @@ func pickNext(items []workItem) int {
 		}
 	}
 	return best
+}
+
+// paneAlive reports whether a tmux pane id currently exists AND runs a claude
+// process. The summon target must be a live sibling MIND, not a dead %N (which
+// no-ops but still flips the task to "doing" and jams the WIP=1 playlist) nor a
+// bare shell (which would execute the task text as a shell command). This is the
+// fix for "the playlist plays but nothing runs": summon only what's alive.
+func paneAlive(pane string) bool {
+	if pane == "" {
+		return false
+	}
+	for _, p := range tmuxPanes() {
+		if p.ID == pane {
+			switch p.Cmd {
+			case "claude.exe", "claude", "node":
+				return true
+			}
+			return false
+		}
+	}
+	return false
 }
 
 // summon delivers a task INTO a tmux pane — the plan prompting the agent. The
