@@ -150,6 +150,18 @@ func paneAlive(pane string) bool {
 	return false
 }
 
+// rawAssignee pulls the literal assignee value straight from the raw query, so a
+// pane-id like %7 (invalid percent-encoding) survives instead of being silently
+// dropped by url.Query(). #289.
+func rawAssignee(rawQuery string) string {
+	for _, kv := range strings.Split(rawQuery, "&") {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == "assignee" {
+			return v
+		}
+	}
+	return ""
+}
+
 // summon delivers a task INTO a tmux pane — the plan prompting the agent. The
 // task's own Assignee pane wins (assign work to ANOTHER Claude's pane); else the
 // default worker.json. Used by manual flip, auto-advance, and the picker.
@@ -410,7 +422,11 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 		}
 		items = f
 	}
-	if as := q.Get("assignee"); as != "" {
+	// #289: read assignee from the RAW query — a pane-id like %7 is malformed
+	// percent-encoding, so url.Query().Get() drops it and the filter silently
+	// matched nothing. rawAssignee preserves the literal %N. (Role-based assignees
+	// are the deeper fix; this makes the %N filter at least honest meanwhile.)
+	if as := rawAssignee(r.URL.RawQuery); as != "" {
 		f := items[:0:0]
 		for _, it := range items {
 			if it.Assignee == as {
