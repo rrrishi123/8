@@ -128,9 +128,9 @@ type collector struct {
 	fxDriver string               // path to adapters/browser/firefox-stream.js
 	fxShot   string               // path to adapters/browser/firefox-drawshot.js (leak-free periphery still)
 
-	lastCapture atomic.Int64 // unixnano of the last capture served (drawshot/shot/fxchunk) — gates the memory aperture
-	chromeMu     sync.Mutex // serializes /moz/context chrome<->content toggles so concurrent chrome-exec (drawshot/procinfo/aperture) don't corrupt each other's context state
-	lastChromeOp time.Time  // guarded by chromeMu — for pacing chrome ops (feature A rate-limit)
+	lastCapture  atomic.Int64 // unixnano of the last capture served (drawshot/shot/fxchunk) — gates the memory aperture
+	chromeMu     sync.Mutex   // serializes /moz/context chrome<->content toggles so concurrent chrome-exec (drawshot/procinfo/aperture) don't corrupt each other's context state
+	lastChromeOp time.Time    // guarded by chromeMu — for pacing chrome ops (feature A rate-limit)
 }
 
 // fxStream is one Firefox tab's live WebM relay: the init segment (first cluster,
@@ -1108,14 +1108,14 @@ func (c *collector) handleTimeline(w http.ResponseWriter, r *http.Request) {
 // the witness must never persist the secret it sees in transit (the I1 spirit).
 func (c *collector) handleWitnessed(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Physics  string  `json:"physics"` // call | channel
-		Method   string  `json:"method"`
-		URL      string  `json:"url"`
-		Status   int     `json:"status"`
-		LatUS    float64 `json:"latency_us"`
-		RespLen  int     `json:"resp_bytes"`
-		Session  string  `json:"session"`
-		Actor    string  `json:"actor"`
+		Physics string  `json:"physics"` // call | channel
+		Method  string  `json:"method"`
+		URL     string  `json:"url"`
+		Status  int     `json:"status"`
+		LatUS   float64 `json:"latency_us"`
+		RespLen int     `json:"resp_bytes"`
+		Session string  `json:"session"`
+		Actor   string  `json:"actor"`
 	}
 	if json.NewDecoder(r.Body).Decode(&in) != nil || in.URL == "" {
 		http.Error(w, `{"error":"need {url,...}"}`, http.StatusBadRequest)
@@ -1769,7 +1769,7 @@ func (c *collector) handleTabs(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"tabs": tabs})
 		return
 	}
-		if r.URL.Query().Get("session") == "daemons" { // the host's background minds
+	if r.URL.Query().Get("session") == "daemons" { // the host's background minds
 		tabs := make([]map[string]string, 0, 8)
 		for _, d := range daemonList() {
 			tabs = append(tabs, map[string]string{"context": "d-" + d.Name, "url": "daemon://" + d.Name + " · pid " + d.Pid + " · " + d.Info, "title": d.Name})
@@ -1904,16 +1904,16 @@ const chromeTabsScript = `const cb=arguments[arguments.length-1];try{` +
 // the manifest is the durable identity + provenance layer on top, reconciled every
 // few seconds so dead-context ghosts turn "closed" and new tabs are "born".
 type tabRec struct {
-	UID       int64  `json:"uid"`
-	Ctx       string `json:"ctx"`
-	URL       string `json:"url"`
-	Session   string `json:"session"`
-	OpenedBy  string `json:"opened_by"` // "human" | "<agent-id>"
-	Why       string `json:"why"`
-	FirstSeen string `json:"first_seen"`
-	LastSeen  string `json:"last_seen"`
-	Status    string `json:"status"` // live | closed
-	ClosedAt  string `json:"closed_at,omitempty"`
+	UID           int64  `json:"uid"`
+	Ctx           string `json:"ctx"`
+	URL           string `json:"url"`
+	Session       string `json:"session"`
+	OpenedBy      string `json:"opened_by"` // "human" | "<agent-id>"
+	Why           string `json:"why"`
+	FirstSeen     string `json:"first_seen"`
+	LastSeen      string `json:"last_seen"`
+	Status        string `json:"status"` // live | closed
+	ClosedAt      string `json:"closed_at,omitempty"`
 	ClaimedBy     string `json:"claimed_by,omitempty"`     // an agent CURRENTLY using this tab (a lease)
 	ClaimAt       string `json:"claim_at,omitempty"`       // heartbeat — a claim is LIVE only if fresh (<90s)
 	ClaimVerified bool   `json:"claim_verified,omitempty"` // #83 the lease was granted against a host-resolved credential (not a free-text name)
@@ -3141,7 +3141,9 @@ func (c *collector) handleStopwatch(w http.ResponseWriter, r *http.Request) {
 // idempotently each sync (DROP/CREATE), so it can never desync into a second
 // authority DBeaver would trust wrongly. Built by shelling the sqlite3 binary,
 // so 8 stays stdlib-only (like tmux/pgrep/ps) and DBeaver opens a real file:
-//   dbeaver → SQLite → ~/.8/eight.db  (tables: surfaces, events, work, benches)
+//
+//	dbeaver → SQLite → ~/.8/eight.db  (tables: surfaces, events, work, benches)
+//
 // One db, four surface-kinds and every act, ready for data modelling.
 func eightDB() string { return os.ExpandEnv("$HOME/.8/eight.db") }
 
@@ -3616,8 +3618,67 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			os.WriteFile(workFile(), b, 0o644)
 		}
 	}
+	// PROJECTION — the wire wins on leanness only if it hands back the VIEW, not the
+	// firehose. GET /work?status=todo,doing&assignee=%9&fields=id,text,assignee&limit=20
+	// returns the lean witnessed answer, so http_request beats a raw sqlite/curl dump.
+	q := r.URL.Query()
+	if st := q.Get("status"); st != "" {
+		allow := map[string]bool{}
+		for _, s := range strings.Split(st, ",") {
+			allow[strings.TrimSpace(s)] = true
+		}
+		f := items[:0:0]
+		for _, it := range items {
+			if allow[it.Status] {
+				f = append(f, it)
+			}
+		}
+		items = f
+	}
+	if as := q.Get("assignee"); as != "" {
+		f := items[:0:0]
+		for _, it := range items {
+			if it.Assignee == as {
+				f = append(f, it)
+			}
+		}
+		items = f
+	}
+	if n, err := strconv.Atoi(q.Get("limit")); err == nil && n >= 0 && n < len(items) {
+		items = items[:n]
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"work": items})
+	if fields := q.Get("fields"); fields != "" {
+		cols := strings.Split(fields, ",")
+		proj := make([]map[string]any, 0, len(items))
+		for _, it := range items {
+			m := map[string]any{}
+			for _, col := range cols {
+				switch strings.TrimSpace(col) {
+				case "id":
+					m["id"] = it.ID
+				case "text":
+					m["text"] = it.Text
+				case "status":
+					m["status"] = it.Status
+				case "by":
+					m["by"] = it.By
+				case "ts":
+					m["ts"] = it.TS
+				case "deps":
+					m["deps"] = it.Deps
+				case "prio":
+					m["prio"] = it.Prio
+				case "assignee":
+					m["assignee"] = it.Assignee
+				}
+			}
+			proj = append(proj, m)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"work": proj, "n": len(proj)})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{"work": items, "n": len(items)})
 }
 
 // handleClaim — an agent LEASES a tab it is actively using. POST /claim
@@ -3679,12 +3740,13 @@ func (c *collector) handleWake(w http.ResponseWriter, r *http.Request) {
 // handleMatrix — the SURFACES × SENSES coverage matrix: the map of the unfound.
 // Rows are the live surface-kinds (seats); columns are the senses/verbs. The
 // point is the DIFFERENCE between empty cells:
-//   live    — probed just now, works (carries a count/proof)
-//   yes     — built and declared
-//   na      — structurally inapplicable (pixels of a text seat)
-//   unfound — PLAUSIBLE but not built: a sense this surface COULD expose and
-//             doesn't — where something can stand seen-able-but-unseen. Each is
-//             a candidate work item; these cells ARE the map.
+//
+//	live    — probed just now, works (carries a count/proof)
+//	yes     — built and declared
+//	na      — structurally inapplicable (pixels of a text seat)
+//	unfound — PLAUSIBLE but not built: a sense this surface COULD expose and
+//	          doesn't — where something can stand seen-able-but-unseen. Each is
+//	          a candidate work item; these cells ARE the map.
 func (c *collector) handleMatrix(w http.ResponseWriter, r *http.Request) {
 	cols := []string{"enumerate", "frame·pixels", "frame·text", "symbol·eval", "control", "events·push", "memory·ledger"}
 	type cell struct {
@@ -3846,7 +3908,11 @@ func (c *collector) handleDedup(w http.ResponseWriter, r *http.Request) {
 			byURL[rec.URL] = append(byURL[rec.URL], rec)
 		}
 	}
-	type cand struct{ URL, Ctx, ClaimedBy string; Claimed bool; Kept bool }
+	type cand struct {
+		URL, Ctx, ClaimedBy string
+		Claimed             bool
+		Kept                bool
+	}
 	var out []cand
 	var toClose []string
 	for url, recs := range byURL {
@@ -5483,7 +5549,7 @@ func main() {
 	mux.HandleFunc("/fxstats", c.handleFxStats)
 	mux.HandleFunc("/fxdiag", c.handleFxDiag)
 	mux.HandleFunc("/sessions", c.handleSessions)
-	mux.HandleFunc("/attach", c.handleAttach) // connect any provider's live session (CALL) at runtime
+	mux.HandleFunc("/attach", c.handleAttach)             // connect any provider's live session (CALL) at runtime
 	mux.HandleFunc("/adapters/fire", c.handleAdapterFire) // fire a real adapter loopback (grpc|mqtt|webrtc|unix), witnessed
 	mux.HandleFunc("/source", c.handleSource)
 	mux.HandleFunc("/act", c.handleAct)
@@ -5523,30 +5589,30 @@ func main() {
 `)
 	})
 	mux.HandleFunc("/health", c.handleHealth)
-	mux.HandleFunc("/park", c.handlePark)               // manually park a tab (#7, symmetric with /wake)
-	mux.HandleFunc("/wake", c.handleWake)               // un-park a parked tab (#7 click-to-wake)
-	mux.HandleFunc("/matrix", c.handleMatrix)           // surfaces × senses coverage — the map of the unfound
-	mux.HandleFunc("/claim", c.handleClaim)             // an agent leases a tab (verify/falsify: is anyone using it?)
-	mux.HandleFunc("/dedup", c.handleDedup)             // same-URL duplicates; close the unclaimed ones
+	mux.HandleFunc("/park", c.handlePark)         // manually park a tab (#7, symmetric with /wake)
+	mux.HandleFunc("/wake", c.handleWake)         // un-park a parked tab (#7 click-to-wake)
+	mux.HandleFunc("/matrix", c.handleMatrix)     // surfaces × senses coverage — the map of the unfound
+	mux.HandleFunc("/claim", c.handleClaim)       // an agent leases a tab (verify/falsify: is anyone using it?)
+	mux.HandleFunc("/dedup", c.handleDedup)       // same-URL duplicates; close the unclaimed ones
 	mux.HandleFunc("/manifest", c.handleManifest) // durable tab manifest: how-many/what/where/who/why/when
 	mux.HandleFunc("/tmuxpane", c.handleTmuxPane)
-	mux.HandleFunc("/tmuxsummary", c.handleTmuxSummary) // a tmux pane's visible text — the agents' surface frame
-	mux.HandleFunc("/attention", c.handleAttention)     // #22a the research-programme READING packet (Lakatos/Kuhn), witness-only
-	mux.HandleFunc("/tmuxchannel", c.handleTmuxChannel) // #35 native tmux CHANNEL (control-mode push), gated off the live server
-	mux.HandleFunc("/tmuxsend", c.handleTmuxSend) // the tmux seat's CONTROL verb (seen ⇒ controllable)
-	mux.HandleFunc("/nvimbuf", c.handleNvimBuf)   // an nvim buffer's lines — the editor seat's frame
-	mux.HandleFunc("/nvimopen", c.handleNvimOpen) // the editor seat's CONTROL verb (:buffer N)
-	mux.HandleFunc("/daemonframe", c.handleDaemonFrame) // a daemon's frame: ps line + log tail
+	mux.HandleFunc("/tmuxsummary", c.handleTmuxSummary)   // a tmux pane's visible text — the agents' surface frame
+	mux.HandleFunc("/attention", c.handleAttention)       // #22a the research-programme READING packet (Lakatos/Kuhn), witness-only
+	mux.HandleFunc("/tmuxchannel", c.handleTmuxChannel)   // #35 native tmux CHANNEL (control-mode push), gated off the live server
+	mux.HandleFunc("/tmuxsend", c.handleTmuxSend)         // the tmux seat's CONTROL verb (seen ⇒ controllable)
+	mux.HandleFunc("/nvimbuf", c.handleNvimBuf)           // an nvim buffer's lines — the editor seat's frame
+	mux.HandleFunc("/nvimopen", c.handleNvimOpen)         // the editor seat's CONTROL verb (:buffer N)
+	mux.HandleFunc("/daemonframe", c.handleDaemonFrame)   // a daemon's frame: ps line + log tail
 	mux.HandleFunc("/daemonsignal", c.handleDaemonSignal) // the daemons seat's CONTROL verb (watchdog protected)
 	mux.HandleFunc("/db", c.handleDB)                     // project the scattered stores into ~/.8/eight.db for DBeaver
-	mux.HandleFunc("/stopwatch", c.handleStopwatch)     // experiri: the witness's staleness made readable
+	mux.HandleFunc("/stopwatch", c.handleStopwatch)       // experiri: the witness's staleness made readable
 	mux.HandleFunc("/work", c.handleWork)
 	mux.HandleFunc("/work/next", c.handleWorkNext)
 	mux.HandleFunc("/work/playlist", c.handlePlaylist)
 	mux.HandleFunc("/watch", c.handleWatch)
-	mux.HandleFunc("/timeline", c.handleTimeline)       // #13 the interleaved cross-substrate timeline
-	mux.HandleFunc("/provenance", c.handleProvenance)   // #29 actor→atom→surface flow (declared X-8-Actor)
-	mux.HandleFunc("/witnessed", c.handleWitnessed)     // #70 sink: cmd/wire POSTs observed MITM calls → 8 ledger (creds redacted)               // #12 change-detector: push tab.changed for a watched tab // run the queue hands-free, one-by-one like a playlist     // the queue PICKER — next unblocked todo, one by one               // the shared task surface — operator writes, agents check FIRST
+	mux.HandleFunc("/timeline", c.handleTimeline)     // #13 the interleaved cross-substrate timeline
+	mux.HandleFunc("/provenance", c.handleProvenance) // #29 actor→atom→surface flow (declared X-8-Actor)
+	mux.HandleFunc("/witnessed", c.handleWitnessed)   // #70 sink: cmd/wire POSTs observed MITM calls → 8 ledger (creds redacted)               // #12 change-detector: push tab.changed for a watched tab // run the queue hands-free, one-by-one like a playlist     // the queue PICKER — next unblocked todo, one by one               // the shared task surface — operator writes, agents check FIRST
 
 	allow := map[string]bool{}
 	for _, o := range strings.Split(*origins, ",") {
