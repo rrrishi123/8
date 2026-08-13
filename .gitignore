@@ -18,3 +18,10 @@ web/.vite/
 /Aṣṭādhyāyī.md
 Aṣṭādhyāyī.md
 /astadhyayi.html
+
+# private / office boundary — NEVER public (internal IPs, tunnels, IAM, DB users)
+iam_witness.py
+*.env
+web/.env
+# identity scripts are being folded into the Go collector; don't ship stray python
+/scripts/*.py
