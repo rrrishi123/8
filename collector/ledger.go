@@ -387,6 +387,11 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 		if b, err := json.MarshalIndent(items, "", " "); err == nil {
 			os.WriteFile(workFile(), b, 0o644)
 		}
+		// LEAN ACK (#278) — a POST returns the affected count, NOT the whole 164KB
+		// ledger. Retires the ?status=_ack overflow workaround; the firehose is gone.
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "n": len(items)})
+		return
 	}
 	// PROJECTION — the wire wins on leanness only if it hands back the VIEW, not the
 	// firehose. GET /work?status=todo,doing&assignee=%9&fields=id,text,assignee&limit=20
