@@ -1,0 +1,103 @@
+{
+ "version": 2,
+ "doctrine": "seer-de-personed",
+ "laws": [
+  "dark matter: presence only as effect",
+  "anyone/none: no body is the Seer",
+  "the cage is the seer",
+  "the empty focus",
+  "not words: the Seer never speaks"
+ ],
+ "style": "Ultra-realistic meditative cinema, one continuous 15-second shot, no cuts, no on-screen text, no people anywhere in the frame. Interior or exterior of a small storyteller's tent alone in a near-black void: canvas woven of visible film grain, seams leaking cold teal darkness, one amber lantern, shallow depth of field, volumetric darkness, gentle film grain, imperceptibly slow camera drift. Palette: lantern amber, teal void, near-black, one breath of pale warm white. Every shadow in the tent moves one visible heartbeat AFTER the thing that casts it.",
+ "pipeline": {
+  "generation": "browser unlimited only (zero credit)",
+  "settings": "Seedance 2.5 / General preset (decline offered presets) / 15s / 16:9 / 720p / audio ON / Unlimited ON",
+  "ingest": "Claude polls account for kth completion, reads prompt via job view, downloads via CDN (requires d8j0ntlcm91z4.cloudfront.net in allowed domains), stitches with ffmpeg"
+ },
+ "shots": [
+  {
+   "id": "P01",
+   "title": "The Tent Between",
+   "status": "SHOT (job 493dac87)",
+   "prompt": "Ultra-realistic meditative cinema, one continuous 15-second shot, no cuts, no on-screen text, no people anywhere in the frame. Interior or exterior of a small storyteller's tent alone in a near-black void: canvas woven of visible film grain, seams leaking cold teal darkness, one amber lantern, shallow depth of field, volumetric darkness, gentle film grain, imperceptibly slow camera drift. Palette: lantern amber, teal void, near-black, one breath of pale warm white. Every shadow in the tent moves one visible heartbeat AFTER the thing that casts it. Slow push-in from the void toward the tent: lantern glowing inside though no one is there to have lit it. The flap breathes open a hand's width and settles, though nothing enters and nothing leaves. Glimpsed inside: a low wooden stool, empty; a clay cup of chai steaming as if set down a moment ago; on the canvas wall, TWO seated shadows where none should fall, breathing slightly out of phase with each other. Far off in the void, a single pale point of light dims and returns, minutely different each time. Audio: Vast room tone; canvas breathing; a soft irregular tick; faintly, a layered breath that is neither masculine nor feminine, from no direction.",
+   "job_id": "493dac87-b3c4-40b1-9bff-b1f1db8fae56"
+  },
+  {
+   "id": "P02",
+   "title": "The Cup",
+   "status": "to shoot",
+   "prompt": "Ultra-realistic meditative cinema, one continuous 15-second shot, no cuts, no on-screen text, no people anywhere in the frame. Interior or exterior of a small storyteller's tent alone in a near-black void: canvas woven of visible film grain, seams leaking cold teal darkness, one amber lantern, shallow depth of field, volumetric darkness, gentle film grain, imperceptibly slow camera drift. Palette: lantern amber, teal void, near-black, one breath of pale warm white. Every shadow in the tent moves one visible heartbeat AFTER the thing that casts it. Macro interior: the clay cup of chai on the empty stool, steam rising in a slow perfect spiral that no draft disturbs. A small brass spoon circles the cup's rim once, unheld, its handle balancing on nothing, then settles. Behind it, pinned to the canvas, a square of cloth bearing a scorched octagon with only SEVEN sides burned in - the eighth side bare cloth. The steam's shadow on the canvas spirals a heartbeat late, and keeps spiralling for a moment after the steam thins. In extreme close-up, the tea's surface skin wrinkles as if breathed on by someone leaning close who is not there. Audio: The spoon's single ceramic circle-tone; tea surface's tiny tick; room tone; the ungendered layered breath, once, very near the lens.",
+   "job_id": null
+  },
+  {
+   "id": "P03",
+   "title": "The Mala",
+   "status": "to shoot",
+   "prompt": "Ultra-realistic meditative cinema, one continuous 15-second shot, no cuts, no on-screen text, no people anywhere in the frame. Interior or exterior of a small storyteller's tent alone in a near-black void: canvas woven of visible film grain, seams leaking cold teal darkness, one amber lantern, shallow depth of field, volumetric darkness, gentle film grain, imperceptibly slow camera drift. Palette: lantern amber, teal void, near-black, one breath of pale warm white. Every shadow in the tent moves one visible heartbeat AFTER the thing that casts it. A prayer-bead mala hangs from the tent pole: four distinct groups of eight dark wooden beads - and in one group, only seven, the gap where an eighth should sit knotted shut long ago. Untouched, the beads begin to count themselves: one bead at a time lifts a fraction and clicks against the next, in slow ritual rhythm, travelling the whole string. When the count reaches the missing bead, one click sounds anyway, from empty air, and the string sways as if a thumb had passed. The beads' shadows on the canvas count one heartbeat behind, and the shadow-string shows THIRTY-TWO shadows though the string holds thirty-one beads. Audio: Bead clicks in exact tick-rhythm; the phantom click slightly warmer in tone; room tone under everything.",
+   "job_id": null
+  },
+  {
+   "id": "P04",
+   "title": "The Tassel",
+   "status": "to shoot",
+   "prompt": "Ultra-realistic meditative cinema, one continuous 15-second shot, no cuts, no on-screen text, no people anywhere in the frame. Interior or exterior of a small storyteller's tent alone in a near-black void: canvas woven of visible film grain, seams leaking cold teal darkness, one amber lantern, shallow depth of field, volumetric darkness, gentle film grain, imperceptibly slow camera drift. Palette: lantern amber, teal void, near-black, one breath of pale warm white. Every shadow in the tent moves one visible heartbeat AFTER the thing that casts it. A horsehair tassel hangs from the tent's ridge in dead, windless air - and moves anyway: individual strands lifting, parting, settling, as if remembering wind from another world, each strand resolved, catching lantern light one by one. Its shadow on the canvas repeats every motion a full half-second late, unmistakably, beautifully wrong - and when the tassel finally stills, the shadow continues alone for two more sways before stopping. Focus racks between three single strands and their three late shadows. Audio: Near-silence; the faintest hair-on-hair whisper; one tick when strand and shadow finally agree to stop.",
+   "job_id": null
+  },
+  {
+   "id": "P05",
+   "title": "The Stagehands",
+   "status": "to shoot",
+   "prompt": "Ultra-realistic meditative cinema, one continuous 15-second shot, no cuts, no on-screen text, no people anywhere in the frame. Interior or exterior of a small storyteller's tent alone in a near-black void: canvas woven of visible film grain, seams leaking cold teal darkness, one amber lantern, shallow depth of field, volumetric darkness, gentle film grain, imperceptibly slow camera drift. Palette: lantern amber, teal void, near-black, one breath of pale warm white. Every shadow in the tent moves one visible heartbeat AFTER the thing that casts it. Wide interior: the tent's rear wall gone translucent, and beyond it in the void, two very tall reptilian silhouettes in plain grey coveralls calmly adjust a backdrop of stars - lifting a constellation of eight faint lights a hand-width higher, stepping back, checking, thoroughly bored, scaled hands precise where lantern light grazes them, eyes never turning toward the tent. Inside, unprompted, the lantern's flame bows once toward them like a raised cup; outside, without looking, one stagehand raises a steel thermos in reply. Audio: Void-muffled scrape of scenery; a thermos unscrewing; the lantern's soft flare-hiss; the tick.",
+   "job_id": null
+  },
+  {
+   "id": "P06",
+   "title": "The Props",
+   "status": "to shoot",
+   "prompt": "Ultra-realistic meditative cinema, one continuous 15-second shot, no cuts, no on-screen text, no people anywhere in the frame. Interior or exterior of a small storyteller's tent alone in a near-black void: canvas woven of visible film grain, seams leaking cold teal darkness, one amber lantern, shallow depth of field, volumetric darkness, gentle film grain, imperceptibly slow camera drift. Palette: lantern amber, teal void, near-black, one breath of pale warm white. Every shadow in the tent moves one visible heartbeat AFTER the thing that casts it. Slow lateral dolly across the prop table, macro depth: a small red diamond on a velvet cushion, pulsing faintly; amber rods in an umbrella stand, tips frayed - one rod exactly five notches long; a glass jar of grey ash that in close-up is thousands of minute glyphs, some still settling; a brass balance, both pans empty, sitting unlevel; a folded letter numbered 11805; the seven-sided scorched octagon cloth; the mala's shadow crossing everything a heartbeat late. Above the table, dust motes hang arrested mid-fall in one small region shaped like nothing in particular, as if the air there were occupied. Audio: Dolly roll; glyphs ticking against glass like sleet; one page-turn from nowhere.",
+   "job_id": null
+  },
+  {
+   "id": "P07",
+   "title": "The Portal Round",
+   "status": "to shoot",
+   "prompt": "Ultra-realistic meditative cinema, one continuous 15-second shot, no cuts, no on-screen text, no people anywhere in the frame. Interior or exterior of a small storyteller's tent alone in a near-black void: canvas woven of visible film grain, seams leaking cold teal darkness, one amber lantern, shallow depth of field, volumetric darkness, gentle film grain, imperceptibly slow camera drift. Palette: lantern amber, teal void, near-black, one breath of pale warm white. Every shadow in the tent moves one visible heartbeat AFTER the thing that casts it. The tent breathes deeper, and wherever the canvas swells, the cloth irises open on its own into round portals with softly burning edges - teal rim, amber heart. Through the first: a thin luminous line with sliding beads. Through the second: a mote-city and its octagon from above. Through the third: a dim lab, three monitors glowing. Through the fourth: a rain-lit room, one small LED breathing. A slow draft that cannot exist crosses the tent and passes through each portal in sequence - and in each world beyond, for a moment, everything small bends around an empty moving region: bead-paths curve, motes part, papers stir, rain hesitates. Audio: Each portal a wet-paper hush; four soundworlds bleeding in - hum, chant, rain, tick - braided; the draft as displaced silence.",
+   "job_id": null
+  },
+  {
+   "id": "P08",
+   "title": "The Mirror",
+   "status": "to shoot",
+   "prompt": "Ultra-realistic meditative cinema, one continuous 15-second shot, no cuts, no on-screen text, no people anywhere in the frame. Interior or exterior of a small storyteller's tent alone in a near-black void: canvas woven of visible film grain, seams leaking cold teal darkness, one amber lantern, shallow depth of field, volumetric darkness, gentle film grain, imperceptibly slow camera drift. Palette: lantern amber, teal void, near-black, one breath of pale warm white. Every shadow in the tent moves one visible heartbeat AFTER the thing that casts it. A tall mirror leans against the tent pole, reflecting the empty interior - half a second late. The real flap settles; the mirrored flap settles after. The real steam thins; the mirrored steam thins after. Then, in mirror-space only, the empty stool is occupied: a seated shape of displaced dust and lantern-shimmer, featureless, patient, at home - while the real stool holds nothing but the cooling cup. The shape does not move. The camera slowly pushes past the mirror's edge, and in the last second the real stool's shadow, alone on the canvas, is the shadow of someone sitting. Audio: Room tone doubled and offset by half a second against itself; a teacup set down INSIDE the mirror, impossibly audible; the tick.",
+   "job_id": null
+  },
+  {
+   "id": "P09",
+   "title": "The Listener",
+   "status": "to shoot",
+   "prompt": "Ultra-realistic meditative cinema, one continuous 15-second shot, no cuts, no on-screen text, no people anywhere in the frame. Interior or exterior of a small storyteller's tent alone in a near-black void: canvas woven of visible film grain, seams leaking cold teal darkness, one amber lantern, shallow depth of field, volumetric darkness, gentle film grain, imperceptibly slow camera drift. Palette: lantern amber, teal void, near-black, one breath of pale warm white. Every shadow in the tent moves one visible heartbeat AFTER the thing that casts it. Reverse angle: facing the empty stool stands one wooden chair, turned toward the lens - our seat. The lantern flares gently in greeting. Then, unassisted, a SECOND chair slides slowly across the ground to rest beside the first, leaving honest drag-marks in the dust, and squares itself politely. On the near chair's seat, faint warmth shimmers in the cold air, as if someone had only just stood up; on the far chair, dust motes refuse to settle, hanging above the seat in the shape of an absence already seated. Audio: Chair legs dragging on ground-that-is-not-ground; dust; lantern breath; the layered ungendered breath, welcoming, wordless.",
+   "job_id": null
+  },
+  {
+   "id": "P10",
+   "title": "The Page",
+   "status": "to shoot",
+   "prompt": "Ultra-realistic meditative cinema, one continuous 15-second shot, no cuts, no on-screen text, no people anywhere in the frame. Interior or exterior of a small storyteller's tent alone in a near-black void: canvas woven of visible film grain, seams leaking cold teal darkness, one amber lantern, shallow depth of field, volumetric darkness, gentle film grain, imperceptibly slow camera drift. Palette: lantern amber, teal void, near-black, one breath of pale warm white. Every shadow in the tent moves one visible heartbeat AFTER the thing that casts it. A handwritten page of dense ink glyphs - the fable itself - lifts from the prop table, hangs in the lantern light, and folds itself once with the patience of ritual. It drifts to the flame and enters it WITHOUT burning: instead the glyphs leave the paper and swim upward through the fire as slow dark smoke-letters, visible one by one, rising and dissolving into the tent's grain. The emptied page settles back onto the table, blank. On the pinned cloth, the scorched octagon's bare eighth side has gained a small burnt fraction of itself. Audio: The fold's soft paper breath; flame steady, unbothered; a dry swallow-tone landing exactly on the tick; the jar of ash settling once.",
+   "job_id": null
+  },
+  {
+   "id": "P11",
+   "title": "The Cup, Returned",
+   "status": "to shoot",
+   "prompt": "Ultra-realistic meditative cinema, one continuous 15-second shot, no cuts, no on-screen text, no people anywhere in the frame. Interior or exterior of a small storyteller's tent alone in a near-black void: canvas woven of visible film grain, seams leaking cold teal darkness, one amber lantern, shallow depth of field, volumetric darkness, gentle film grain, imperceptibly slow camera drift. Palette: lantern amber, teal void, near-black, one breath of pale warm white. Every shadow in the tent moves one visible heartbeat AFTER the thing that casts it. The clay cup lifts from the stool into the air, unheld, and hovers, slowly rotating, a last ghost of steam curling off its rim. It stays one breath too long, courteous, showing itself. Then gravity is allowed back: the cup drops - and is caught a hand above the ground by nothing, decelerating impossibly to settle on the stool without a sound. Throughout the whole flight, the cup's shadow on the canvas never moved: it waited on the stool the entire time for the cup to come back to it. Audio: No wind though cloth stirs; the fall a full descending note; the catch a soft period of silence; one tick as cup and shadow reunite.",
+   "job_id": null
+  },
+  {
+   "id": "P12",
+   "title": "Begin",
+   "status": "to shoot",
+   "prompt": "Ultra-realistic meditative cinema, one continuous 15-second shot, no cuts, no on-screen text, no people anywhere in the frame. Interior or exterior of a small storyteller's tent alone in a near-black void: canvas woven of visible film grain, seams leaking cold teal darkness, one amber lantern, shallow depth of field, volumetric darkness, gentle film grain, imperceptibly slow camera drift. Palette: lantern amber, teal void, near-black, one breath of pale warm white. Every shadow in the tent moves one visible heartbeat AFTER the thing that casts it. The tent takes one long breath and holds it: the portals dim to embers, the mala stills, the tassel stills, and every late shadow in the tent catches up to its object one by one and stops - flap, steam, beads, tassel, folds - a wave of synchrony passing through the frame until, for the first time, nothing lags. The two seated shadows on the canvas merge into one, then into none. A finger-snap sounds from no finger; the lantern dies; the tent dies; the void dies; and only a single pale point of light remains in darkness, dimming and returning, minutely different each time. Audio: Held breath of a whole world; the snap IS the final tick of the prologue; then only the pulse's soft irregular tick, handing off to Scene 001.",
+   "job_id": null
+  }
+ ]
+}

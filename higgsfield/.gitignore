@@ -1,0 +1,14 @@
+# Frame Zero working artifacts — durable on disk, OUT of git (heavy / regenerable).
+# The film is made entirely inside higgsfield/ (never /tmp). Canonical script and
+# code below are tracked; everything a render or a cut produces is ignored.
+clips/
+videos/
+frames/
+*.mp4
+*.png
+.stage
+pipeline_state.json
+
+# tracked (do NOT ignore): frame_zero_v2.json (the script), frame-zero-script.md,
+# *.py, *.md, frame-zero-v2-seer-doctrine.pdf, .gitignore
+!.gitignore

@@ -1,0 +1,428 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// ── WORK — the shared task surface ───────────────────────────────────────────
+// The operator writes work INTO the witness (top-right widget); agents read it
+// FROM the witness before starting their own (the queue an agent checks FIRST).
+// Persisted ~/.8/work.json; every add/status change is published to the feed.
+type workItem struct {
+	ID       int64   `json:"id"`
+	Text     string  `json:"text"`
+	Status   string  `json:"status"` // todo → doing → done
+	By       string  `json:"by"`
+	TS       string  `json:"ts"`
+	Deps     []int64 `json:"deps,omitempty"`     // ids this task waits on — the PLAN's edges (a DAG)
+	Prio     int64   `json:"prio,omitempty"`     // higher = picked sooner; the operator/agent adjusts the queue
+	Assignee string  `json:"assignee,omitempty"` // a specific tmux pane (e.g. %13) — assign work to another Claude's pane
+}
+
+func workFile() string { return os.ExpandEnv("$HOME/.8/work.json") }
+
+func firstN(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+// PLAYLIST — a persisted flag: when on, completing a task auto-pulls the next
+// unblocked todo and summons it (run the queue hands-free, like a playlist).
+func playlistFile() string { return os.ExpandEnv("$HOME/.8/playlist.on") }
+func playlistOn() bool     { _, err := os.Stat(playlistFile()); return err == nil }
+
+func (c *collector) handlePlaylist(w http.ResponseWriter, r *http.Request) {
+	if v := r.URL.Query().Get("on"); v != "" {
+		os.MkdirAll(os.ExpandEnv("$HOME/.8"), 0o755)
+		if v == "1" {
+			os.WriteFile(playlistFile(), []byte("on"), 0o644)
+			// starting the playlist: pull the first track now
+			var items []workItem
+			if b, e := os.ReadFile(workFile()); e == nil {
+				json.Unmarshal(b, &items)
+			}
+			if !anyDoing(items) {
+				if idx := pickNext(items); idx >= 0 {
+					items[idx].Status = "doing"
+					items[idx].TS = time.Now().UTC().Format(time.RFC3339)
+					if b, e := json.MarshalIndent(items, "", " "); e == nil {
+						os.WriteFile(workFile(), b, 0o644)
+					}
+					c.summon(items[idx], "▶ playlist started")
+				}
+			}
+		} else {
+			os.Remove(playlistFile())
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"playlist":%v}`, playlistOn())
+}
+
+func anyDoing(items []workItem) bool {
+	for _, it := range items {
+		if it.Status == "doing" {
+			return true
+		}
+	}
+	return false
+}
+
+// pickNext — the QUEUE PICKER (a CALL over the plan): the next UNBLOCKED todo
+// (all deps done), ordered by prio desc then id asc. Returns index or -1. This
+// is "get pending items one by one" — a worker loops pick→do→done→pick.
+// isRecord marks queue items that are DOCUMENTATION (a verdict/finding/act), not
+// actionable work — the picker skips them so the playlist only summons real
+// tasks (BUILD/FIX/verify/ANOMALY-to-attend), instead of churning verdicts.
+func isRecord(text string) bool {
+	t := strings.TrimSpace(text)
+	for _, p := range []string{"FINDING", "ACT (", "AUDIT", "GUARD"} {
+		if strings.HasPrefix(t, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func pickNext(items []workItem) int {
+	done := map[int64]bool{}
+	for _, it := range items {
+		if it.Status == "done" {
+			done[it.ID] = true
+		}
+	}
+	best := -1
+	for i := range items {
+		if items[i].Status != "todo" {
+			continue
+		}
+		if isRecord(items[i].Text) { // records are documentation, never summoned
+			continue
+		}
+		blocked := false
+		for _, d := range items[i].Deps {
+			if !done[d] {
+				blocked = true
+				break
+			}
+		}
+		if blocked {
+			continue
+		}
+		if best == -1 || items[i].Prio > items[best].Prio ||
+			(items[i].Prio == items[best].Prio && items[i].ID < items[best].ID) {
+			best = i
+		}
+	}
+	return best
+}
+
+// summon delivers a task INTO a tmux pane — the plan prompting the agent. The
+// task's own Assignee pane wins (assign work to ANOTHER Claude's pane); else the
+// default worker.json. Used by manual flip, auto-advance, and the picker.
+func (c *collector) summon(item workItem, reason string) {
+	pane := item.Assignee
+	if pane == "" {
+		if wb, err := os.ReadFile(os.ExpandEnv("$HOME/.8/worker.json")); err == nil {
+			var wk struct{ Pane, Agent string }
+			if json.Unmarshal(wb, &wk) == nil {
+				pane = wk.Pane
+			}
+		}
+	}
+	tb := tmuxBin()
+	if pane == "" || tb == "" {
+		return
+	}
+	msg := fmt.Sprintf("[8-plan #%d -> doing] %s -- %s; the plan: curl -s 127.0.0.1:7070/work", item.ID, item.Text, reason)
+	exec.Command(tb, "send-keys", "-t", pane, "-l", msg).Run()
+	// SETTLE BEFORE ENTER (2026-08-11): send-keys returns once keys are QUEUED,
+	// not once the TUI has INGESTED them. For a long paste the Enter beat the
+	// ingest and submitted empty/partial — then the text landed and just sat in
+	// the prompt (#16 never fired). Fix: wait for the TUI to absorb the paste
+	// (delay scales with length), THEN Enter; a backup Enter after another beat
+	// catches a still-settling ingest. A second Enter is safe — Claude Code
+	// ignores an empty submit, so it can't double-post.
+	settle := 700*time.Millisecond + time.Duration(len(msg)/4)*time.Millisecond
+	if settle > 4000*time.Millisecond {
+		settle = 4000 * time.Millisecond
+	}
+	go func() {
+		time.Sleep(settle)
+		exec.Command(tb, "send-keys", "-t", pane, "Enter").Run()
+		time.Sleep(500 * time.Millisecond)
+		exec.Command(tb, "send-keys", "-t", pane, "Enter").Run()
+	}()
+	c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.summon","params":{"id":%d,"pane":%q,"reason":%q}}}`, item.ID, pane, reason))
+}
+
+// handleWorkNext — GET /work/next[?claim=<agent>&assignee=<pane>] returns the
+// next unblocked todo (the picker). With ?claim it flips that item to doing,
+// records who, optionally assigns a pane, and summons — so an idle worker pulls
+// its next task in one call. Without claim it just peeks.
+func (c *collector) handleWorkNext(w http.ResponseWriter, r *http.Request) {
+	c.tmu.Lock()
+	var items []workItem
+	if b, err := os.ReadFile(workFile()); err == nil {
+		json.Unmarshal(b, &items)
+	}
+	idx := pickNext(items)
+	claim := r.URL.Query().Get("claim")
+	var picked *workItem
+	if idx >= 0 {
+		if claim != "" {
+			items[idx].Status = "doing"
+			items[idx].By = claim
+			items[idx].TS = time.Now().UTC().Format(time.RFC3339)
+			if a := r.URL.Query().Get("assignee"); a != "" {
+				items[idx].Assignee = a
+			}
+			if b, e := json.MarshalIndent(items, "", " "); e == nil {
+				os.WriteFile(workFile(), b, 0o644)
+			}
+		}
+		it := items[idx]
+		picked = &it
+	}
+	c.tmu.Unlock()
+	if picked != nil && claim != "" {
+		c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.claim","params":{"id":%d,"by":%q}}}`, picked.ID, claim))
+		c.summon(*picked, "picked from the queue by "+claim)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"next": picked, "remaining_todo": func() int {
+		n := 0
+		for _, it := range items {
+			if it.Status == "todo" {
+				n++
+			}
+		}
+		return n
+	}()})
+}
+
+// advancePlan — THE HABIT LOOP: after a task completes, promote every todo whose
+// deps are ALL done to "doing" and summon it. A blocked task (an unmet dep) does
+// NOT fire — that's the falsifiable invariant. Returns the promoted items.
+func advanceUnblocked(items []workItem, now string) []int {
+	done := map[int64]bool{}
+	for _, it := range items {
+		if it.Status == "done" {
+			done[it.ID] = true
+		}
+	}
+	promoted := []int{}
+	for i := range items {
+		if items[i].Status != "todo" {
+			continue
+		}
+		blocked := false
+		for _, d := range items[i].Deps {
+			if !done[d] {
+				blocked = true // an unmet dependency — stays todo (the invariant)
+				break
+			}
+		}
+		if !blocked && len(items[i].Deps) > 0 { // only auto-advance items that HAVE a plan-edge
+			items[i].Status = "doing"
+			items[i].TS = now
+			promoted = append(promoted, i)
+		}
+	}
+	return promoted
+}
+
+func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
+	c.tmu.Lock()
+	defer c.tmu.Unlock()
+	var items []workItem
+	if b, err := os.ReadFile(workFile()); err == nil {
+		json.Unmarshal(b, &items)
+	}
+	if r.Method == http.MethodPost {
+		var p struct {
+			ID       int64   `json:"id"`
+			Text     string  `json:"text"`
+			Status   string  `json:"status"`
+			By       string  `json:"by"`
+			Deps     []int64 `json:"deps"`
+			Prio     *int64  `json:"prio"`     // pointer: present-but-0 is a real reorder
+			Assignee string  `json:"assignee"` // route this task to a specific tmux pane
+		}
+		json.NewDecoder(r.Body).Decode(&p)
+		now := time.Now().UTC().Format(time.RFC3339)
+		if p.Text != "" && p.ID == 0 { // add (optionally with plan-edges: deps, prio, assignee)
+			var max int64
+			for _, it := range items {
+				if it.ID > max {
+					max = it.ID
+				}
+			}
+			if p.By == "" {
+				p.By = "operator"
+			}
+			ni := workItem{ID: max + 1, Text: p.Text, Status: "todo", By: p.By, TS: now, Deps: p.Deps, Assignee: p.Assignee}
+			if isRecord(p.Text) { // a FINDING/ACT/AUDIT/GUARD is a record, born done — it lands on the surface but is never summoned as work
+				ni.Status = "done"
+			}
+			if p.Prio != nil {
+				ni.Prio = *p.Prio
+			}
+			items = append(items, ni)
+			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.add","params":{"text":%q,"by":%q,"deps":%v}}}`, p.Text, p.By, p.Deps))
+		} else if p.ID > 0 && (p.Prio != nil || p.Assignee != "") && p.Status == "" { // ADJUST THE QUEUE (reorder / reassign) — operator or agent
+			for i := range items {
+				if items[i].ID == p.ID {
+					if p.Prio != nil {
+						items[i].Prio = *p.Prio
+					}
+					if p.Assignee != "" {
+						items[i].Assignee = p.Assignee
+					}
+					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.reorder","params":{"id":%d,"prio":%d,"assignee":%q}}}`, items[i].ID, items[i].Prio, items[i].Assignee))
+				}
+			}
+		} else if p.ID > 0 && p.Status != "" { // status change
+			for i := range items {
+				if items[i].ID == p.ID {
+					items[i].Status = p.Status
+					items[i].TS = now
+					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":%q}}}`, p.ID, p.Status))
+					// Manual flip-to-doing by the OPERATOR still summons (the 2-way
+					// surface); agent-driven flips don't self-summon.
+					if p.Status == "doing" && (p.By == "" || p.By == "operator") {
+						c.summon(items[i], "assigned via the cockpit")
+					}
+				}
+			}
+			// THE HABIT LOOP: completing a task auto-advances the plan — every todo
+			// whose deps are now ALL done flips to doing and SUMMONS the worker on
+			// tmux. A task with an unmet dep does NOT fire (the falsifiable invariant).
+			// This is the plan driving the agent, not Anthropic's task tool: it lives
+			// in the witness, on the feed, and prompts through the real tmux seat.
+			if p.Status == "done" {
+				// AUTO-PROPAGATION (2026-08-11): a completed claim is not DONE until it
+				// has spawned its own falsification — the queue must not drain to empty
+				// (Rishi's point). Completing a SUBSTANTIVE task auto-seeds one bounded
+				// "[verify]" follow-up. Bounded: a verify/guard/finding task does NOT
+				// spawn another (prefix guard), so each real task yields exactly one
+				// verification, never a flood or a loop.
+				var justDone *workItem
+				for i := range items {
+					if items[i].ID == p.ID {
+						justDone = &items[i]
+					}
+				}
+				if justDone != nil {
+					t := justDone.Text
+					meta := strings.HasPrefix(t, "[verify") || strings.HasPrefix(t, "GUARD") || strings.HasPrefix(t, "FINDING") || strings.HasPrefix(t, "AUDIT")
+					if !meta {
+						var max int64
+						for _, it := range items {
+							if it.ID > max {
+								max = it.ID
+							}
+						}
+						vtext := fmt.Sprintf("[verify #%d] falsify/verify that '%s' actually holds — independently, with evidence; find where it breaks.", justDone.ID, firstN(t, 90))
+						items = append(items, workItem{ID: max + 1, Text: vtext, Status: "todo", By: "auto", TS: now, Prio: 2})
+						c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.spawn","params":{"of":%d,"verify":%d}}}`, justDone.ID, max+1))
+					}
+				}
+				advanced := advanceUnblocked(items, now)
+				for _, idx := range advanced {
+					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":"doing"}}}`, items[idx].ID))
+					c.summon(items[idx], fmt.Sprintf("auto-advanced: dep #%d done", p.ID))
+				}
+				// PLAYLIST MODE: run the queue one-by-one like a playlist. When ON and
+				// nothing dep-advanced, pull the NEXT unblocked todo (prio order) and
+				// summon it — pick→do→done→pick, hands-free. New tasks added mid-play
+				// just join the queue and get picked in turn.
+				// WIP=1: only pull the next when NOTHING is already doing. Without this
+				// gate, rapid completions each pulled a fresh task, flooding the queue
+				// with dozens of concurrent "doing" — the playlist must SERIALIZE.
+				if len(advanced) == 0 && playlistOn() && !anyDoing(items) {
+					if idx := pickNext(items); idx >= 0 {
+						items[idx].Status = "doing"
+						items[idx].TS = now
+						c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":"doing"}}}`, items[idx].ID))
+						c.summon(items[idx], "▶ playlist: next in queue")
+					}
+				}
+			}
+		}
+		os.MkdirAll(os.ExpandEnv("$HOME/.8"), 0o755)
+		if b, err := json.MarshalIndent(items, "", " "); err == nil {
+			os.WriteFile(workFile(), b, 0o644)
+		}
+	}
+	// PROJECTION — the wire wins on leanness only if it hands back the VIEW, not the
+	// firehose. GET /work?status=todo,doing&assignee=%9&fields=id,text,assignee&limit=20
+	// returns the lean witnessed answer, so http_request beats a raw sqlite/curl dump.
+	q := r.URL.Query()
+	if st := q.Get("status"); st != "" {
+		allow := map[string]bool{}
+		for _, s := range strings.Split(st, ",") {
+			allow[strings.TrimSpace(s)] = true
+		}
+		f := items[:0:0]
+		for _, it := range items {
+			if allow[it.Status] {
+				f = append(f, it)
+			}
+		}
+		items = f
+	}
+	if as := q.Get("assignee"); as != "" {
+		f := items[:0:0]
+		for _, it := range items {
+			if it.Assignee == as {
+				f = append(f, it)
+			}
+		}
+		items = f
+	}
+	if n, err := strconv.Atoi(q.Get("limit")); err == nil && n >= 0 && n < len(items) {
+		items = items[:n]
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if fields := q.Get("fields"); fields != "" {
+		cols := strings.Split(fields, ",")
+		proj := make([]map[string]any, 0, len(items))
+		for _, it := range items {
+			m := map[string]any{}
+			for _, col := range cols {
+				switch strings.TrimSpace(col) {
+				case "id":
+					m["id"] = it.ID
+				case "text":
+					m["text"] = it.Text
+				case "status":
+					m["status"] = it.Status
+				case "by":
+					m["by"] = it.By
+				case "ts":
+					m["ts"] = it.TS
+				case "deps":
+					m["deps"] = it.Deps
+				case "prio":
+					m["prio"] = it.Prio
+				case "assignee":
+					m["assignee"] = it.Assignee
+				}
+			}
+			proj = append(proj, m)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"work": proj, "n": len(proj)})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{"work": items, "n": len(items)})
+}
