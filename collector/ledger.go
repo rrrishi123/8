@@ -414,6 +414,17 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 		}
 		items = f
 	}
+	if by := q.Get("by"); by != "" { // ?by=conductor  or  ?by=!higgs-worker (negation)
+		neg := strings.HasPrefix(by, "!")
+		want := strings.TrimPrefix(by, "!")
+		f := items[:0:0]
+		for _, it := range items {
+			if (it.By == want) != neg { // == for a match; != for the negated form
+				f = append(f, it)
+			}
+		}
+		items = f
+	}
 	if n, err := strconv.Atoi(q.Get("limit")); err == nil && n >= 0 && n < len(items) {
 		items = items[:n]
 	}
