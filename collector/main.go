@@ -4443,6 +4443,16 @@ func cors(allow map[string]bool, h http.Handler) http.Handler {
 }
 
 func main() {
+	if len(os.Args) > 1 { // #279: bring-up + supervision, folded into the one binary
+		switch os.Args[1] {
+		case "up":
+			runUp()
+			return
+		case "watch":
+			runWatch()
+			return
+		}
+	}
 	listen := flag.String("listen", ":7070", "HTTP address the cockpit reaches the collector on")
 	spec := flag.String("brokers", "", "comma list of session=brokerURL (e.g. fox=http://127.0.0.1:4445)")
 	gecko := flag.String("gecko", "", "geckodriver session base (http://127.0.0.1:4444/session/<id>) — enables /procinfo per-tab mem/CPU")
