@@ -94,6 +94,9 @@ type collector struct {
 	wmu     sync.Mutex        // #12 change-detector: a tab you WATCH pushes tab.changed on DOM shift
 	watched map[string]string // ctx -> last DOM signature (opt-in; only watched tabs are read)
 
+	pmu       sync.Mutex        // witness pane appearance (#277): pane_id -> first_seen
+	panesSeen map[string]string // so a spawned pane is RECORDED (pane.appeared), not guessed
+
 	xmu       sync.Mutex // #13 cross-substrate timeline: every seat's .changed in one line
 	xtimeline []xEvent
 
@@ -239,7 +242,7 @@ func (c *collector) handleFocus(w http.ResponseWriter, r *http.Request) {
 }
 
 func newCollector(brokers []broker) *collector {
-	return &collector{brokers: brokers, client: &http.Client{}, geckoClient: &http.Client{Timeout: 25 * time.Second}, subs: map[int]chan string{}, frames: map[string]chan []byte{}, dprCache: map[string]float64{}, vpCache: map[string][2]float64{}, fxRecv: map[string]*fxStream{}, manifest: map[string]*tabRec{}}
+	return &collector{brokers: brokers, client: &http.Client{}, geckoClient: &http.Client{Timeout: 25 * time.Second}, subs: map[int]chan string{}, frames: map[string]chan []byte{}, dprCache: map[string]float64{}, vpCache: map[string][2]float64{}, fxRecv: map[string]*fxStream{}, manifest: map[string]*tabRec{}, panesSeen: map[string]string{}}
 }
 
 // chanDPR is a tab's devicePixelRatio (cached per context). The /stream screenshot
@@ -4503,6 +4506,7 @@ func main() {
 		go c.memoryAperture(*apertureMB) // self-regulate parent memory (heap-minimize at the soft threshold)
 		go c.reconcileLoop()             // keep the tab manifest true even when no cockpit is watching
 		go c.seatWatchLoop()             // #11: PUSH change events for every seat (the CHANNEL atom, realized)
+		go c.paneWitnessLoop()           // #277: witness pane appearance (first_seen + pane.appeared/vanished)
 		go func() {                      // project eight.db every 30s so DBeaver always sees fresh data
 			if _, err := exec.LookPath("sqlite3"); err != nil {
 				return
@@ -4593,6 +4597,7 @@ func main() {
 	mux.HandleFunc("/work", c.handleWork)
 	mux.HandleFunc("/work/next", c.handleWorkNext)
 	mux.HandleFunc("/work/playlist", c.handlePlaylist)
+	mux.HandleFunc("/panes", c.handlePanes) // #277 witnessed pane roster (first_seen per pane)
 	mux.HandleFunc("/watch", c.handleWatch)
 	mux.HandleFunc("/timeline", c.handleTimeline)     // #13 the interleaved cross-substrate timeline
 	mux.HandleFunc("/provenance", c.handleProvenance) // #29 actor→atom→surface flow (declared X-8-Actor)

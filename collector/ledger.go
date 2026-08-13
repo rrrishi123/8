@@ -164,7 +164,7 @@ func (c *collector) summon(item workItem, reason string) {
 		}
 	}
 	tb := tmuxBin()
-	if pane == "" || tb == "" {
+	if !paneAlive(pane) || tb == "" { // never send-keys into a dead %N or a bare shell
 		return
 	}
 	msg := fmt.Sprintf("[8-plan #%d -> doing] %s -- %s; the plan: curl -s 127.0.0.1:7070/work", item.ID, item.Text, reason)
@@ -256,7 +256,7 @@ func advanceUnblocked(items []workItem, now string) []int {
 				break
 			}
 		}
-		if !blocked && len(items[i].Deps) > 0 { // only auto-advance items that HAVE a plan-edge
+		if !blocked && len(items[i].Deps) > 0 && paneAlive(items[i].Assignee) { // plan-edge AND a live claude pane
 			items[i].Status = "doing"
 			items[i].TS = now
 			promoted = append(promoted, i)
