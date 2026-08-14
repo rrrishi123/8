@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 
@@ -13,14 +14,22 @@ import (
 
 // handleSQL — the DB ATOM (#280): raw SQL over eight.db through the wire, engine
 // BUNDLED (modernc.org/sqlite, pure-Go — no host sqlite3 binary, cross-compiles).
-// Local-only, so there is no injection threat; the WITNESS is the traceability —
-// every query is published to the feed. POST /sql with a raw SQL body OR
-// {"query":"..."}. SELECT/WITH/PRAGMA return rows; anything else returns affected.
+// Local-only is ENFORCED, not assumed (#318): the collector listens on all
+// interfaces (other endpoints are legitimately reached cross-host), so this
+// endpoint checks RemoteAddr and answers loopback callers only — the DB atom
+// belongs to the host it lives on. The WITNESS is the traceability — every query
+// is published to the feed. POST /sql with a raw SQL body OR {"query":"..."}.
+// SELECT/WITH/PRAGMA return rows; anything else returns affected.
 // This is the store's `become`: one general primitive instead of a filter param
 // per question — an agent can create its own tables, poll, insert, select.
 func (c *collector) handleSQL(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err != nil || !net.ParseIP(host).IsLoopback() {
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "loopback only: the DB atom answers the host it lives on (#318)"})
 		return
 	}
 	raw, _ := io.ReadAll(r.Body)
