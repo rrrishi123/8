@@ -27,6 +27,7 @@ web/.env
 /scripts/*.py
 
 # operator content, not witness machinery (#321) — the higgsfield movie pipeline
-# is a live scratch WORKSPACE on this host (canonical home: ~/.8/higgsfield when
-# idle), untracked from the module; see higgsfield-relocated.md
-/higgsfield/
+# lives at ~/.8/higgsfield (#356); on this host a compat SYMLINK sits here so
+# stale path references keep resolving. No trailing slash: the dir-only pattern
+# would miss the symlink. See higgsfield-relocated.md
+/higgsfield
