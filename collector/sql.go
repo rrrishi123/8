@@ -196,6 +196,14 @@ func denySQL(q string) string {
 	case word("PRAGMA") && strings.Contains(s, "="):
 		return "PRAGMA assignment — the store is not reconfigurable over the wire"
 	}
+	// #431: the sync-owned tables are READ-side projections, rebuilt (DROP+
+	// CREATE) from the live sources every sync — a write to one is a phantom
+	// that self-erases and never reaches the source of truth (the conductor
+	// filed a finding into eight.db.work and it vanished). Mutate the LIVE
+	// surface instead: POST /work. Agents' own tables stay writable.
+	if t := writeTarget(s); t == "WORK" || t == "SURFACES" || t == "EVENTS" || t == "BENCHES" {
+		return "table " + strings.ToLower(t) + " is a read-side snapshot (rebuilt on sync) — mutate the live surface (POST /work) instead"
+	}
 	if i := strings.Index(s, ";"); i >= 0 && strings.TrimSpace(s[i+1:]) != "" {
 		return "multi-statement — one statement per call"
 	}
@@ -204,4 +212,33 @@ func denySQL(q string) string {
 
 func isWordRune(b byte) bool {
 	return b == '_' || (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z')
+}
+
+// writeTarget extracts the table a write statement aims at ("" when q is not a
+// write): INSERT INTO t / REPLACE INTO t / UPDATE t / DELETE FROM t. Operates
+// on the STRIPPED uppercase text, so prose and comments can't fake a target.
+func writeTarget(s string) string {
+	f := strings.Fields(s)
+	trim := func(t string) string {
+		return strings.TrimFunc(t, func(r rune) bool {
+			return !(r == '_' || (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z'))
+		})
+	}
+	for i, tok := range f {
+		switch tok {
+		case "INSERT", "REPLACE":
+			if i+2 < len(f) && f[i+1] == "INTO" {
+				return trim(f[i+2])
+			}
+		case "UPDATE":
+			if i+1 < len(f) {
+				return trim(f[i+1])
+			}
+		case "DELETE":
+			if i+2 < len(f) && f[i+1] == "FROM" {
+				return trim(f[i+2])
+			}
+		}
+	}
+	return ""
 }

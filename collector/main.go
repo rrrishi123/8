@@ -2163,7 +2163,11 @@ func (c *collector) syncDB() (map[string]int, error) {
 	b.WriteString("PRAGMA journal_mode=WAL;\nBEGIN;\n")
 	b.WriteString(`DROP TABLE IF EXISTS surfaces; CREATE TABLE surfaces(uid INTEGER PRIMARY KEY, ctx TEXT, session TEXT, url TEXT, opened_by TEXT, why TEXT, first_seen TEXT, last_seen TEXT, status TEXT, closed_at TEXT);` + "\n")
 	b.WriteString(`DROP TABLE IF EXISTS events; CREATE TABLE events(id INTEGER PRIMARY KEY, ts TEXT, physics TEXT, session TEXT, method TEXT, url TEXT, status INTEGER, latency_us INTEGER, resp_bytes INTEGER, replayable INTEGER);` + "\n")
-	b.WriteString(`DROP TABLE IF EXISTS work; CREATE TABLE work(id INTEGER PRIMARY KEY, text TEXT, status TEXT, by_who TEXT, ts TEXT);` + "\n")
+	// #431: the RELATIONS ride along — assignee/prio/flipped_by were dropped by
+	// the projection, so /sql could report how-much-is-undone but never WHO owns
+	// it; the distribution of work across minds is exactly what "how ready are
+	// we" asks, and the witness omitted it.
+	b.WriteString(`DROP TABLE IF EXISTS work; CREATE TABLE work(id INTEGER PRIMARY KEY, text TEXT, status TEXT, by_who TEXT, ts TEXT, assignee TEXT, prio INTEGER, flipped_by TEXT);` + "\n")
 	b.WriteString(`DROP TABLE IF EXISTS benches; CREATE TABLE benches(id INTEGER, ts TEXT, tag TEXT, session TEXT, n INTEGER, equiv_p50 REAL, equiv_p99 REAL, byte_ratio REAL);` + "\n")
 
 	// surfaces ← manifest.json (a list of surface world-lines)
@@ -2214,7 +2218,7 @@ func (c *collector) syncDB() (map[string]int, error) {
 		var items []workItem
 		if json.Unmarshal(data, &items) == nil {
 			for _, it := range items {
-				b.WriteString(fmt.Sprintf("INSERT INTO work VALUES(%d,%s,%s,%s,%s);\n", it.ID, sqlQ(it.Text), sqlQ(it.Status), sqlQ(it.By), sqlQ(it.TS)))
+				b.WriteString(fmt.Sprintf("INSERT INTO work VALUES(%d,%s,%s,%s,%s,%s,%d,%s);\n", it.ID, sqlQ(it.Text), sqlQ(it.Status), sqlQ(it.By), sqlQ(it.TS), sqlQ(it.Assignee), it.Prio, sqlQ(it.FlippedBy)))
 				counts["work"]++
 			}
 		}
