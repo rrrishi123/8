@@ -2,11 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -286,60 +289,154 @@ func paneJsonl(tb, pane, projDir string) (string, time.Time) {
 	return newest, newestT
 }
 
-// ── IDENTITY (#436) — ~/.8/identity.json is the canonical mind map:
-// name -> {uuid, jsonl, aliases}. The db had 12 by_who labels for ~6 minds;
-// this file is where an alias is EVIDENCED (never guessed — _unresolved labels
-// stay unresolved). The collector CONSUMES it: /panes carries canonical_name +
-// jsonl_path, and the eight.db sync folds work.by_who into by_canon.
-type mindIdentity struct {
-	UUID    string   `json:"uuid"`
-	Jsonl   string   `json:"jsonl"`
-	Aliases []string `json:"aliases"`
+// ── LIVE IDENTITY (#437, supersedes #436's static roster) ─────────────────
+// Identity is DISCOVERED at query time, never stored: pane -> pane_pid -> the
+// running `claude --resume <uuid>` child (ps) -> jsonl found by SEARCHING
+// ~/.claude/projects/*/<uuid>.jsonl (derived, existence-verified, "" when the
+// transcript is gone — severance stays visible). Names are SELF-DECLARED
+// (POST /identity {uuid,name,aliases}) — self-sovereign, membership OPEN to any
+// session on any host that can reach the wire. Declarations live in memory only
+// and are witnessed as identity.declare frames: the roster dies with the
+// process like memory does, and minds redeclare after severance — the feed
+// keeps the trace. roles.json is DEPRECATED to a resolution fallback.
+// The principle, restored: never inscribe what the system can discover.
+
+type declaredMind struct {
+	Name    string   `json:"name"`
+	Aliases []string `json:"aliases,omitempty"`
+	At      string   `json:"declared_at"`
 }
 
-func identityFile() string { return os.ExpandEnv("$HOME/.8/identity.json") }
+var (
+	declMu   sync.Mutex
+	declared = map[string]declaredMind{} // uuid -> declaration (in-memory ONLY)
+)
 
-// loadIdentity — name -> identity. Missing file degrades to empty (probe,
-// don't assume); "_"-prefixed keys are documentation, not minds.
-func loadIdentity() map[string]mindIdentity {
-	out := map[string]mindIdentity{}
-	b, err := os.ReadFile(identityFile())
-	if err != nil {
-		return out
-	}
-	var raw map[string]json.RawMessage
-	if json.Unmarshal(b, &raw) != nil {
-		return out
-	}
-	for name, v := range raw {
-		if strings.HasPrefix(name, "_") {
-			continue
-		}
-		var m mindIdentity
-		if json.Unmarshal(v, &m) == nil {
-			out[name] = m
-		}
-	}
-	return out
-}
-
-// canonicalMind folds any label — canonical name, uuid, or evidenced alias —
-// to the one mind it names. Unknown labels return "" (the blank is honest).
-func canonicalMind(label string, ids map[string]mindIdentity) string {
-	if label == "" {
+// jsonlForUUID discovers the transcript by searching, never by assuming a path.
+func jsonlForUUID(uuid string) string {
+	if uuid == "" {
 		return ""
 	}
-	for name, m := range ids {
-		if label == name || (m.UUID != "" && label == m.UUID) {
-			return name
+	hits, _ := filepath.Glob(os.ExpandEnv("$HOME/.claude/projects/*/") + uuid + ".jsonl")
+	if len(hits) > 0 {
+		return hits[0]
+	}
+	return ""
+}
+
+// nameForUUID — the mind's OWN declared name for a uuid; blank when undeclared.
+func nameForUUID(uuid string) (string, []string) {
+	declMu.Lock()
+	defer declMu.Unlock()
+	if d, ok := declared[uuid]; ok {
+		return d.Name, d.Aliases
+	}
+	return "", nil
+}
+
+// declaredUUID — a declared name or self-declared alias back to its uuid.
+func declaredUUID(label string) string {
+	declMu.Lock()
+	defer declMu.Unlock()
+	for u, d := range declared {
+		if label == d.Name {
+			return u
 		}
-		for _, a := range m.Aliases {
+		for _, a := range d.Aliases {
 			if label == a {
-				return name
+				return u
 			}
 		}
 	}
 	return ""
+}
+
+// foldLabel — any label (declared name, self-declared alias, uuid) to the one
+// declared name; "" when no mind has claimed it (the blank is honest).
+func foldLabel(label string) string {
+	if label == "" {
+		return ""
+	}
+	declMu.Lock()
+	if d, ok := declared[label]; ok {
+		declMu.Unlock()
+		return d.Name
+	}
+	declMu.Unlock()
+	if u := declaredUUID(label); u != "" {
+		declMu.Lock()
+		defer declMu.Unlock()
+		return declared[u].Name
+	}
+	return ""
+}
+
+// handleIdentity — the live identity primitive on the wire.
+// GET /identity: the roster derived NOW — every live pane with its discovered
+// uuid + jsonl and any self-declared name; plus declarations whose seat is
+// currently down (a declared mind is not unpersoned by a dead pane).
+// POST /identity {"uuid","name","aliases"}: a self-sovereign declaration,
+// witnessed on the feed. No roster file is ever written.
+func (c *collector) handleIdentity(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == http.MethodPost {
+		var p struct {
+			UUID    string   `json:"uuid"`
+			Name    string   `json:"name"`
+			Aliases []string `json:"aliases"`
+		}
+		if json.NewDecoder(r.Body).Decode(&p) != nil || p.Name == "" || len(p.UUID) < 32 || strings.Count(p.UUID, "-") < 4 {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "need {uuid (a session uuid), name, aliases?}"})
+			return
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+		declMu.Lock()
+		declared[p.UUID] = declaredMind{Name: p.Name, Aliases: p.Aliases, At: now}
+		declMu.Unlock()
+		c.publish(fmt.Sprintf(`{"session":"identity","origin":"COLLECTOR","frame":{"method":"identity.declare","params":{"uuid":%q,"name":%q,"aliases":%q,"pane":%q}}}`, p.UUID, p.Name, strings.Join(p.Aliases, ","), paneForUUID(p.UUID)))
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "name": p.Name, "pane": paneForUUID(p.UUID), "jsonl": jsonlForUUID(p.UUID)})
+		return
+	}
+	type row struct {
+		Pane    string   `json:"pane,omitempty"`
+		Cmd     string   `json:"cmd,omitempty"`
+		Title   string   `json:"title,omitempty"`
+		UUID    string   `json:"uuid,omitempty"`
+		Jsonl   string   `json:"jsonl,omitempty"`
+		Name    string   `json:"name,omitempty"`
+		Aliases []string `json:"aliases,omitempty"`
+		At      string   `json:"declared_at,omitempty"`
+	}
+	pidOf := map[string]string{}
+	if tb := tmuxBin(); tb != "" {
+		if out, err := exec.Command(tb, "list-panes", "-a", "-F", "#{pane_id}|#{pane_pid}").Output(); err == nil {
+			for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				if id, pid, ok := strings.Cut(ln, "|"); ok {
+					pidOf[id] = pid
+				}
+			}
+		}
+	}
+	uu := paneUUIDs()
+	seenUUID := map[string]bool{}
+	out := []row{}
+	for _, p := range tmuxPanes() {
+		uuid := uu[pidOf[p.ID]]
+		name, aliases := nameForUUID(uuid)
+		if uuid != "" {
+			seenUUID[uuid] = true
+		}
+		out = append(out, row{Pane: p.ID, Cmd: p.Cmd, Title: p.Title, UUID: uuid, Jsonl: jsonlForUUID(uuid), Name: name, Aliases: aliases})
+	}
+	declMu.Lock()
+	for u, d := range declared {
+		if !seenUUID[u] { // declared, seat currently down — still a mind
+			out = append(out, row{UUID: u, Jsonl: jsonlForUUID(u), Name: d.Name, Aliases: d.Aliases, At: d.At})
+		}
+	}
+	declMu.Unlock()
+	_ = json.NewEncoder(w).Encode(map[string]any{"identity": out, "n": len(out), "note": "derived live; names are self-declared (POST /identity), never stored"})
 }
 
 // paneUUIDs — pane_pid -> claude session uuid, one ps scan: any child whose

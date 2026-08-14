@@ -57,16 +57,20 @@ func paneForUUID(uuid string) string {
 	return ""
 }
 
-// resolveAssignee turns a task's Assignee into a live pane id: a role via
-// roles.json, a uuid directly, or a raw %N as-is. Empty when it can't resolve.
+// resolveAssignee turns a task's Assignee into a live pane id: a SELF-DECLARED
+// name (#437, preferred — the mind's own claim via POST /identity), a role via
+// roles.json (DEPRECATED static roster, kept as fallback until every mind
+// declares), a uuid directly, or a raw %N as-is. Empty when it can't resolve.
 func resolveAssignee(a string) string {
 	switch {
 	case a == "":
 		return ""
 	case strings.HasPrefix(a, "%"):
 		return a // already a pane id
+	case declaredUUID(a) != "":
+		return paneForUUID(declaredUUID(a)) // declared name/alias -> uuid -> live pane
 	case roleUUID(a) != "":
-		return paneForUUID(roleUUID(a)) // role -> uuid -> live pane
+		return paneForUUID(roleUUID(a)) // DEPRECATED fallback: roles.json
 	case len(a) >= 8 && strings.Count(a, "-") >= 4:
 		return paneForUUID(a) // looks like a uuid
 	default:

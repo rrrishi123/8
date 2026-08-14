@@ -73,14 +73,8 @@ func (c *collector) handlePanes(w http.ResponseWriter, r *http.Request) {
 		seen[k] = v
 	}
 	c.pmu.Unlock()
-	ids := loadIdentity()
-	uuidName := map[string]string{}
-	for n, m := range ids {
-		if m.UUID != "" {
-			uuidName[m.UUID] = n
-		}
-	}
-	// pane -> pid -> claude uuid (one tmux call + one ps scan)
+	// pane -> pid -> claude uuid (one tmux call + one ps scan); names are
+	// self-declared (#437), jsonl discovered by search — nothing inscribed.
 	pidOf := map[string]string{}
 	if tb := tmuxBin(); tb != "" {
 		if out, err := exec.Command(tb, "list-panes", "-a", "-F", "#{pane_id}|#{pane_pid}").Output(); err == nil {
@@ -95,12 +89,8 @@ func (c *collector) handlePanes(w http.ResponseWriter, r *http.Request) {
 	out := []paneView{}
 	for _, p := range tmuxPanes() {
 		uuid := uu[pidOf[p.ID]]
-		name := uuidName[uuid]
-		jsonl := ""
-		if m, ok := ids[name]; ok {
-			jsonl = m.Jsonl
-		}
-		out = append(out, paneView{p.ID, p.Loc, p.Cmd, p.Title, seen[p.ID], name, uuid, jsonl})
+		name, _ := nameForUUID(uuid)
+		out = append(out, paneView{p.ID, p.Loc, p.Cmd, p.Title, seen[p.ID], name, uuid, jsonlForUUID(uuid)})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"panes": out, "n": len(out)})

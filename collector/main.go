@@ -2170,14 +2170,7 @@ func (c *collector) syncDB() (map[string]int, error) {
 	b.WriteString(`DROP TABLE IF EXISTS work; CREATE TABLE work(id INTEGER PRIMARY KEY, text TEXT, status TEXT, by_who TEXT, ts TEXT, assignee TEXT, prio INTEGER, flipped_by TEXT, by_canon TEXT);` + "\n")
 	b.WriteString(`DROP TABLE IF EXISTS benches; CREATE TABLE benches(id INTEGER, ts TEXT, tag TEXT, session TEXT, n INTEGER, equiv_p50 REAL, equiv_p99 REAL, byte_ratio REAL);` + "\n")
 
-	ids := loadIdentity() // #436: the canonical mind map folds aliases + binds lineage
-	uuidName := map[string]string{}
-	for n, mi := range ids {
-		if mi.UUID != "" {
-			uuidName[mi.UUID] = n
-		}
-	}
-
+	// #437: identity DERIVED live (no roster file) — names are self-declared.
 	// panes+windows ← live tmux (#436: rows were frozen at 2026-08-13 — the
 	// witness had stopped writing what it sees; no source code even wrote these
 	// tables). GUARD: only rewrite when tmux answers non-empty — eight.db.panes
@@ -2201,11 +2194,8 @@ func (c *collector) syncDB() (map[string]int, error) {
 					continue
 				}
 				uuid := uu[f[4]]
-				name := uuidName[uuid] // "" when unknown — the blank is honest
-				jsonl := ""
-				if mi, ok := ids[name]; ok {
-					jsonl = mi.Jsonl
-				}
+				name, _ := nameForUUID(uuid) // self-declared; "" when undeclared — honest
+				jsonl := jsonlForUUID(uuid)  // discovered by search, never assumed
 				b.WriteString(fmt.Sprintf("INSERT INTO panes VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s,%s);\n",
 					sqlQ(f[0]), f[1], f[2], sqlQ(f[3]), sqlQ(uuid), sqlQ(f[5]), sqlQ(f[7]), sqlQ(f[7]), sqlQ(name), sqlQ(f[6]), sqlQ(pnow), sqlQ(name), sqlQ(jsonl)))
 				counts["panes"]++
@@ -2271,7 +2261,7 @@ func (c *collector) syncDB() (map[string]int, error) {
 		var items []workItem
 		if json.Unmarshal(data, &items) == nil {
 			for _, it := range items {
-				b.WriteString(fmt.Sprintf("INSERT INTO work VALUES(%d,%s,%s,%s,%s,%s,%d,%s,%s);\n", it.ID, sqlQ(it.Text), sqlQ(it.Status), sqlQ(it.By), sqlQ(it.TS), sqlQ(it.Assignee), it.Prio, sqlQ(it.FlippedBy), sqlQ(canonicalMind(it.By, ids))))
+				b.WriteString(fmt.Sprintf("INSERT INTO work VALUES(%d,%s,%s,%s,%s,%s,%d,%s,%s);\n", it.ID, sqlQ(it.Text), sqlQ(it.Status), sqlQ(it.By), sqlQ(it.TS), sqlQ(it.Assignee), it.Prio, sqlQ(it.FlippedBy), sqlQ(foldLabel(it.By))))
 				counts["work"]++
 			}
 		}
@@ -4262,6 +4252,7 @@ func main() {
 	mux.HandleFunc("/nvimopen", c.handleNvimOpen)         // the editor seat's CONTROL verb (:buffer N)
 	mux.HandleFunc("/daemonframe", c.handleDaemonFrame)   // a daemon's frame: ps line + log tail
 	mux.HandleFunc("/daemonsignal", c.handleDaemonSignal) // the daemons seat's CONTROL verb (watchdog protected)
+	mux.HandleFunc("/identity", c.handleIdentity)         // #437: live identity — GET derives, POST declares
 	mux.HandleFunc("/db", c.handleDB)                     // project the scattered stores into ~/.8/eight.db for DBeaver
 	mux.HandleFunc("/stopwatch", c.handleStopwatch)       // experiri: the witness's staleness made readable
 	mux.HandleFunc("/work", c.handleWork)
