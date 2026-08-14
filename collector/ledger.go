@@ -108,7 +108,7 @@ func pickNext(items []workItem) int {
 		if isRecord(items[i].Text) { // records are documentation, never summoned
 			continue
 		}
-		if !paneAlive(items[i].Assignee) { // only auto-summon to a LIVE claude pane —
+		if !paneAlive(resolveAssignee(items[i].Assignee)) { // only auto-summon to a LIVE claude pane —
 			continue // a dead %N no-ops but jams WIP=1; a zsh pane runs the text as a shell cmd
 		}
 		blocked := false
@@ -166,7 +166,7 @@ func rawAssignee(rawQuery string) string {
 // task's own Assignee pane wins (assign work to ANOTHER Claude's pane); else the
 // default worker.json. Used by manual flip, auto-advance, and the picker.
 func (c *collector) summon(item workItem, reason string) {
-	pane := item.Assignee
+	pane := resolveAssignee(item.Assignee) // role/uuid/%N -> current live pane
 	if pane == "" {
 		if wb, err := os.ReadFile(os.ExpandEnv("$HOME/.8/worker.json")); err == nil {
 			var wk struct{ Pane, Agent string }
@@ -268,7 +268,7 @@ func advanceUnblocked(items []workItem, now string) []int {
 				break
 			}
 		}
-		if !blocked && len(items[i].Deps) > 0 && paneAlive(items[i].Assignee) { // plan-edge AND a live claude pane
+		if !blocked && len(items[i].Deps) > 0 && paneAlive(resolveAssignee(items[i].Assignee)) { // plan-edge AND a live claude pane
 			items[i].Status = "doing"
 			items[i].TS = now
 			promoted = append(promoted, i)
