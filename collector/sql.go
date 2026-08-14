@@ -77,6 +77,14 @@ func (c *collector) handleSQL(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"rows": out, "n": len(out)})
 		return
 	}
+	// WRITE-GATE (#309, pmf found /sql ran a DELETE) — the ledger is the witness;
+	// it must not be erasable by accident. Writes (INSERT/UPDATE/DELETE/DROP/CREATE…)
+	// require an explicit ?write=1, so a bare SELECT-shaped mistake can't mutate.
+	if r.URL.Query().Get("write") != "1" {
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "write-gated: non-read statement needs ?write=1 (the ledger is the witness — no accidental mutation)"})
+		return
+	}
 	res, err := db.Exec(q)
 	if err != nil {
 		_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})

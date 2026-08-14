@@ -377,6 +377,9 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 				p.By = "operator"
 			}
 			ni := workItem{ID: max + 1, Text: p.Text, Status: "todo", By: p.By, TS: now, Deps: p.Deps, Assignee: p.Assignee}
+			if ni.Assignee == "" && roleUUID(p.By) != "" { // a role's own filed task routes back to it — no orphan todos
+				ni.Assignee = p.By
+			}
 			if isRecord(p.Text) { // a FINDING/ACT/AUDIT/GUARD is a record, born done — it lands on the surface but is never summoned as work
 				ni.Status = "done"
 			}
