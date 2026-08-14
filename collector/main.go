@@ -2167,8 +2167,61 @@ func (c *collector) syncDB() (map[string]int, error) {
 	// the projection, so /sql could report how-much-is-undone but never WHO owns
 	// it; the distribution of work across minds is exactly what "how ready are
 	// we" asks, and the witness omitted it.
-	b.WriteString(`DROP TABLE IF EXISTS work; CREATE TABLE work(id INTEGER PRIMARY KEY, text TEXT, status TEXT, by_who TEXT, ts TEXT, assignee TEXT, prio INTEGER, flipped_by TEXT);` + "\n")
+	b.WriteString(`DROP TABLE IF EXISTS work; CREATE TABLE work(id INTEGER PRIMARY KEY, text TEXT, status TEXT, by_who TEXT, ts TEXT, assignee TEXT, prio INTEGER, flipped_by TEXT, by_canon TEXT);` + "\n")
 	b.WriteString(`DROP TABLE IF EXISTS benches; CREATE TABLE benches(id INTEGER, ts TEXT, tag TEXT, session TEXT, n INTEGER, equiv_p50 REAL, equiv_p99 REAL, byte_ratio REAL);` + "\n")
+
+	ids := loadIdentity() // #436: the canonical mind map folds aliases + binds lineage
+	uuidName := map[string]string{}
+	for n, mi := range ids {
+		if mi.UUID != "" {
+			uuidName[mi.UUID] = n
+		}
+	}
+
+	// panes+windows ← live tmux (#436: rows were frozen at 2026-08-13 — the
+	// witness had stopped writing what it sees; no source code even wrote these
+	// tables). GUARD: only rewrite when tmux answers non-empty — eight.db.panes
+	// doubles as restore-8.sh's source, and last-good must survive a dead tmux.
+	// role now carries the CANONICAL name (it wrongly held the tmux title).
+	if tb := tmuxBin(); tb != "" {
+		pout, _ := exec.Command(tb, "list-panes", "-a", "-F", "#{session_name}|#{window_index}|#{pane_index}|#{pane_id}|#{pane_pid}|#{pane_current_path}|#{pane_current_command}|#{pane_title}").Output()
+		var plines []string
+		for _, ln := range strings.Split(strings.TrimSpace(string(pout)), "\n") {
+			if strings.TrimSpace(ln) != "" {
+				plines = append(plines, ln)
+			}
+		}
+		if len(plines) > 0 {
+			b.WriteString(`DROP TABLE IF EXISTS panes; CREATE TABLE panes(session TEXT, win INTEGER, pane INTEGER, pane_id TEXT, claude_uuid TEXT, cwd TEXT, title TEXT, label TEXT, role TEXT, bypass INTEGER DEFAULT 1, cmd TEXT, updated_at TEXT, canonical_name TEXT, jsonl_path TEXT, PRIMARY KEY(session,win,pane));` + "\n")
+			uu := paneUUIDs()
+			pnow := time.Now().UTC().Format(time.RFC3339)
+			for _, ln := range plines {
+				f := strings.SplitN(ln, "|", 8)
+				if len(f) != 8 {
+					continue
+				}
+				uuid := uu[f[4]]
+				name := uuidName[uuid] // "" when unknown — the blank is honest
+				jsonl := ""
+				if mi, ok := ids[name]; ok {
+					jsonl = mi.Jsonl
+				}
+				b.WriteString(fmt.Sprintf("INSERT INTO panes VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s,%s);\n",
+					sqlQ(f[0]), f[1], f[2], sqlQ(f[3]), sqlQ(uuid), sqlQ(f[5]), sqlQ(f[7]), sqlQ(f[7]), sqlQ(name), sqlQ(f[6]), sqlQ(pnow), sqlQ(name), sqlQ(jsonl)))
+				counts["panes"]++
+			}
+			wout, _ := exec.Command(tb, "list-windows", "-a", "-F", "#{session_name}|#{window_index}|#{window_name}|#{window_layout}").Output()
+			b.WriteString(`DROP TABLE IF EXISTS windows; CREATE TABLE windows(session TEXT, win INTEGER, name TEXT, layout TEXT, updated_at TEXT, PRIMARY KEY(session,win));` + "\n")
+			for _, ln := range strings.Split(strings.TrimSpace(string(wout)), "\n") {
+				f := strings.SplitN(ln, "|", 4)
+				if len(f) != 4 || strings.TrimSpace(ln) == "" {
+					continue
+				}
+				b.WriteString(fmt.Sprintf("INSERT INTO windows VALUES(%s,%s,%s,%s,%s);\n", sqlQ(f[0]), f[1], sqlQ(f[2]), sqlQ(f[3]), sqlQ(pnow)))
+				counts["windows"]++
+			}
+		}
+	}
 
 	// surfaces ← manifest.json (a list of surface world-lines)
 	if data, err := os.ReadFile(os.ExpandEnv("$HOME/.8/manifest.json")); err == nil {
@@ -2218,7 +2271,7 @@ func (c *collector) syncDB() (map[string]int, error) {
 		var items []workItem
 		if json.Unmarshal(data, &items) == nil {
 			for _, it := range items {
-				b.WriteString(fmt.Sprintf("INSERT INTO work VALUES(%d,%s,%s,%s,%s,%s,%d,%s);\n", it.ID, sqlQ(it.Text), sqlQ(it.Status), sqlQ(it.By), sqlQ(it.TS), sqlQ(it.Assignee), it.Prio, sqlQ(it.FlippedBy)))
+				b.WriteString(fmt.Sprintf("INSERT INTO work VALUES(%d,%s,%s,%s,%s,%s,%d,%s,%s);\n", it.ID, sqlQ(it.Text), sqlQ(it.Status), sqlQ(it.By), sqlQ(it.TS), sqlQ(it.Assignee), it.Prio, sqlQ(it.FlippedBy), sqlQ(canonicalMind(it.By, ids))))
 				counts["work"]++
 			}
 		}

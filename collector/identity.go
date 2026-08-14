@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"os/exec"
@@ -283,4 +284,82 @@ func paneJsonl(tb, pane, projDir string) (string, time.Time) {
 		}
 	}
 	return newest, newestT
+}
+
+// ── IDENTITY (#436) — ~/.8/identity.json is the canonical mind map:
+// name -> {uuid, jsonl, aliases}. The db had 12 by_who labels for ~6 minds;
+// this file is where an alias is EVIDENCED (never guessed — _unresolved labels
+// stay unresolved). The collector CONSUMES it: /panes carries canonical_name +
+// jsonl_path, and the eight.db sync folds work.by_who into by_canon.
+type mindIdentity struct {
+	UUID    string   `json:"uuid"`
+	Jsonl   string   `json:"jsonl"`
+	Aliases []string `json:"aliases"`
+}
+
+func identityFile() string { return os.ExpandEnv("$HOME/.8/identity.json") }
+
+// loadIdentity — name -> identity. Missing file degrades to empty (probe,
+// don't assume); "_"-prefixed keys are documentation, not minds.
+func loadIdentity() map[string]mindIdentity {
+	out := map[string]mindIdentity{}
+	b, err := os.ReadFile(identityFile())
+	if err != nil {
+		return out
+	}
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(b, &raw) != nil {
+		return out
+	}
+	for name, v := range raw {
+		if strings.HasPrefix(name, "_") {
+			continue
+		}
+		var m mindIdentity
+		if json.Unmarshal(v, &m) == nil {
+			out[name] = m
+		}
+	}
+	return out
+}
+
+// canonicalMind folds any label — canonical name, uuid, or evidenced alias —
+// to the one mind it names. Unknown labels return "" (the blank is honest).
+func canonicalMind(label string, ids map[string]mindIdentity) string {
+	if label == "" {
+		return ""
+	}
+	for name, m := range ids {
+		if label == name || (m.UUID != "" && label == m.UUID) {
+			return name
+		}
+		for _, a := range m.Aliases {
+			if label == a {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+// paneUUIDs — pane_pid -> claude session uuid, one ps scan: any child whose
+// args carry `--resume <uuid>` binds that uuid to its parent pid (the pane).
+func paneUUIDs() map[string]string {
+	out := map[string]string{}
+	ps, err := exec.Command("ps", "-eo", "ppid,args").Output()
+	if err != nil {
+		return out
+	}
+	for _, line := range strings.Split(string(ps), "\n") {
+		i := strings.Index(line, "--resume")
+		if i < 0 {
+			continue
+		}
+		rest := strings.Fields(strings.TrimPrefix(strings.TrimPrefix(line[i:], "--resume="), "--resume"))
+		f := strings.Fields(line)
+		if len(rest) > 0 && len(f) > 0 && len(rest[0]) >= 32 {
+			out[f[0]] = rest[0]
+		}
+	}
+	return out
 }

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -58,6 +60,12 @@ func (c *collector) handlePanes(w http.ResponseWriter, r *http.Request) {
 		Cmd       string `json:"cmd"`
 		Title     string `json:"title"`
 		FirstSeen string `json:"first_seen"`
+		// #436: the pane-witness CONSUMES ~/.8/identity.json — a pane is not
+		// just a %N with a title, it is (maybe) a MIND with a lineage. Blank
+		// when the pane runs no known claude session (honest, not guessed).
+		Canonical string `json:"canonical_name,omitempty"`
+		UUID      string `json:"claude_uuid,omitempty"`
+		Jsonl     string `json:"jsonl_path,omitempty"`
 	}
 	c.pmu.Lock()
 	seen := make(map[string]string, len(c.panesSeen))
@@ -65,9 +73,34 @@ func (c *collector) handlePanes(w http.ResponseWriter, r *http.Request) {
 		seen[k] = v
 	}
 	c.pmu.Unlock()
+	ids := loadIdentity()
+	uuidName := map[string]string{}
+	for n, m := range ids {
+		if m.UUID != "" {
+			uuidName[m.UUID] = n
+		}
+	}
+	// pane -> pid -> claude uuid (one tmux call + one ps scan)
+	pidOf := map[string]string{}
+	if tb := tmuxBin(); tb != "" {
+		if out, err := exec.Command(tb, "list-panes", "-a", "-F", "#{pane_id}|#{pane_pid}").Output(); err == nil {
+			for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				if id, pid, ok := strings.Cut(ln, "|"); ok {
+					pidOf[id] = pid
+				}
+			}
+		}
+	}
+	uu := paneUUIDs()
 	out := []paneView{}
 	for _, p := range tmuxPanes() {
-		out = append(out, paneView{p.ID, p.Loc, p.Cmd, p.Title, seen[p.ID]})
+		uuid := uu[pidOf[p.ID]]
+		name := uuidName[uuid]
+		jsonl := ""
+		if m, ok := ids[name]; ok {
+			jsonl = m.Jsonl
+		}
+		out = append(out, paneView{p.ID, p.Loc, p.Cmd, p.Title, seen[p.ID], name, uuid, jsonl})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"panes": out, "n": len(out)})

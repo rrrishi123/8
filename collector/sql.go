@@ -201,7 +201,7 @@ func denySQL(q string) string {
 	// that self-erases and never reaches the source of truth (the conductor
 	// filed a finding into eight.db.work and it vanished). Mutate the LIVE
 	// surface instead: POST /work. Agents' own tables stay writable.
-	if t := writeTarget(s); t == "WORK" || t == "SURFACES" || t == "EVENTS" || t == "BENCHES" {
+	if t := writeTarget(s); t == "WORK" || t == "SURFACES" || t == "EVENTS" || t == "BENCHES" || t == "PANES" || t == "WINDOWS" {
 		return "table " + strings.ToLower(t) + " is a read-side snapshot (rebuilt on sync) — mutate the live surface (POST /work) instead"
 	}
 	if i := strings.Index(s, ";"); i >= 0 && strings.TrimSpace(s[i+1:]) != "" {
