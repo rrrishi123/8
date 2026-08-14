@@ -26,18 +26,12 @@ func (c *collector) handleTmuxSummary(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"need pane=%N"}`, http.StatusBadRequest)
 		return
 	}
-	cwdb, err := exec.Command(tb, "display-message", "-p", "-t", pane, "#{pane_current_path}").Output()
-	if err != nil {
-		http.Error(w, `{"error":"no such pane"}`, http.StatusNotFound)
-		return
-	}
-	cwd := strings.TrimSpace(string(cwdb))
-	// Claude Code encodes a project's cwd by replacing every '/' with '-'.
-	projDir := os.ExpandEnv("$HOME/.claude/projects/") + strings.ReplaceAll(cwd, "/", "-")
-	newest, newestT := paneJsonl(tb, pane, projDir) // THIS pane's own transcript, not newest-by-mtime
-	resp := map[string]any{"pane": pane, "cwd": cwd}
+	// #438: resolve by the UNIQUE live key (pid -> --resume uuid -> jsonl),
+	// never by shared-ground cwd; content-match is the stated fallback.
+	newest, newestT := paneTranscript(tb, pane)
+	resp := map[string]any{"pane": pane}
 	if newest == "" {
-		resp["note"] = "no Claude transcript for this pane's cwd — not a Claude session, or a fresh one"
+		resp["note"] = "no Claude transcript resolvable for this pane — not a Claude session, or a fresh one"
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
 		return
@@ -117,17 +111,13 @@ func (c *collector) handleAttention(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"need pane=%N"}`, http.StatusBadRequest)
 		return
 	}
-	cwdb, err := exec.Command(tb, "display-message", "-p", "-t", pane, "#{pane_current_path}").Output()
-	if err != nil {
-		http.Error(w, `{"error":"no such pane"}`, http.StatusNotFound)
-		return
-	}
-	cwd := strings.TrimSpace(string(cwdb))
-	projDir := os.ExpandEnv("$HOME/.claude/projects/") + strings.ReplaceAll(cwd, "/", "-")
-	newest, newestT := paneJsonl(tb, pane, projDir) // THIS pane's own transcript (same-cwd fix)
-	packet := map[string]any{"pane": pane, "cwd": cwd}
+	// #438: the UNIQUE live key (pid -> --resume uuid -> jsonl), never the
+	// shared-ground cwd — /attention on %8 had grabbed the IAM session because
+	// many minds share one directory. Same chain as /identity (#437).
+	newest, newestT := paneTranscript(tb, pane)
+	packet := map[string]any{"pane": pane}
 	if newest == "" {
-		packet["note"] = "no Claude transcript for this pane's cwd — nothing to focus on yet"
+		packet["note"] = "no Claude transcript resolvable for this pane — nothing to focus on yet"
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(packet)
 		return

@@ -229,6 +229,37 @@ func paneJsonlByContent(tb, pane, projDir string) string {
 	return ""
 }
 
+// paneTranscript — THE pane->transcript resolver (#438): the UNIQUE live key
+// first — pane -> pane_pid -> the running `claude --resume <uuid>` (ps) ->
+// jsonl discovered by search (#437's chain) — because cwd is SHARED GROUND:
+// many minds sit in one directory, and cwd-derived resolution handed one mind
+// another's transcript (/attention on %8 grabbed the IAM session). Fallback,
+// stated: a FRESH claude carries no --resume in argv, so when the uuid chain
+// yields nothing we fall back to the old cwd+content match (paneJsonl).
+func paneTranscript(tb, pane string) (string, time.Time) {
+	pidOf := ""
+	if out, err := exec.Command(tb, "display-message", "-p", "-t", pane, "#{pane_pid}").Output(); err == nil {
+		pidOf = strings.TrimSpace(string(out))
+	}
+	if pidOf != "" {
+		if uuid := paneUUIDs()[pidOf]; uuid != "" {
+			if p := jsonlForUUID(uuid); p != "" {
+				mt := time.Time{}
+				if fi, err := os.Stat(p); err == nil {
+					mt = fi.ModTime()
+				}
+				return p, mt
+			}
+		}
+	}
+	cwdb, err := exec.Command(tb, "display-message", "-p", "-t", pane, "#{pane_current_path}").Output()
+	if err != nil {
+		return "", time.Time{}
+	}
+	projDir := os.ExpandEnv("$HOME/.claude/projects/") + strings.ReplaceAll(strings.TrimSpace(string(cwdb)), "/", "-")
+	return paneJsonl(tb, pane, projDir)
+}
+
 // paneJsonl maps a tmux PANE to ITS OWN Claude transcript — the fix for the
 // same-cwd collision (many claude panes share one cwd, so newest-by-modtime
 // picks whichever mind wrote last, NOT this pane). Primary signal: CONTENT match
