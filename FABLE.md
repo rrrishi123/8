@@ -138,7 +138,7 @@ measured fact. (Work-item numbers refer to the 8 work queue, `GET /work`.)*
 | The Wire's two words | CALL/CHANNEL; 8 transports demonstrated as dialects of the 2 modes (README shared territory; WIRE view, fireable) |
 | Accents never learned | grpc/mqtt/webrtc framing lives in adapters, never in the wire (#26: open_url reverted to keep the wire lean) |
 | The Fox never contained | the browser-subject stays external to every body (#31/#37/#39: one-binary unrealized-not-forbidden; the subject is driven, never contained) |
-| Bodies counted honestly | 8 Go entrypoints, 16 built executables, 2 zero-dep modules; live plane = collector+channel+geckodriver+Firefox (#39/#56) |
+| Bodies counted honestly | 8 Go entrypoints, 16 built executables, 2 zero-dep modules; live plane = collector+channel+geckodriver+Firefox (#39/#56) — *amended 2026-08-14, v0.0.2: one of the two fell. The collector traded zero-dep for a bundled pure-Go sqlite (modernc.org/sqlite + 9 indirect — the DB atom, #280); the wire's module remains zero-dep. The row is left as written: it was true when measured, and the law is to amend, never back-fill (#319).* |
 | Receipts | `X-8-Witness: seen · replayable frame #2558 · channel · 287ms · gaze→…` (sibling-1's tab-create act) |
 | The eye that guessed | manifest wrote `opened_by=system, why=up.sh cockpit` over a *declared* sibling-1 act (#53, break e) |
 | Never guess; write the blank | provenance keeps undeclared as `""`, "honest, not back-filled" — 993/1000 undeclared (#29, #41, #53) |
