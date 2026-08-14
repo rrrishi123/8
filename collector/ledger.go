@@ -264,7 +264,9 @@ func (c *collector) summon(item workItem, reason string) {
 	if !paneAlive(pane) || tb == "" { // never send-keys into a dead %N or a bare shell
 		return
 	}
-	msg := fmt.Sprintf("[8-plan #%d -> doing] %s -- %s; the plan: curl -s 127.0.0.1:7070/work", item.ID, item.Text, reason)
+	// #324c: teach the LEAN read, not the firehose — discoverability is the
+	// adoption lever; the first thing a fresh mind curls is whatever this says.
+	msg := fmt.Sprintf("[8-plan #%d -> doing] %s -- %s; the plan: curl -s '127.0.0.1:7070/work?status=todo,doing&fields=id,text,status,assignee&limit=-30' (limit=-N = newest N; drop params for the full ledger)", item.ID, item.Text, reason)
 	exec.Command(tb, "send-keys", "-t", pane, "-l", msg).Run()
 	// SETTLE BEFORE ENTER (2026-08-11): send-keys returns once keys are QUEUED,
 	// not once the TUI has INGESTED them. For a long paste the Enter beat the
@@ -499,6 +501,8 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 	}
 	// PROJECTION — the wire wins on leanness only if it hands back the VIEW, not the
 	// firehose. GET /work?status=todo,doing&assignee=%9&fields=id,text,assignee&limit=20
+	// #324: limit=-N returns the TAIL (newest N); `total` in the response is the
+	// matched count before the limit cut.
 	// returns the lean witnessed answer, so http_request beats a raw sqlite/curl dump.
 	q := r.URL.Query()
 	if st := q.Get("status"); st != "" {
@@ -538,8 +542,13 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 		}
 		items = f
 	}
-	if n, err := strconv.Atoi(q.Get("limit")); err == nil && n >= 0 && n < len(items) {
-		items = items[:n]
+	total := len(items) // #324b: matched-count BEFORE limit — callers can see what the cut hid
+	if n, err := strconv.Atoi(q.Get("limit")); err == nil && n != 0 {
+		if n > 0 && n < len(items) { // first N (oldest-first, the original form)
+			items = items[:n]
+		} else if n < 0 && -n < len(items) { // #324a: ?limit=-N — the TAIL (newest N), what a queue reader usually wants
+			items = items[len(items)+n:]
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if fields := q.Get("fields"); fields != "" {
@@ -571,8 +580,8 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			}
 			proj = append(proj, m)
 		}
-		json.NewEncoder(w).Encode(map[string]any{"work": proj, "n": len(proj)})
+		json.NewEncoder(w).Encode(map[string]any{"work": proj, "n": len(proj), "total": total})
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]any{"work": items, "n": len(items)})
+	json.NewEncoder(w).Encode(map[string]any{"work": items, "n": len(items), "total": total})
 }
