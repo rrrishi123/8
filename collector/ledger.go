@@ -24,6 +24,20 @@ type workItem struct {
 	Deps     []int64 `json:"deps,omitempty"`     // ids this task waits on — the PLAN's edges (a DAG)
 	Prio     int64   `json:"prio,omitempty"`     // higher = picked sooner; the operator/agent adjusts the queue
 	Assignee string  `json:"assignee,omitempty"` // a specific tmux pane (e.g. %13) — assign work to another Claude's pane
+	// FlippedBy — WHO last changed Status (#323, closing #64 break 2: by= stays the
+	// AUTHOR; without this the trace cannot say who closed what). Body `by` first,
+	// X-8-Actor header as fallback, "auto:*" for machine flips — and an undeclared
+	// flip stays "" (the blank is honest; never guessed, never back-filled).
+	FlippedBy string `json:"flipped_by,omitempty"`
+}
+
+// flipActor resolves who is flipping a status: declared body `by` wins, the
+// X-8-Actor header (#314: the WHO rides the frame) is the fallback, blank is blank.
+func flipActor(by string, r *http.Request) string {
+	if by != "" {
+		return by
+	}
+	return r.Header.Get("X-8-Actor")
 }
 
 func workFile() string { return os.ExpandEnv("$HOME/.8/work.json") }
@@ -211,7 +225,8 @@ func (c *collector) dispatchParallel(items []workItem, now string) bool {
 		if idx := pickNextForPane(items, pane, done); idx >= 0 {
 			items[idx].Status = "doing"
 			items[idx].TS = now
-			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":"doing"}}}`, items[idx].ID))
+			items[idx].FlippedBy = "auto:playlist"
+			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":"doing","flipped_by":"auto:playlist"}}}`, items[idx].ID))
 			c.summon(items[idx], "▶ playlist: parallel")
 			busy[pane] = true
 			changed = true
@@ -288,6 +303,7 @@ func (c *collector) handleWorkNext(w http.ResponseWriter, r *http.Request) {
 		if claim != "" {
 			items[idx].Status = "doing"
 			items[idx].By = claim
+			items[idx].FlippedBy = claim
 			items[idx].TS = time.Now().UTC().Format(time.RFC3339)
 			if a := r.URL.Query().Get("assignee"); a != "" {
 				items[idx].Assignee = a
@@ -341,6 +357,7 @@ func advanceUnblocked(items []workItem, now string) []int {
 		if !blocked && len(items[i].Deps) > 0 && paneAlive(resolveAssignee(items[i].Assignee)) { // plan-edge AND a live claude pane
 			items[i].Status = "doing"
 			items[i].TS = now
+			items[i].FlippedBy = "auto:dep-advance"
 			promoted = append(promoted, i)
 		}
 	}
@@ -408,8 +425,9 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 				if items[i].ID == p.ID {
 					items[i].Status = p.Status
 					items[i].TS = now
+					items[i].FlippedBy = flipActor(p.By, r) // #323: who closed what, on the record
 					ackID = items[i].ID
-					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":%q}}}`, p.ID, p.Status))
+					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":%q,"flipped_by":%q}}}`, p.ID, p.Status, items[i].FlippedBy))
 					// Manual flip-to-doing by the OPERATOR still summons (the 2-way
 					// surface); agent-driven flips don't self-summon.
 					if p.Status == "doing" && (p.By == "" || p.By == "operator") {
@@ -547,6 +565,8 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 					m["prio"] = it.Prio
 				case "assignee":
 					m["assignee"] = it.Assignee
+				case "flipped_by":
+					m["flipped_by"] = it.FlippedBy
 				}
 			}
 			proj = append(proj, m)
