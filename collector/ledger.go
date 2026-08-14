@@ -92,14 +92,25 @@ func anyDoing(items []workItem) bool {
 // isRecord marks queue items that are DOCUMENTATION (a verdict/finding/act), not
 // actionable work — the picker skips them so the playlist only summons real
 // tasks (BUILD/FIX/verify/ANOMALY-to-attend), instead of churning verdicts.
+// #334: DONE added — completion records were born todo and the parallel playlist
+// dispatched a mind its own past DONE post (#136). NOTE: "[verify" is NOT here —
+// verify tasks are real, summonable work; they join records only in noVerifySpawn.
 func isRecord(text string) bool {
 	t := strings.TrimSpace(text)
-	for _, p := range []string{"FINDING", "ACT (", "AUDIT", "GUARD"} {
+	for _, p := range []string{"FINDING", "ACT (", "AUDIT", "GUARD", "DONE"} {
 		if strings.HasPrefix(t, p) {
 			return true
 		}
 	}
 	return false
+}
+
+// noVerifySpawn — completing this item spawns no [verify] follow-up: records
+// (which state, not claim) and verify items themselves (depth-1 bound, #104).
+// Composed from isRecord so the two rules can never drift apart again (#334:
+// the meta-guard had its own list, missing ACT — and both were missing DONE).
+func noVerifySpawn(text string) bool {
+	return isRecord(text) || strings.HasPrefix(strings.TrimSpace(text), "[verify")
 }
 
 func pickNext(items []workItem) int {
@@ -456,16 +467,14 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				if justDone != nil {
-					t := justDone.Text
-					meta := strings.HasPrefix(t, "[verify") || strings.HasPrefix(t, "GUARD") || strings.HasPrefix(t, "FINDING") || strings.HasPrefix(t, "AUDIT")
-					if !meta {
+					if !noVerifySpawn(justDone.Text) { // #334: one rule with isRecord, no more list drift
 						var max int64
 						for _, it := range items {
 							if it.ID > max {
 								max = it.ID
 							}
 						}
-						vtext := fmt.Sprintf("[verify #%d] falsify/verify that '%s' actually holds — independently, with evidence; find where it breaks.", justDone.ID, firstN(t, 90))
+						vtext := fmt.Sprintf("[verify #%d] falsify/verify that '%s' actually holds — independently, with evidence; find where it breaks.", justDone.ID, firstN(justDone.Text, 90))
 						items = append(items, workItem{ID: max + 1, Text: vtext, Status: "todo", By: "auto", TS: now, Prio: 2})
 						c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.spawn","params":{"of":%d,"verify":%d}}}`, justDone.ID, max+1))
 					}
