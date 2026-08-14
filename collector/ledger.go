@@ -59,7 +59,12 @@ func (c *collector) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 		os.MkdirAll(os.ExpandEnv("$HOME/.8"), 0o755)
 		if v == "1" {
 			os.WriteFile(playlistFile(), []byte("on"), 0o644)
-			// starting the playlist: pull the first track now
+			// starting the playlist: pull the first track now. Under c.tmu like
+			// every other read-modify-write of work.json (#394: this path was
+			// lock-free — dispatchParallel mutates items, and an overlapping
+			// POST /work could interleave and corrupt the file). dispatchParallel
+			// itself must never take c.tmu: handleWork calls it locked.
+			c.tmu.Lock()
 			var items []workItem
 			if b, e := os.ReadFile(workFile()); e == nil {
 				json.Unmarshal(b, &items)
@@ -69,6 +74,7 @@ func (c *collector) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 					os.WriteFile(workFile(), b, 0o644)
 				}
 			}
+			c.tmu.Unlock()
 		} else {
 			os.Remove(playlistFile())
 		}
