@@ -125,7 +125,12 @@ func anyDoing(items []workItem) bool {
 // dispatched a mind its own past DONE post (#136). NOTE: "[verify" is NOT here —
 // verify tasks are real, summonable work; they join records only in noVerifySpawn.
 func isRecord(text string) bool {
-	t := strings.TrimSpace(text)
+	// Records are written "[GUARD]"/"[FINDING]" by convention (the bracket reads
+	// better) — honor it: strip a leading "[" so bracketed AND bare forms match.
+	// Without this, "[GUARD]…" was born todo, re-circulated as work, and completing
+	// it spawned a [verify] — the jar of ash refilling itself. The rule must fit how
+	// the minds actually write, not the other way round.
+	t := strings.TrimPrefix(strings.TrimSpace(text), "[")
 	for _, p := range []string{"FINDING", "ACT (", "AUDIT", "GUARD", "DONE"} {
 		if strings.HasPrefix(t, p) {
 			return true
