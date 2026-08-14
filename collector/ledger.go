@@ -50,14 +50,9 @@ func (c *collector) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 			if b, e := os.ReadFile(workFile()); e == nil {
 				json.Unmarshal(b, &items)
 			}
-			if !anyDoing(items) {
-				if idx := pickNext(items); idx >= 0 {
-					items[idx].Status = "doing"
-					items[idx].TS = time.Now().UTC().Format(time.RFC3339)
-					if b, e := json.MarshalIndent(items, "", " "); e == nil {
-						os.WriteFile(workFile(), b, 0o644)
-					}
-					c.summon(items[idx], "▶ playlist started")
+			if c.dispatchParallel(items, time.Now().UTC().Format(time.RFC3339)) {
+				if b, e := json.MarshalIndent(items, "", " "); e == nil {
+					os.WriteFile(workFile(), b, 0o644)
 				}
 			}
 		} else {
@@ -148,6 +143,81 @@ func paneAlive(pane string) bool {
 		}
 	}
 	return false
+}
+
+// liveClaudePanes — current pane ids running a claude process (the summonable minds).
+func liveClaudePanes() []string {
+	var out []string
+	for _, p := range tmuxPanes() {
+		switch p.Cmd {
+		case "claude.exe", "claude", "node":
+			out = append(out, p.ID)
+		}
+	}
+	return out
+}
+
+// pickNextForPane — the next unblocked, non-record todo whose assignee resolves to
+// THIS pane. Per-pane picking is what makes dispatch parallel: each role/pane runs
+// its own WIP=1, so the panel works concurrently rather than one-at-a-time.
+func pickNextForPane(items []workItem, pane string, done map[int64]bool) int {
+	best := -1
+	for i := range items {
+		if items[i].Status != "todo" || isRecord(items[i].Text) {
+			continue
+		}
+		if resolveAssignee(items[i].Assignee) != pane {
+			continue
+		}
+		blocked := false
+		for _, d := range items[i].Deps {
+			if !done[d] {
+				blocked = true
+				break
+			}
+		}
+		if blocked {
+			continue
+		}
+		if best == -1 || items[i].Prio > items[best].Prio ||
+			(items[i].Prio == items[best].Prio && items[i].ID < items[best].ID) {
+			best = i
+		}
+	}
+	return best
+}
+
+// dispatchParallel — give every IDLE live pane its next task at once. Per-role
+// WIP=1, globally concurrent: philo/pmf/sibling-1/higgs/conductor all work at the
+// same time. Returns whether anything was dispatched (so the caller persists).
+func (c *collector) dispatchParallel(items []workItem, now string) bool {
+	busy := map[string]bool{}
+	done := map[int64]bool{}
+	for _, it := range items {
+		if it.Status == "done" {
+			done[it.ID] = true
+		}
+		if it.Status == "doing" {
+			if p := resolveAssignee(it.Assignee); p != "" {
+				busy[p] = true
+			}
+		}
+	}
+	changed := false
+	for _, pane := range liveClaudePanes() {
+		if busy[pane] {
+			continue
+		}
+		if idx := pickNextForPane(items, pane, done); idx >= 0 {
+			items[idx].Status = "doing"
+			items[idx].TS = now
+			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":"doing"}}}`, items[idx].ID))
+			c.summon(items[idx], "▶ playlist: parallel")
+			busy[pane] = true
+			changed = true
+		}
+	}
+	return changed
 }
 
 // rawAssignee pulls the literal assignee value straight from the raw query, so a
@@ -383,15 +453,11 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 				// summon it — pick→do→done→pick, hands-free. New tasks added mid-play
 				// just join the queue and get picked in turn.
 				// WIP=1: only pull the next when NOTHING is already doing. Without this
-				// gate, rapid completions each pulled a fresh task, flooding the queue
-				// with dozens of concurrent "doing" — the playlist must SERIALIZE.
-				if len(advanced) == 0 && playlistOn() && !anyDoing(items) {
-					if idx := pickNext(items); idx >= 0 {
-						items[idx].Status = "doing"
-						items[idx].TS = now
-						c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":"doing"}}}`, items[idx].ID))
-						c.summon(items[idx], "▶ playlist: next in queue")
-					}
+				// PARALLEL: give every idle live pane its next task at once — per-role
+				// WIP=1, globally concurrent, so the whole panel works simultaneously
+				// (not one-at-a-time). Each role's own queue serializes; roles don't.
+				if playlistOn() {
+					c.dispatchParallel(items, now)
 				}
 			}
 		}
