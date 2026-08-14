@@ -4063,6 +4063,7 @@ func main() {
 	token := flag.String("token", os.Getenv("EIGHT_TOKEN"), "shared secret required on every endpoint via X-8-Token/Bearer (empty = auth off, local-dev default)")
 	origins := flag.String("origins", os.Getenv("EIGHT_ORIGINS"), "comma CORS origin allowlist, e.g. http://localhost:8088 (empty = *, local-dev)")
 	flag.Parse()
+	persistBootArgs() // #347: record the wired argv so `up` boots and `watch` revives NON-bare
 
 	var brokers []broker
 	for _, part := range strings.Split(*spec, ",") {

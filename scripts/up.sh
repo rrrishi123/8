@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# STATUS (#320, 2026-08-14): SUPERSEDED-IN-PART by `collector up` (#279) — the portable,
-# substrate-probing boot. THIS script remains the FULL boot for this mac host: it wires
-# -brokers fox=:4445 + the gecko session + vite cockpit (:8088), which `collector up` does
-# NOT yet (it starts the collector BARE and the seat via the pack). Fresh host -> use
-# `collector up`. This host -> this script, until the binary reaches parity (see queue).
+# STATUS (#320/#347, 2026-08-14): SUPERSEDED by `collector up` for the bodies — since #347
+# the binary boots the collector WIRED (argv persisted to ~/.8/boot.json by serve mode,
+# discovery fallback) and the seat via the pack. What remains script-only: the vite
+# cockpit (:8088) and this host's office-firefox specifics. Fresh host -> `collector up`.
 # up.sh — bring the whole 8 wire up in one shot. Idempotent: reuses anything
 # already listening; only (re)starts what's down.
 #

@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -92,17 +95,22 @@ func runUp() {
 	self, _ := os.Executable()
 
 	// BODY 1 — the collector (this binary). Bundled; needs no substrate. Idempotent.
-	if portUp("127.0.0.1:7070") {
-		fmt.Println("  collector:    already up on :7070")
+	cargs := collectorArgs()
+	if portUp(probeAddr(cargs)) {
+		fmt.Printf("  collector:    already up on %s\n", probeAddr(cargs))
 	} else {
-		cmd := exec.Command(self, "-listen", ":7070")
+		cmd := exec.Command(self, cargs...)
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		if err := cmd.Start(); err != nil {
 			fmt.Printf("  collector:    FAILED: %v\n", err)
 		} else {
-			fmt.Printf("  collector:    started (pid %d)\n", cmd.Process.Pid)
+			fmt.Printf("  collector:    started (pid %d) args=%v\n", cmd.Process.Pid, cargs)
 		}
 	}
+	// #347 gap 3, scope stated: the web cockpit is a vite app — `up` does not
+	// start it (scripts/cockpit.sh does); folding a static web/dist serve into
+	// the binary is a filed follow-up, not a silent omission.
+	fmt.Println("  cockpit:      out of scope — vite app (scripts/cockpit.sh); static-serve fold-in is filed")
 
 	// BODY 2 — the firefox seat. DISCOVERED substrate; absent => dormant, not fatal.
 	if s.Firefox == "" || s.Gecko == "" {
@@ -113,6 +121,12 @@ func runUp() {
 		fmt.Println("  browser:      seat already up on :4444")
 		return
 	}
+	packUp(root)
+}
+
+// packUp launches the firefox seat via the browser pack (shared by `up` and the
+// watch guard). The pack owns replace-stale-seat semantics; we just fire it.
+func packUp(root string) {
 	pack := filepath.Join(root, "adapters", "browser", "browser")
 	profile := filepath.Join(root, "8", ".firefox-profile") // OUR profile, not the office one
 	if _, err := os.Stat(pack); err != nil {
@@ -128,19 +142,121 @@ func runUp() {
 	}
 }
 
-// runWatch — `8 watch`: supervision folded into the one binary (#279), replacing
-// scripts/watchdog.sh (bash pgrep/lsof/nohup). Every 15s, if the collector's port
-// is down, revive it via os/exec — cross-platform, no shell tools. The firefox
-// seat's own recycle stays the browser pack's job; this guards the witness itself.
+// ── boot.json — launch flags persisted (#347 gaps 1+2). Serve mode records its
+// own argv, so `up` boots and `watch` revives the collector WIRED the way the
+// operator last ran it (brokers, gecko session, session-file), never bare. A
+// faithful copy of argv beats reconstructing flags.
+func bootFile() string { return os.ExpandEnv("$HOME/.8/boot.json") }
+
+func persistBootArgs() {
+	os.MkdirAll(os.ExpandEnv("$HOME/.8"), 0o755)
+	if b, err := json.Marshal(os.Args[1:]); err == nil {
+		_ = os.WriteFile(bootFile(), b, 0o644)
+	}
+}
+
+// collectorArgs — how up/watch start the collector: the persisted launch flags
+// when present; else a discovered minimum (probe the broker port, wire the
+// session file if one exists) — never inscribe, never assume.
+func collectorArgs() []string {
+	if b, err := os.ReadFile(bootFile()); err == nil {
+		var a []string
+		if json.Unmarshal(b, &a) == nil && len(a) > 0 {
+			return a
+		}
+	}
+	args := []string{"-listen", ":7070"}
+	if portUp("127.0.0.1:4445") {
+		args = append(args, "-brokers", "fox=http://127.0.0.1:4445")
+	}
+	if sf := os.ExpandEnv("$HOME/.8/gecko.json"); func() bool { _, e := os.Stat(sf); return e == nil }() {
+		args = append(args, "-session-file", sf)
+	}
+	return args
+}
+
+// probeAddr — the dialable address of the collector those args would start
+// (":7070" -> "127.0.0.1:7070"), so up/watch probe the RIGHT port when the
+// operator runs a nonstandard -listen.
+func probeAddr(args []string) string {
+	addr := ":7070"
+	for i, a := range args {
+		if a == "-listen" && i+1 < len(args) {
+			addr = args[i+1]
+		}
+	}
+	if strings.HasPrefix(addr, ":") {
+		addr = "127.0.0.1" + addr
+	}
+	return addr
+}
+
+// foxSeat — (pid, rssMB) of the PARENT firefox running our pack profile, via
+// POSIX ps (the one external probe watch makes; mac has no /proc). Judge the
+// PROCESS, never the BiDi socket — under capture load the socket saturates and
+// looks dead while Firefox is merely busy (watchdog.sh's hard lesson).
+func foxSeat() (int, int) {
+	out, err := exec.Command("ps", "-axo", "pid=,rss=,command=").Output()
+	if err != nil {
+		return 0, 0
+	}
+	for _, ln := range strings.Split(string(out), "\n") {
+		if !strings.Contains(ln, "8/.firefox-profile") || strings.Contains(ln, "-contentproc") || strings.Contains(ln, "geckodriver") {
+			continue // parent surface only: children carry -contentproc
+		}
+		f := strings.Fields(ln)
+		if len(f) < 3 {
+			continue
+		}
+		pid, _ := strconv.Atoi(f[0])
+		rssKB, _ := strconv.Atoi(f[1])
+		if pid > 0 {
+			return pid, rssKB / 1024
+		}
+	}
+	return 0, 0
+}
+
+// runWatch — `8 watch`: supervision folded into the one binary (#279, #347).
+// Every 15s: (1) collector port down -> revive it WIRED from boot.json (a bare
+// revival would silently drop the fox/gecko wiring — worse than the bash
+// watchdog it replaces); (2) firefox guard, but ONLY for a seat this watch has
+// SEEN alive — it never starts a browser the operator didn't. Process-judged
+// death -> pack relaunch; parent RSS >4500MB on two consecutive ticks (the
+// sustained-bloat recycle threshold, not a single oscillation spike) -> pack
+// replace. The pack owns the actual seat semantics.
 func runWatch() {
 	self, _ := os.Executable()
-	fmt.Println("8 watch — supervising the collector (Go os/exec; no pgrep/lsof/nohup)")
+	root := repoRoot()
+	fmt.Println("8 watch — supervising the collector + a seen firefox seat (Go os/exec + POSIX ps)")
+	seenFox, highMem := false, 0
 	for {
-		if !portUp("127.0.0.1:7070") {
-			cmd := exec.Command(self, "-listen", ":7070")
+		if cargs := collectorArgs(); !portUp(probeAddr(cargs)) {
+			cmd := exec.Command(self, cargs...)
 			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 			if err := cmd.Start(); err == nil {
-				fmt.Printf("  collector was down -> revived (pid %d)\n", cmd.Process.Pid)
+				fmt.Printf("  collector was down -> revived (pid %d) args=%v\n", cmd.Process.Pid, cargs)
+			}
+		}
+		pid, rssMB := foxSeat()
+		if pid != 0 && portUp("127.0.0.1:4444") {
+			seenFox = true
+		}
+		if seenFox {
+			switch {
+			case pid == 0: // the process is gone — not a busy socket, gone
+				fmt.Println("  firefox seat gone -> pack relaunch")
+				packUp(root)
+				highMem = 0
+			case rssMB > 4500:
+				highMem++
+				if highMem >= 2 { // sustained, not a spike (aperture oscillates ~3.5-4.6GB)
+					fmt.Printf("  firefox parent %dMB sustained -> pack recycle\n", rssMB)
+					packUp(root)
+					highMem = 0
+				}
+			default:
+				highMem = 0
 			}
 		}
 		time.Sleep(15 * time.Second)

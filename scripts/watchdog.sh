@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# STATUS (#320, 2026-08-14): SUPERSEDED-IN-PART by `collector watch` (#279), which guards
-# ONLY the collector port and revives it BARE (no -brokers/-gecko wiring). THIS script still
-# owns the Firefox process-guard + recycle on this host. Do not stop it in favor of
-# `collector watch` until parity lands (see queue).
+# STATUS (#320/#347, 2026-08-14): SUPERSEDED-IN-PART by `collector watch` — since #347 it
+# revives the collector WIRED (from ~/.8/boot.json) and guards a SEEN pack-profile firefox
+# seat (process-judged, 4500MB sustained recycle). THIS script still owns THIS host's
+# office-profile firefox guard (different profile marker); keep it here until that seat
+# migrates to the pack profile.
 # watchdog.sh — keep the channel Firefox alive. The hard lesson: judge Firefox by
 # its PROCESS, not by whether the BiDi socket answers. Under captureScreenshot
 # stream load the single BiDi socket saturates and getTree times out for many
