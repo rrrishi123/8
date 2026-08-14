@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# STATUS (#320, 2026-08-14): NOT superseded — `collector watch` ACTS (revives); this is the
+# OBSERVER-only transition logger. Different job; keep.
 # watch-8.sh — OBSERVER-only health watcher for the 8 wire (never acts; the
 # watchdog acts). Emits one line per STATE TRANSITION to /tmp/8-watch.log:
 # firefox-down, dup up.sh / watchdog count, collector-down, and parent memory

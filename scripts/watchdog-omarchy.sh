@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# STATUS (#320, 2026-08-14): SUPERSEDED-IN-PART by `collector watch` (#279) — same caveat as
+# watchdog.sh: the binary guards only the collector, unwired. This omarchy variant remains the
+# full guard for that host until parity.
 # watchdog-omarchy.sh — keep the kosaten Firefox peer wire alive on omarchy.
 # CLAUDE's BROKER (2026-07-05): the broker at :4445 now enforces per-agent tab
 # leases. Every agent claims a browsingContext, sends commands tagged with its
