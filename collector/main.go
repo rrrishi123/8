@@ -2207,7 +2207,9 @@ func (c *collector) syncDB() (map[string]int, error) {
 			counts["events"]++
 		}
 	}
-	// work ← work.json
+	// work ← work.json. Lock-free BY DESIGN (#402): writes are atomic
+	// temp+rename now, so this can never see a torn file — only a slightly
+	// stale snapshot, which is exactly what an export wants.
 	if data, err := os.ReadFile(workFile()); err == nil {
 		var items []workItem
 		if json.Unmarshal(data, &items) == nil {

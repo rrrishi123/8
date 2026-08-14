@@ -42,6 +42,31 @@ func flipActor(by string, r *http.Request) string {
 
 func workFile() string { return os.ExpandEnv("$HOME/.8/work.json") }
 
+// writeWork persists the ledger ATOMICALLY (#402): temp file + rename in the
+// same directory (same fs -> rename is atomic), so no reader — locked,
+// lock-free (main.go eight.db export), or external (a human with jq) — can
+// ever see a torn/partial JSON. os.WriteFile was truncate+write: a reader
+// landing between the two saw half a ledger.
+func writeWork(items []workItem) {
+	b, err := json.MarshalIndent(items, "", " ")
+	if err != nil {
+		return
+	}
+	dir := os.ExpandEnv("$HOME/.8")
+	os.MkdirAll(dir, 0o755)
+	tmp, err := os.CreateTemp(dir, ".work-*.json")
+	if err != nil {
+		return
+	}
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return
+	}
+	tmp.Close()
+	_ = os.Rename(tmp.Name(), workFile())
+}
+
 func firstN(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -70,9 +95,7 @@ func (c *collector) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 				json.Unmarshal(b, &items)
 			}
 			if c.dispatchParallel(items, time.Now().UTC().Format(time.RFC3339)) {
-				if b, e := json.MarshalIndent(items, "", " "); e == nil {
-					os.WriteFile(workFile(), b, 0o644)
-				}
+				writeWork(items)
 			}
 			c.tmu.Unlock()
 		} else {
@@ -345,9 +368,7 @@ func (c *collector) revertOrphan(id int64, pane string) {
 			items[i].FlippedBy = "auto:summon-failed"
 			items[i].TS = time.Now().UTC().Format(time.RFC3339)
 			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.summon-failed","params":{"id":%d,"pane":%q,"reason":"died-mid-settle","reverted":true}}}`, id, pane))
-			if nb, e := json.MarshalIndent(items, "", " "); e == nil {
-				os.WriteFile(workFile(), nb, 0o644)
-			}
+			writeWork(items)
 		}
 	}
 }
@@ -374,9 +395,7 @@ func (c *collector) handleWorkNext(w http.ResponseWriter, r *http.Request) {
 			if a := r.URL.Query().Get("assignee"); a != "" {
 				items[idx].Assignee = a
 			}
-			if b, e := json.MarshalIndent(items, "", " "); e == nil {
-				os.WriteFile(workFile(), b, 0o644)
-			}
+			writeWork(items)
 		}
 		it := items[idx]
 		picked = &it
@@ -561,10 +580,7 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		os.MkdirAll(os.ExpandEnv("$HOME/.8"), 0o755)
-		if b, err := json.MarshalIndent(items, "", " "); err == nil {
-			os.WriteFile(workFile(), b, 0o644)
-		}
+		writeWork(items)
 		// LEAN ACK (#278, #313) — a POST returns the affected count AND the affected
 		// item's id, NOT the whole 164KB ledger. id is TOLD, never inferred from n
 		// (id=n is a coincidence that dies on first deletion); id=0 = nothing matched.
