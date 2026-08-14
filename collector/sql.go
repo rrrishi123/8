@@ -12,11 +12,14 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// handleSQL — the DB ATOM (#280): raw SQL over eight.db through the wire, engine
-// BUNDLED (modernc.org/sqlite, pure-Go — no host sqlite3 binary, cross-compiles).
+// handleSQL — the DB primitive (#280): raw SQL over eight.db through the wire,
+// engine BUNDLED (modernc.org/sqlite, pure-Go — no host sqlite3 binary,
+// cross-compiles). By SHAPE this is a CALL dialect over the store substrate,
+// NOT a third atom — see README "Reduction rules" (#315): payload language
+// (SQL) is a dialect property and never mints an atom.
 // Local-only is ENFORCED, not assumed (#318): the collector listens on all
 // interfaces (other endpoints are legitimately reached cross-host), so this
-// endpoint checks RemoteAddr and answers loopback callers only — the DB atom
+// endpoint checks RemoteAddr and answers loopback callers only — the store
 // belongs to the host it lives on. The WITNESS is the traceability — every query
 // publishes an intent frame (sql.query: WHO via X-8-Actor + the query) and an
 // outcome frame (sql.result: rows/affected/error; refusals as sql.deny), so a
@@ -37,7 +40,7 @@ func (c *collector) handleSQL(w http.ResponseWriter, r *http.Request) {
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err != nil || !net.ParseIP(host).IsLoopback() {
 		c.publish(fmt.Sprintf(`{"session":"db","origin":"COLLECTOR","frame":{"method":"sql.deny","params":{"actor":%q,"remote":%q,"reason":"loopback-only"}}}`, actor, r.RemoteAddr))
 		w.WriteHeader(http.StatusForbidden)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": "loopback only: the DB atom answers the host it lives on (#318)"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "loopback only: the store answers the host it lives on (#318)"})
 		return
 	}
 	raw, _ := io.ReadAll(r.Body)
