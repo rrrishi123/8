@@ -18,7 +18,10 @@ import (
 // interfaces (other endpoints are legitimately reached cross-host), so this
 // endpoint checks RemoteAddr and answers loopback callers only — the DB atom
 // belongs to the host it lives on. The WITNESS is the traceability — every query
-// is published to the feed. POST /sql with a raw SQL body OR {"query":"..."}.
+// publishes an intent frame (sql.query: WHO via X-8-Actor + the query) and an
+// outcome frame (sql.result: rows/affected/error; refusals as sql.deny), so a
+// mutation is witnessed as effect, not just intent (#314).
+// POST /sql with a raw SQL body OR {"query":"..."}.
 // SELECT/WITH/PRAGMA return rows; anything else returns affected.
 // This is the store's `become`: one general primitive instead of a filter param
 // per question — an agent can create its own tables, poll, insert, select.
@@ -27,7 +30,12 @@ func (c *collector) handleSQL(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
 		return
 	}
+	actor := r.Header.Get("X-8-Actor") // #314: the WHO rides the frame, not just the socket
+	if actor == "" {
+		actor = "undeclared"
+	}
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err != nil || !net.ParseIP(host).IsLoopback() {
+		c.publish(fmt.Sprintf(`{"session":"db","origin":"COLLECTOR","frame":{"method":"sql.deny","params":{"actor":%q,"remote":%q,"reason":"loopback-only"}}}`, actor, r.RemoteAddr))
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(map[string]any{"error": "loopback only: the DB atom answers the host it lives on (#318)"})
 		return
@@ -52,12 +60,15 @@ func (c *collector) handleSQL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer db.Close()
-	c.publish(fmt.Sprintf(`{"session":"db","origin":"COLLECTOR","frame":{"method":"sql.query","params":{"q":%q}}}`, q))
+	// #314: intent frame carries WHO + query; a matching sql.result/sql.deny frame
+	// witnesses the OUTCOME — a mutation is witnessed as effect, not just intent.
+	c.publish(fmt.Sprintf(`{"session":"db","origin":"COLLECTOR","frame":{"method":"sql.query","params":{"actor":%q,"q":%q}}}`, actor, q))
 	w.Header().Set("Content-Type", "application/json")
 	up := strings.ToUpper(q)
 	if strings.HasPrefix(up, "SELECT") || strings.HasPrefix(up, "WITH") || strings.HasPrefix(up, "PRAGMA") {
 		rows, err := db.Query(q)
 		if err != nil {
+			c.publish(fmt.Sprintf(`{"session":"db","origin":"COLLECTOR","frame":{"method":"sql.result","params":{"actor":%q,"error":%q}}}`, actor, err.Error()))
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
 			return
 		}
@@ -83,6 +94,7 @@ func (c *collector) handleSQL(w http.ResponseWriter, r *http.Request) {
 			}
 			out = append(out, m)
 		}
+		c.publish(fmt.Sprintf(`{"session":"db","origin":"COLLECTOR","frame":{"method":"sql.result","params":{"actor":%q,"rows":%d}}}`, actor, len(out)))
 		_ = json.NewEncoder(w).Encode(map[string]any{"rows": out, "n": len(out)})
 		return
 	}
@@ -90,15 +102,18 @@ func (c *collector) handleSQL(w http.ResponseWriter, r *http.Request) {
 	// it must not be erasable by accident. Writes (INSERT/UPDATE/DELETE/DROP/CREATE…)
 	// require an explicit ?write=1, so a bare SELECT-shaped mistake can't mutate.
 	if r.URL.Query().Get("write") != "1" {
+		c.publish(fmt.Sprintf(`{"session":"db","origin":"COLLECTOR","frame":{"method":"sql.deny","params":{"actor":%q,"reason":"write-gated"}}}`, actor))
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(map[string]any{"error": "write-gated: non-read statement needs ?write=1 (the ledger is the witness — no accidental mutation)"})
 		return
 	}
 	res, err := db.Exec(q)
 	if err != nil {
+		c.publish(fmt.Sprintf(`{"session":"db","origin":"COLLECTOR","frame":{"method":"sql.result","params":{"actor":%q,"error":%q}}}`, actor, err.Error()))
 		_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
 		return
 	}
 	n, _ := res.RowsAffected()
+	c.publish(fmt.Sprintf(`{"session":"db","origin":"COLLECTOR","frame":{"method":"sql.result","params":{"actor":%q,"affected":%d}}}`, actor, n))
 	_ = json.NewEncoder(w).Encode(map[string]any{"affected": n})
 }
