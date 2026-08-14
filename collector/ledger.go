@@ -366,6 +366,7 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 		}
 		json.NewDecoder(r.Body).Decode(&p)
 		now := time.Now().UTC().Format(time.RFC3339)
+		var ackID int64                // #313: the created/affected item's id, told not inferred; 0 = nothing matched
 		if p.Text != "" && p.ID == 0 { // add (optionally with plan-edges: deps, prio, assignee)
 			var max int64
 			for _, it := range items {
@@ -387,7 +388,8 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 				ni.Prio = *p.Prio
 			}
 			items = append(items, ni)
-			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.add","params":{"text":%q,"by":%q,"deps":%v}}}`, p.Text, p.By, p.Deps))
+			ackID = ni.ID
+			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.add","params":{"id":%d,"text":%q,"by":%q,"deps":%v}}}`, ni.ID, p.Text, p.By, p.Deps))
 		} else if p.ID > 0 && (p.Prio != nil || p.Assignee != "") && p.Status == "" { // ADJUST THE QUEUE (reorder / reassign) — operator or agent
 			for i := range items {
 				if items[i].ID == p.ID {
@@ -397,6 +399,7 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 					if p.Assignee != "" {
 						items[i].Assignee = p.Assignee
 					}
+					ackID = items[i].ID
 					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.reorder","params":{"id":%d,"prio":%d,"assignee":%q}}}`, items[i].ID, items[i].Prio, items[i].Assignee))
 				}
 			}
@@ -405,6 +408,7 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 				if items[i].ID == p.ID {
 					items[i].Status = p.Status
 					items[i].TS = now
+					ackID = items[i].ID
 					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":%q}}}`, p.ID, p.Status))
 					// Manual flip-to-doing by the OPERATOR still summons (the 2-way
 					// surface); agent-driven flips don't self-summon.
@@ -468,10 +472,11 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 		if b, err := json.MarshalIndent(items, "", " "); err == nil {
 			os.WriteFile(workFile(), b, 0o644)
 		}
-		// LEAN ACK (#278) — a POST returns the affected count, NOT the whole 164KB
-		// ledger. Retires the ?status=_ack overflow workaround; the firehose is gone.
+		// LEAN ACK (#278, #313) — a POST returns the affected count AND the affected
+		// item's id, NOT the whole 164KB ledger. id is TOLD, never inferred from n
+		// (id=n is a coincidence that dies on first deletion); id=0 = nothing matched.
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "n": len(items)})
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "n": len(items), "id": ackID})
 		return
 	}
 	// PROJECTION — the wire wins on leanness only if it hands back the VIEW, not the
