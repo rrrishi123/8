@@ -57,6 +57,12 @@ func (c *collector) handleSQL(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"empty query"}`, http.StatusBadRequest)
 		return
 	}
+	if reason := denySQL(q); reason != "" { // #400: denied OUTRIGHT — no flag unlocks these
+		c.publish(fmt.Sprintf(`{"session":"db","origin":"COLLECTOR","frame":{"method":"sql.deny","params":{"actor":%q,"reason":%q,"q":%q}}}`, actor, reason, q))
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "denied outright (#400): " + reason})
+		return
+	}
 	db, err := sql.Open("sqlite", eightDB())
 	if err != nil {
 		http.Error(w, `{"error":"open: `+err.Error()+`"}`, http.StatusInternalServerError)
@@ -119,4 +125,83 @@ func (c *collector) handleSQL(w http.ResponseWriter, r *http.Request) {
 	n, _ := res.RowsAffected()
 	c.publish(fmt.Sprintf(`{"session":"db","origin":"COLLECTOR","frame":{"method":"sql.result","params":{"actor":%q,"affected":%d}}}`, actor, n))
 	_ = json.NewEncoder(w).Encode(map[string]any{"affected": n})
+}
+
+// stripSQL removes string literals ('..' with ” escapes, ".." identifiers) and
+// comments (-- line, /* block */) so the deny-scan below sees only bare SQL.
+// Without this the LEDGER'S OWN CONTENT false-positives — an INSERT of a note
+// containing the word DROP is legitimate; a commented-out DROP does nothing.
+func stripSQL(q string) string {
+	var out []rune
+	r := []rune(q)
+	for i := 0; i < len(r); i++ {
+		switch {
+		case r[i] == '\'': // string literal; '' is an escaped quote
+			for i++; i < len(r); i++ {
+				if r[i] == '\'' {
+					if i+1 < len(r) && r[i+1] == '\'' {
+						i++
+						continue
+					}
+					break
+				}
+			}
+		case r[i] == '"': // quoted identifier
+			for i++; i < len(r) && r[i] != '"'; i++ {
+			}
+		case r[i] == '-' && i+1 < len(r) && r[i+1] == '-': // line comment
+			for ; i < len(r) && r[i] != '\n'; i++ {
+			}
+		case r[i] == '/' && i+1 < len(r) && r[i+1] == '*': // block comment
+			for i += 2; i+1 < len(r) && !(r[i] == '*' && r[i+1] == '/'); i++ {
+			}
+			i++
+		default:
+			out = append(out, r[i])
+		}
+	}
+	return string(out)
+}
+
+// denySQL — the outright deny-list (#400), defense-in-depth on top of the #318
+// loopback gate and the #309 ?write=1 gate. NO flag unlocks these: the ledger
+// must be unerasable (DROP), unexfiltratable/unattachable (ATTACH, DETACH,
+// VACUUM INTO), and unreconfigurable (PRAGMA assignment). One statement per
+// call — a ';' followed by more SQL closes the SELECT-then-piggyback hole.
+// Scans STRIPPED text with word boundaries, so content and comments never
+// false-positive and a column named "dropout" passes.
+func denySQL(q string) string {
+	s := strings.ToUpper(stripSQL(q))
+	word := func(w string) bool {
+		for idx, from := 0, 0; ; from = idx + len(w) {
+			idx = strings.Index(s[from:], w)
+			if idx < 0 {
+				return false
+			}
+			idx += from
+			bounded := (idx == 0 || !isWordRune(s[idx-1])) &&
+				(idx+len(w) >= len(s) || !isWordRune(s[idx+len(w)]))
+			if bounded {
+				return true
+			}
+		}
+	}
+	switch {
+	case word("DROP"):
+		return "DROP — the ledger is unerasable"
+	case word("ATTACH") || word("DETACH"):
+		return "ATTACH/DETACH — the store is this one db, no bridges"
+	case word("VACUUM") && word("INTO"):
+		return "VACUUM INTO — no exfiltration to files"
+	case word("PRAGMA") && strings.Contains(s, "="):
+		return "PRAGMA assignment — the store is not reconfigurable over the wire"
+	}
+	if i := strings.Index(s, ";"); i >= 0 && strings.TrimSpace(s[i+1:]) != "" {
+		return "multi-statement — one statement per call"
+	}
+	return ""
+}
+
+func isWordRune(b byte) bool {
+	return b == '_' || (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z')
 }
