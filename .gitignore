@@ -25,3 +25,8 @@ iam_witness.py
 web/.env
 # identity scripts are being folded into the Go collector; don't ship stray python
 /scripts/*.py
+
+# operator content, not witness machinery (#321) — the higgsfield movie pipeline
+# is a live scratch WORKSPACE on this host (canonical home: ~/.8/higgsfield when
+# idle), untracked from the module; see higgsfield-relocated.md
+/higgsfield/
