@@ -4167,6 +4167,7 @@ func main() {
 		go c.reconcileLoop()             // keep the tab manifest true even when no cockpit is watching
 		go c.seatWatchLoop()             // #11: PUSH change events for every seat (the CHANNEL atom, realized)
 		go c.paneWitnessLoop()           // #277: witness pane appearance (first_seen + pane.appeared/vanished)
+		go c.staleLoop()                 // #472b: revert 6h-silent doing items — the WIP lane self-heals
 		go func() {                      // project eight.db every 30s so DBeaver always sees fresh data
 			if _, err := exec.LookPath("sqlite3"); err != nil {
 				return

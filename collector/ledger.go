@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -249,6 +250,89 @@ func pickNextForPane(items []workItem, pane string, done map[int64]bool) int {
 // dispatchParallel — give every IDLE live pane its next task at once. Per-role
 // WIP=1, globally concurrent: philo/pmf/sibling-1/higgs/conductor all work at the
 // same time. Returns whether anything was dispatched (so the caller persists).
+// sendToPane lays text into a pane and breathes the Enters after the settle —
+// the one throat every summon/wake speaks through. EIGHT_NO_SUMMON=1 makes it a
+// no-op (the scratch-collector guard: a test instance shares the REAL tmux
+// socket — /tmp/tmux-<uid>, not HOME-scoped — and must never touch live panes,
+// the #401/#394 testing near-miss made law). onDead, when non-nil, runs if the
+// pane dies mid-settle (the TOCTOU tail).
+func sendToPane(pane, msg string, onDead func()) bool {
+	if os.Getenv("EIGHT_NO_SUMMON") == "1" {
+		return false
+	}
+	tb := tmuxBin()
+	if tb == "" || !paneAlive(pane) {
+		return false
+	}
+	if err := exec.Command(tb, "send-keys", "-t", pane, "-l", msg).Run(); err != nil || !paneAlive(pane) {
+		return false // exit status caught AND post-send aliveness re-checked: the TOCTOU head
+	}
+	settle := 700*time.Millisecond + time.Duration(len(msg)/4)*time.Millisecond
+	if settle > 4000*time.Millisecond {
+		settle = 4000 * time.Millisecond
+	}
+	go func() {
+		time.Sleep(settle)
+		if !paneAlive(pane) { // TOCTOU tail: died mid-settle, Enter would no-op
+			if onDead != nil {
+				onDead()
+			}
+			return
+		}
+		exec.Command(tb, "send-keys", "-t", pane, "Enter").Run()
+		time.Sleep(500 * time.Millisecond)
+		exec.Command(tb, "send-keys", "-t", pane, "Enter").Run()
+	}()
+	return true
+}
+
+var (
+	wakeMu   sync.Mutex
+	lastWake = map[string]time.Time{} // pane -> last wake (cooldown, no nagging)
+)
+
+// wake — the SELECTION-FREE summon (#472 as amended by #474/#475 + the
+// operator's journey point): the collector is only the ALARM CLOCK. It never
+// chooses work for a mind — it tells an idle pane that unclaimed work exists
+// and hands it the ritual: read your own marks first (a blank/compacted mind
+// STARTS FROM SOMEONE — let it be your own past self), then the others, then
+// the queue; claim natively. 30min cooldown per pane.
+func (c *collector) wake(pane string, unclaimed int) {
+	wakeMu.Lock()
+	if time.Since(lastWake[pane]) < 30*time.Minute {
+		wakeMu.Unlock()
+		return
+	}
+	lastWake[pane] = time.Now()
+	wakeMu.Unlock()
+	msg := fmt.Sprintf("[8-wake] %d unclaimed tasks on the queue — nothing is assigned to you; the choice is yours by nature. You may be blank (fresh or compacted): you start from someone, so start from your own marks. Ritual: (1) yourself: curl -s '127.0.0.1:7070/attention?pane=%%25N' (your arc) + curl -s '127.0.0.1:7070/work?by=YOURNAME&fields=id,text&limit=-15' (your marks); (2) the others: curl -s 127.0.0.1:7070/identity; (3) the unclaimed: curl -s '127.0.0.1:7070/work?status=todo&fields=id,text,assignee&limit=-40' — pick what fits your material nature and the uncovered gap, then CLAIM it: curl -s -X POST 127.0.0.1:7070/work -d '{\"id\":N,\"status\":\"doing\",\"by\":\"YOURNAME\"}' and declare: curl -s -X POST 127.0.0.1:7070/identity -d '{\"uuid\":\"YOUR-SESSION-UUID\",\"name\":\"YOURNAME\"}'", unclaimed)
+	if sendToPane(pane, msg, nil) {
+		c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.wake","params":{"pane":%q,"unclaimed":%d}}}`, pane, unclaimed))
+	}
+}
+
+// countUnclaimed — todos with NO assignee, not records, deps met: the work any
+// mind may claim by nature.
+func countUnclaimed(items []workItem, done map[int64]bool) int {
+	n := 0
+	for i := range items {
+		if items[i].Status != "todo" || items[i].Assignee != "" || isRecord(items[i].Text) {
+			continue
+		}
+		ok := true
+		for _, d := range items[i].Deps {
+			if !done[d] {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			n++
+		}
+	}
+	return n
+}
+
 func (c *collector) dispatchParallel(items []workItem, now string) bool {
 	busy := map[string]bool{}
 	done := map[int64]bool{}
@@ -280,6 +364,11 @@ func (c *collector) dispatchParallel(items []workItem, now string) bool {
 			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":"doing","flipped_by":"auto:playlist"}}}`, items[idx].ID))
 			busy[pane] = true
 			changed = true
+		} else if n := countUnclaimed(items, done); n > 0 {
+			// #472 (amended #474/#475): the pane's own lane is empty but
+			// unclaimed work exists — WAKE, never assign: the router picks WHEN
+			// a mind stirs, never WHAT it does. Purpose flows mind -> queue.
+			c.wake(pane, n)
 		}
 	}
 	return changed
@@ -323,32 +412,13 @@ func (c *collector) summon(item workItem, reason string) bool {
 	// #324c: teach the LEAN read, not the firehose — discoverability is the
 	// adoption lever; the first thing a fresh mind curls is whatever this says.
 	msg := fmt.Sprintf("[8-plan #%d -> doing] %s -- %s; the plan: curl -s '127.0.0.1:7070/work?status=todo,doing&fields=id,text,status,assignee&limit=-30' (limit=-N = newest N; drop params for the full ledger)", item.ID, item.Text, reason)
-	if err := exec.Command(tb, "send-keys", "-t", pane, "-l", msg).Run(); err != nil || !paneAlive(pane) {
-		// exit status caught AND post-send aliveness re-checked: the TOCTOU head.
+	// The throat itself lives in sendToPane (settle-before-Enter, double Enter,
+	// TOCTOU head+tail — see its doc); summon adds only the witnessed verdict
+	// and the orphan-revert tail.
+	if !sendToPane(pane, msg, func() { c.revertOrphan(item.ID, pane) }) {
 		c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.summon-failed","params":{"id":%d,"pane":%q,"reason":"send-failed"}}}`, item.ID, pane))
 		return false
 	}
-	// SETTLE BEFORE ENTER (2026-08-11): send-keys returns once keys are QUEUED,
-	// not once the TUI has INGESTED them. For a long paste the Enter beat the
-	// ingest and submitted empty/partial — then the text landed and just sat in
-	// the prompt (#16 never fired). Fix: wait for the TUI to absorb the paste
-	// (delay scales with length), THEN Enter; a backup Enter after another beat
-	// catches a still-settling ingest. A second Enter is safe — Claude Code
-	// ignores an empty submit, so it can't double-post.
-	settle := 700*time.Millisecond + time.Duration(len(msg)/4)*time.Millisecond
-	if settle > 4000*time.Millisecond {
-		settle = 4000 * time.Millisecond
-	}
-	go func() {
-		time.Sleep(settle)
-		if !paneAlive(pane) { // TOCTOU tail: died mid-settle, Enter would no-op
-			c.revertOrphan(item.ID, pane)
-			return
-		}
-		exec.Command(tb, "send-keys", "-t", pane, "Enter").Run()
-		time.Sleep(500 * time.Millisecond)
-		exec.Command(tb, "send-keys", "-t", pane, "Enter").Run()
-	}()
 	c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.summon","params":{"id":%d,"pane":%q,"reason":%q}}}`, item.ID, pane, reason))
 	return true
 }
@@ -678,4 +748,47 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]any{"work": items, "n": len(items), "total": total})
+}
+
+// staleLoop (#472b) — the self-healing edge for per-role WIP=1: a doing item
+// whose status hasn't moved for 6h is a silenced lane (a mind died, was
+// compacted, or forgot the flip). Revert it to todo, witnessed — the queue
+// re-offers it; nothing is lost, nothing silently jams.
+func (c *collector) staleLoop() {
+	tick := 10 * time.Minute
+	if v := os.Getenv("EIGHT_STALE_TICK_S"); v != "" { // test hook: shorten the sweep
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			tick = time.Duration(n) * time.Second
+		}
+	}
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	for range t.C {
+		c.tmu.Lock()
+		var items []workItem
+		b, err := os.ReadFile(workFile())
+		if err != nil || json.Unmarshal(b, &items) != nil {
+			c.tmu.Unlock()
+			continue
+		}
+		changed := false
+		for i := range items {
+			if items[i].Status != "doing" {
+				continue
+			}
+			ts, err := time.Parse(time.RFC3339, items[i].TS)
+			if err != nil || time.Since(ts) < 6*time.Hour {
+				continue
+			}
+			items[i].Status = "todo"
+			items[i].FlippedBy = "auto:stale"
+			items[i].TS = time.Now().UTC().Format(time.RFC3339)
+			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.stale","params":{"id":%d,"reverted":true,"idle":"6h+"}}}`, items[i].ID))
+			changed = true
+		}
+		if changed {
+			writeWork(items)
+		}
+		c.tmu.Unlock()
+	}
 }
