@@ -126,3 +126,20 @@ export async function replaySeries(name: string): Promise<{ fired: number; resul
   const r = await fetch(`${BASE}/replay-series?name=${encodeURIComponent(name)}`, { method: 'POST' });
   return r.json();
 }
+
+// ── PANE COCKPIT (#641) — the fan-out nerve's UI side ────────────────────────
+export interface PaneIdentity { pane?: string; cmd?: string; title?: string; uuid?: string; name?: string; jsonl?: string }
+export async function identity(): Promise<PaneIdentity[]> {
+  const r = await fetch(`${BASE}/identity`);
+  const j = await r.json();
+  return j.identity || [];
+}
+export interface PaneSendResult { sent: number; total: number; targets: { pane: string; sent: boolean }[] }
+export async function panesSend(text: string, panes: string[], all: boolean): Promise<PaneSendResult> {
+  const r = await fetch(`${BASE}/panes/send`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-8-Actor': 'cockpit' },
+    body: JSON.stringify(all ? { all: true, text } : { panes, text }),
+  });
+  if (!r.ok) throw new Error(`${r.status} ${r.status === 404 ? '— /panes/send not deployed yet (restart the collector)' : await r.text()}`);
+  return r.json();
+}

@@ -196,8 +196,18 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     if (s.physics === 'channel') {
       // a card carries its NAME: browser tabs show their host; a tmux pane shows
       // its %id + location ("you are pane %5"); a daemon shows its name.
-      const cells: Cell[] = (tabsBy[s.id] || []).map((tab) => ({
-        key: s.id + tab.context, session: s.id, context: tab.context, url: tab.url, parked: tab.parked === 'true',
+      // dup-key fix (#641): getTree can transiently repeat a context during a
+      // seat recycle, and a context can be blank — dedupe repeats (first wins)
+      // and give blanks an indexed fallback, so React keys stay unique while
+      // established keys keep their old shape (pins survive).
+      const seenCtx = new Set<string>();
+      const cells: Cell[] = (tabsBy[s.id] || []).filter((tab) => {
+        if (!tab.context) return true;
+        if (seenCtx.has(tab.context)) return false;
+        seenCtx.add(tab.context);
+        return true;
+      }).map((tab, ti) => ({
+        key: s.id + (tab.context || `blank-${ti}`), session: s.id, context: tab.context, url: tab.url, parked: tab.parked === 'true',
         title: s.id === 'tmux' ? `${tab.context} · ${tab.url.replace('tmux://', '')}`
           : s.id === 'nvim' ? (tab.title || tab.context)
           : s.id === 'daemons' ? (tab.title || tab.context)

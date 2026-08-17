@@ -553,3 +553,17 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .work-play.on { background: #201b0b; border-color: #b8901f; color: #ffd43b; }
 .work-row[draggable="true"] { cursor: grab; }
 .work-row.todo:hover { background: #0f1320; }
+
+/* ── pane cockpit (#641) ── */
+.pane-cockpit { display: flex; flex-direction: column; gap: 6px; padding: 6px; font-size: 12px; }
+.pc-list { display: flex; flex-direction: column; gap: 2px; max-height: 160px; overflow-y: auto; }
+.pc-row { display: flex; gap: 6px; align-items: center; cursor: pointer; white-space: nowrap; overflow: hidden; }
+.pc-row.pc-all { border-bottom: 1px solid var(--line, #333); padding-bottom: 4px; margin-bottom: 2px; }
+.pc-pane { font-weight: 600; min-width: 34px; }
+.pc-name { color: var(--accent, #7bc); min-width: 70px; }
+.pc-title { opacity: 0.6; overflow: hidden; text-overflow: ellipsis; }
+.pc-text { width: 100%; resize: vertical; background: transparent; color: inherit; border: 1px solid var(--line, #333); border-radius: 4px; padding: 5px; font: inherit; }
+.pc-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pc-send { cursor: pointer; }
+.pc-res.ok { color: #8c8; }
+.pc-res.err { color: #c88; }

@@ -6,6 +6,7 @@ import { SessionRail } from './components/SessionRail';
 import { Interaction } from './components/Interaction';
 import { SessionStream } from './components/SessionStream';
 import { Resources } from './components/Resources';
+import { PaneCockpit } from './components/PaneCockpit';
 import { Bench } from './components/Bench';
 import { Splitter, SideStack, useLocal } from './components/Dock';
 import { ThemePicker } from './components/ThemePicker';
@@ -166,6 +167,7 @@ export default function App() {
             { id: 'viewport', title: 'viewport', node: <Viewport session={sessions.find((s) => s.physics === 'channel')?.id || null} /> },
             { id: 'inspector', title: 'inspector', node: <Inspector row={selected} /> },
             { id: 'curl', title: 'compose', node: <PasteCurl /> },
+            { id: 'panes', title: 'panes · send', node: <PaneCockpit /> },
           ]} />
         </div>
           </>
