@@ -218,7 +218,6 @@ func (c *collector) witnessHeaders(w http.ResponseWriter, ledgerID int64, physic
 	ctx, seq := c.focusContext, c.focusSeq
 	c.focusMu.Unlock()
 	h := w.Header()
-	h.Set("Access-Control-Expose-Headers", "X-8-Witness, X-8-Ledger, X-8-Physics, X-8-Replayable, X-8-Focus-Seq, X-8-Focus-Context")
 	h.Set("X-8-Ledger", strconv.FormatInt(ledgerID, 10))
 	h.Set("X-8-Physics", physics)
 	h.Set("X-8-Replayable", "true")
@@ -4083,6 +4082,7 @@ func cors(allow map[string]bool, h http.Handler) http.Handler {
 		}
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-8-Token, Authorization")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Expose-Headers", "X-8-Witness, X-8-Ledger, X-8-Ledger-Id, X-8-DMs, X-8-Physics, X-8-Replayable, X-8-Focus-Seq, X-8-Focus-Context")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -4286,7 +4286,7 @@ func main() {
 	// in use' and leave a ~3s gap until the watchdog revived it. Retry the bind for
 	// ~3s first; the old process's TIME_WAIT clears well within that, so deploys are
 	// seamless instead of a blip. (The audit's closest-to-broken finding.)
-	handler := cors(allow, auth(*token, mux))
+	handler := cors(allow, auth(*token, witnessEvery(mux))) // #616: receipts on everything
 	var ln net.Listener
 	var lerr error
 	for i := 0; i < 30; i++ {
