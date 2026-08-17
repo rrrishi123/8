@@ -1325,9 +1325,11 @@ func (c *collector) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 // EIGHT_NO_SUMMON, paneAlive and the TOCTOU tail all still hold). This is the
 // operator's (and any agent's) "type the same thing into all/any Claude at
 // once" nerve — the thing a solo mind kept faking by hand.
-//   POST /panes/send  {"panes":["%8","%9"],"text":"..."}  — explicit targets
-//   POST /panes/send  {"all":true,"text":"..."}           — every live claude pane
-//   POST /panes/send  {"text":"..."}                      — same (empty == all claude)
+//
+//	POST /panes/send  {"panes":["%8","%9"],"text":"..."}  — explicit targets
+//	POST /panes/send  {"all":true,"text":"..."}           — every live claude pane
+//	POST /panes/send  {"text":"..."}                      — same (empty == all claude)
+//
 // Only panes whose current command is claude are auto-targeted; an explicit
 // list is sent as-given (the operator chose it). Reply is per-pane {pane,sent}.
 func (c *collector) handlePanesSend(w http.ResponseWriter, r *http.Request) {
@@ -1833,7 +1835,7 @@ func (c *collector) handleTabs(w http.ResponseWriter, r *http.Request) {
 const chromeTabsScript = `const cb=arguments[arguments.length-1];try{` +
 	`let ck=[];for(let w of Services.wm.getEnumerator("navigator:browser")){for(let t of Array.from(w.gBrowser.tabs)){if(t.linkedBrowser.currentURI.spec.includes("8088"))ck.push({t:t,w:w,sel:t.selected});}}` +
 	`if(ck.length>1){let keep=ck.find(c=>c.sel)||ck[0];for(let c of ck){if(c!==keep){try{c.w.gBrowser.removeTab(c.t);}catch(e){}}}}` +
-	`let out=[];for(let w of Services.wm.getEnumerator("navigator:browser")){for(let t of w.gBrowser.tabs){let b=t.linkedBrowser;out.push({bcid:String(b.browsingContext?b.browsingContext.id:""),url:b.currentURI?b.currentURI.spec:"",title:t.label||""});}}` +
+	`let out=[];for(let w of Services.wm.getEnumerator("navigator:browser")){for(let t of w.gBrowser.tabs){let b=t.linkedBrowser;out.push({bcid:String(b.browsingContext?b.browsingContext.id:""),url:b.currentURI?b.currentURI.spec:"",title:t.label||"",sel:!!t.selected});}}` +
 	`cb(JSON.stringify(out));}catch(e){cb("ERR:"+e);}`
 
 // ── TAB MANIFEST ────────────────────────────────────────────────────────────
@@ -2142,13 +2144,12 @@ func (c *collector) reconcileLoop() {
 		} else {
 			eyeClosed = 0
 		}
-		var ct []struct {
-			Bcid  string `json:"bcid"`
-			URL   string `json:"url"`
-			Title string `json:"title"`
-		}
+		var ct []chromeTab
 		if json.Unmarshal([]byte(out), &ct) != nil {
 			continue
+		}
+		if c.manifestSeeded { // #643: never prune a world the witness has not yet read
+			c.autoDedupe(ct)
 		}
 		tabs := make([]map[string]string, 0, len(ct))
 		for _, tb := range ct {
@@ -4252,6 +4253,7 @@ func main() {
 	mux.HandleFunc("/attach", c.handleAttach)             // connect any provider's live session (CALL) at runtime
 	mux.HandleFunc("/adapters/fire", c.handleAdapterFire) // fire a real adapter loopback (grpc|mqtt|webrtc|unix), witnessed
 	mux.HandleFunc("/source", c.handleSource)
+	mux.HandleFunc("/read", c.handleRead) // #643: read an OPEN tab; create only on explicit intent
 	mux.HandleFunc("/act", c.handleAct)
 	mux.HandleFunc("/stream", c.handleStream)
 	mux.HandleFunc("/bench", c.handleBench)
@@ -4312,7 +4314,7 @@ func main() {
 	mux.HandleFunc("/work/playlist", c.handlePlaylist)
 	mux.HandleFunc("/panes", c.handlePanes)          // #277 witnessed pane roster (first_seen per pane)
 	mux.HandleFunc("/panes/send", c.handlePanesSend) // type one prompt into selected panes / all live claude at once — the operator+agent fan-out nerve
-	mux.HandleFunc("/sql", c.handleSQL)     // #280 the DB primitive: a CALL dialect over eight.db (modernc, witnessed; #315)
+	mux.HandleFunc("/sql", c.handleSQL)              // #280 the DB primitive: a CALL dialect over eight.db (modernc, witnessed; #315)
 	mux.HandleFunc("/watch", c.handleWatch)
 	mux.HandleFunc("/timeline", c.handleTimeline)     // #13 the interleaved cross-substrate timeline
 	mux.HandleFunc("/provenance", c.handleProvenance) // #29 actor→atom→surface flow (declared X-8-Actor)
