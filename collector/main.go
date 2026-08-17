@@ -1320,6 +1320,57 @@ func (c *collector) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"results": results})
 }
 
+// handlePanesSend fans ONE prompt into selected panes — or every live claude
+// pane — through sendToPane, the same guarded throat wake/summon use (so
+// EIGHT_NO_SUMMON, paneAlive and the TOCTOU tail all still hold). This is the
+// operator's (and any agent's) "type the same thing into all/any Claude at
+// once" nerve — the thing a solo mind kept faking by hand.
+//   POST /panes/send  {"panes":["%8","%9"],"text":"..."}  — explicit targets
+//   POST /panes/send  {"all":true,"text":"..."}           — every live claude pane
+//   POST /panes/send  {"text":"..."}                      — same (empty == all claude)
+// Only panes whose current command is claude are auto-targeted; an explicit
+// list is sent as-given (the operator chose it). Reply is per-pane {pane,sent}.
+func (c *collector) handlePanesSend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Panes []string `json:"panes"`
+		All   bool     `json:"all"`
+		Text  string   `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Text) == "" {
+		http.Error(w, `{"error":"need {text, and panes[] or all:true}"}`, http.StatusBadRequest)
+		return
+	}
+	targets := req.Panes
+	if req.All || len(targets) == 0 { // unspecified == the whole live claude choir
+		targets = nil
+		for _, p := range tmuxPanes() {
+			if strings.Contains(strings.ToLower(p.Cmd), "claude") {
+				targets = append(targets, p.ID)
+			}
+		}
+	}
+	type res struct {
+		Pane string `json:"pane"`
+		Sent bool   `json:"sent"`
+	}
+	out := make([]res, 0, len(targets))
+	n := 0
+	for _, p := range targets {
+		ok := sendToPane(p, req.Text, nil)
+		if ok {
+			n++
+		}
+		out = append(out, res{Pane: p, Sent: ok})
+	}
+	c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"panes.send","params":{"sent":%d,"total":%d}}}`, n, len(targets)))
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"sent": n, "total": len(targets), "targets": out})
+}
+
 // handleFetch executes one raw HTTP request server-side (the "curl hit"), and
 // guardFetchTarget blocks the unambiguous SSRF target: the cloud-metadata /
 // link-local range (169.254.0.0/16, fe80::/10) — never a legitimate /fetch
@@ -4259,7 +4310,8 @@ func main() {
 	mux.HandleFunc("/work", c.handleWork)
 	mux.HandleFunc("/work/next", c.handleWorkNext)
 	mux.HandleFunc("/work/playlist", c.handlePlaylist)
-	mux.HandleFunc("/panes", c.handlePanes) // #277 witnessed pane roster (first_seen per pane)
+	mux.HandleFunc("/panes", c.handlePanes)          // #277 witnessed pane roster (first_seen per pane)
+	mux.HandleFunc("/panes/send", c.handlePanesSend) // type one prompt into selected panes / all live claude at once — the operator+agent fan-out nerve
 	mux.HandleFunc("/sql", c.handleSQL)     // #280 the DB primitive: a CALL dialect over eight.db (modernc, witnessed; #315)
 	mux.HandleFunc("/watch", c.handleWatch)
 	mux.HandleFunc("/timeline", c.handleTimeline)     // #13 the interleaved cross-substrate timeline
