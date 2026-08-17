@@ -4220,6 +4220,7 @@ func main() {
 		go c.seatWatchLoop()             // #11: PUSH change events for every seat (the CHANNEL atom, realized)
 		go c.paneWitnessLoop()           // #277: witness pane appearance (first_seen + pane.appeared/vanished)
 		go c.staleLoop()                 // #472b: revert 6h-silent doing items — the WIP lane self-heals
+		go c.epochLoop()                 // #645: the operator-epoch clock — ledger locked to operator-time
 		go func() {                      // project eight.db every 30s so DBeaver always sees fresh data
 			if _, err := exec.LookPath("sqlite3"); err != nil {
 				return

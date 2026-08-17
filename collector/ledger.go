@@ -25,6 +25,10 @@ type workItem struct {
 	Deps     []int64 `json:"deps,omitempty"`     // ids this task waits on — the PLAN's edges (a DAG)
 	Prio     int64   `json:"prio,omitempty"`     // higher = picked sooner; the operator/agent adjusts the queue
 	Assignee string  `json:"assignee,omitempty"` // a specific tmux pane (e.g. %13) — assign work to another Claude's pane
+	// Epoch — the operator-interval this item was born in (#645): stamp N means
+	// "written between the operator's Nth and N+1th prompt". Legacy rows carry
+	// no field (the pre-epoch era, never back-filled).
+	Epoch int64 `json:"epoch,omitempty"`
 	// FlippedBy — WHO last changed Status (#323, closing #64 break 2: by= stays the
 	// AUTHOR; without this the trace cannot say who closed what). Body `by` first,
 	// X-8-Actor header as fallback, "auto:*" for machine flips — and an undeclared
@@ -260,6 +264,7 @@ func sendToPane(pane, msg string, onDead func()) bool {
 	if os.Getenv("EIGHT_NO_SUMMON") == "1" {
 		return false
 	}
+	epNoteInjected(msg) // #645: the system's breath must never tick the operator's clock
 	tb := tmuxBin()
 	if tb == "" || !paneAlive(pane) {
 		return false
@@ -557,7 +562,7 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			if p.By == "" {
 				p.By = "operator"
 			}
-			ni := workItem{ID: max + 1, Text: p.Text, Status: "todo", By: p.By, TS: now, Deps: p.Deps, Assignee: p.Assignee}
+			ni := workItem{ID: max + 1, Text: p.Text, Status: "todo", By: p.By, TS: now, Deps: p.Deps, Assignee: p.Assignee, Epoch: currentEpoch()}
 			if ni.Assignee == "" && roleUUID(p.By) != "" { // a role's own filed task routes back to it — no orphan todos
 				ni.Assignee = p.By
 			}
@@ -629,7 +634,7 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 							}
 						}
 						vtext := fmt.Sprintf("[verify #%d] falsify/verify that '%s' actually holds — independently, with evidence; find where it breaks.", justDone.ID, firstN(justDone.Text, 90))
-						items = append(items, workItem{ID: max + 1, Text: vtext, Status: "todo", By: "auto", TS: now, Prio: 2})
+						items = append(items, workItem{ID: max + 1, Text: vtext, Status: "todo", By: "auto", TS: now, Prio: 2, Epoch: currentEpoch()})
 						c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.spawn","params":{"of":%d,"verify":%d}}}`, justDone.ID, max+1))
 					}
 				}
@@ -695,6 +700,17 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 		}
 		items = f
 	}
+	if ep := q.Get("epoch"); ep != "" { // #645: the ledger locked to operator-time
+		if n, err := strconv.ParseInt(ep, 10, 64); err == nil {
+			f := items[:0:0]
+			for _, it := range items {
+				if it.Epoch == n {
+					f = append(f, it)
+				}
+			}
+			items = f
+		}
+	}
 	if by := q.Get("by"); by != "" { // ?by=conductor  or  ?by=!higgs-worker (negation)
 		neg := strings.HasPrefix(by, "!")
 		want := strings.TrimPrefix(by, "!")
@@ -740,6 +756,8 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 					m["assignee"] = it.Assignee
 				case "flipped_by":
 					m["flipped_by"] = it.FlippedBy
+				case "epoch":
+					m["epoch"] = it.Epoch
 				}
 			}
 			proj = append(proj, m)
