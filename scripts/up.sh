@@ -36,8 +36,16 @@ trap 'rm -rf "$_LOCKDIR"' EXIT
 
 set -uo pipefail
 
-REPO=/Users/rishirajs/Desktop/repos
-PROFILE=/Users/rishirajs/.ltqa-firefox-deepseek
+# Portability (peer review, v0.0.2): env-overridable with DERIVED fallbacks —
+# REPO from this script's own location (never an inscribed home); PROFILE
+# defaults to the CLEAN pack profile. A host with a special seat (this mac's
+# logged-in office profile) overrides via ~/.8/up.env — the override lives on
+# the HOST, its name never ships in the repo (the office/IP boundary).
+[ -f "$HOME/.8/up.env" ] && . "$HOME/.8/up.env"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${EIGHT_REPO:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+PROFILE="${EIGHT_FF_PROFILE:-$HOME/.8/firefox-profile}"
+PROFILE_MARK="$(basename "$PROFILE")"
 BROWSERPACK="$REPO/adapters/browser/browser"
 CHANNEL="$REPO/http-mcp/.bin/channel"
 COLLECTOR="$REPO/8/collector/collector"
@@ -62,7 +70,7 @@ unset MOZ_HEADLESS
 #      Reuse a live seat; only summon a fresh one when the current one is gone.
 SEAT="$HOME/.8/gecko.json"
 WS=""; SID=""
-if up 4444 && [ -s "$SEAT" ] && pgrep -f "firefox.*ltqa-firefox-deepseek" >/dev/null; then
+if up 4444 && [ -s "$SEAT" ] && pgrep -f "firefox.*$PROFILE_MARK" >/dev/null; then
   WS=$(jq -r '.ws // empty' "$SEAT"); SID=$(jq -r '.session_id // empty' "$SEAT")
 fi
 if [ -n "$WS" ]; then
