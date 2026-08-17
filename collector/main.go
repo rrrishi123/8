@@ -4254,7 +4254,8 @@ func main() {
 	mux.HandleFunc("/attach", c.handleAttach)             // connect any provider's live session (CALL) at runtime
 	mux.HandleFunc("/adapters/fire", c.handleAdapterFire) // fire a real adapter loopback (grpc|mqtt|webrtc|unix), witnessed
 	mux.HandleFunc("/source", c.handleSource)
-	mux.HandleFunc("/read", c.handleRead) // #643: read an OPEN tab; create only on explicit intent
+	mux.HandleFunc("/read", c.handleRead)             // #643: read an OPEN tab; create only on explicit intent
+	mux.HandleFunc("/screencast", c.handleScreencast) // #655: native BiDi screencast RECORDING (FF>=154; probe-gated)
 	mux.HandleFunc("/act", c.handleAct)
 	mux.HandleFunc("/stream", c.handleStream)
 	mux.HandleFunc("/bench", c.handleBench)
