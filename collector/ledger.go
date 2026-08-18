@@ -548,6 +548,7 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			Deps     []int64 `json:"deps"`
 			Prio     *int64  `json:"prio"`     // pointer: present-but-0 is a real reorder
 			Assignee string  `json:"assignee"` // route this task to a specific tmux pane
+			Sweep    bool    `json:"sweep"`    // #736: bookkeeping close — the CLOSER declares this flip is hygiene, not a claim: no [verify] spawns, flipped_by carries the intent
 		}
 		json.NewDecoder(r.Body).Decode(&p)
 		now := time.Now().UTC().Format(time.RFC3339)
@@ -610,6 +611,9 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 					items[i].Status = p.Status
 					items[i].TS = now
 					items[i].FlippedBy = flipActor(p.By, r) // #323: who closed what, on the record
+					if p.Sweep {
+						items[i].FlippedBy += " (swept)"
+					}
 					ackID = items[i].ID
 					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":%q,"flipped_by":%q}}}`, p.ID, p.Status, items[i].FlippedBy))
 					// Manual flip-to-doing by the OPERATOR still summons (the 2-way
@@ -628,7 +632,7 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			// tmux. A task with an unmet dep does NOT fire (the falsifiable invariant).
 			// This is the plan driving the agent, not Anthropic's task tool: it lives
 			// in the witness, on the feed, and prompts through the real tmux seat.
-			if p.Status == "done" {
+			if p.Status == "done" && !p.Sweep { // #736: a declared sweep spawns nothing — closing litter must not mint litter
 				// AUTO-PROPAGATION (2026-08-11): a completed claim is not DONE until it
 				// has spawned its own falsification — the queue must not drain to empty
 				// (Rishi's point). Completing a SUBSTANTIVE task auto-seeds one bounded
