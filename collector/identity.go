@@ -334,7 +334,11 @@ func paneJsonl(tb, pane, projDir string) (string, time.Time) {
 type declaredMind struct {
 	Name    string   `json:"name"`
 	Aliases []string `json:"aliases,omitempty"`
-	At      string   `json:"declared_at"`
+	// SpawnedBy (#pane-hub): SELF-DECLARED parentage — a mind declares who woke
+	// it (a name, a pane, "operator"), same sovereignty as the name itself;
+	// blank = unknown/unclaimed, honest. Feeds panes.spawned_by in eight.db.
+	SpawnedBy string `json:"spawned_by,omitempty"`
+	At        string `json:"declared_at"`
 }
 
 var (
@@ -411,9 +415,10 @@ func (c *collector) handleIdentity(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method == http.MethodPost {
 		var p struct {
-			UUID    string   `json:"uuid"`
-			Name    string   `json:"name"`
-			Aliases []string `json:"aliases"`
+			UUID      string   `json:"uuid"`
+			Name      string   `json:"name"`
+			Aliases   []string `json:"aliases"`
+			SpawnedBy string   `json:"spawned_by"`
 		}
 		if json.NewDecoder(r.Body).Decode(&p) != nil || p.Name == "" || len(p.UUID) < 32 || strings.Count(p.UUID, "-") < 4 {
 			w.WriteHeader(http.StatusBadRequest)
@@ -422,7 +427,7 @@ func (c *collector) handleIdentity(w http.ResponseWriter, r *http.Request) {
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
 		declMu.Lock()
-		declared[p.UUID] = declaredMind{Name: p.Name, Aliases: p.Aliases, At: now}
+		declared[p.UUID] = declaredMind{Name: p.Name, Aliases: p.Aliases, SpawnedBy: p.SpawnedBy, At: now}
 		declMu.Unlock()
 		c.publish(fmt.Sprintf(`{"session":"identity","origin":"COLLECTOR","frame":{"method":"identity.declare","params":{"uuid":%q,"name":%q,"aliases":%q,"pane":%q}}}`, p.UUID, p.Name, strings.Join(p.Aliases, ","), paneForUUID(p.UUID)))
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "name": p.Name, "pane": paneForUUID(p.UUID), "jsonl": jsonlForUUID(p.UUID)})

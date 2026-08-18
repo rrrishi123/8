@@ -2218,7 +2218,7 @@ func (c *collector) syncDB() (map[string]int, error) {
 	// the projection, so /sql could report how-much-is-undone but never WHO owns
 	// it; the distribution of work across minds is exactly what "how ready are
 	// we" asks, and the witness omitted it.
-	b.WriteString(`DROP TABLE IF EXISTS work; CREATE TABLE work(id INTEGER PRIMARY KEY, text TEXT, status TEXT, by_who TEXT, ts TEXT, assignee TEXT, prio INTEGER, flipped_by TEXT, by_canon TEXT);` + "\n")
+	b.WriteString(`DROP TABLE IF EXISTS work; CREATE TABLE work(id INTEGER PRIMARY KEY, text TEXT, status TEXT, by_who TEXT, ts TEXT, assignee TEXT, prio INTEGER, flipped_by TEXT, by_canon TEXT, origin_pane TEXT);` + "\n")
 	b.WriteString(`DROP TABLE IF EXISTS benches; CREATE TABLE benches(id INTEGER, ts TEXT, tag TEXT, session TEXT, n INTEGER, equiv_p50 REAL, equiv_p99 REAL, byte_ratio REAL);` + "\n")
 
 	// #437: identity DERIVED live (no roster file) — names are self-declared.
@@ -2236,7 +2236,7 @@ func (c *collector) syncDB() (map[string]int, error) {
 			}
 		}
 		if len(plines) > 0 {
-			b.WriteString(`DROP TABLE IF EXISTS panes; CREATE TABLE panes(session TEXT, win INTEGER, pane INTEGER, pane_id TEXT, claude_uuid TEXT, cwd TEXT, title TEXT, label TEXT, role TEXT, bypass INTEGER DEFAULT 1, cmd TEXT, updated_at TEXT, canonical_name TEXT, jsonl_path TEXT, PRIMARY KEY(session,win,pane));` + "\n")
+			b.WriteString(`DROP TABLE IF EXISTS panes; CREATE TABLE panes(session TEXT, win INTEGER, pane INTEGER, pane_id TEXT, claude_uuid TEXT, cwd TEXT, title TEXT, label TEXT, role TEXT, bypass INTEGER DEFAULT 1, cmd TEXT, updated_at TEXT, canonical_name TEXT, jsonl_path TEXT, spawned_by TEXT);` + "\n")
 			uu := paneUUIDs()
 			pnow := time.Now().UTC().Format(time.RFC3339)
 			for _, ln := range plines {
@@ -2247,8 +2247,14 @@ func (c *collector) syncDB() (map[string]int, error) {
 				uuid := uu[f[4]]
 				name, _ := nameForUUID(uuid) // self-declared; "" when undeclared — honest
 				jsonl := jsonlForUUID(uuid)  // discovered by search, never assumed
-				b.WriteString(fmt.Sprintf("INSERT INTO panes VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s,%s);\n",
-					sqlQ(f[0]), f[1], f[2], sqlQ(f[3]), sqlQ(uuid), sqlQ(f[5]), sqlQ(f[7]), sqlQ(f[7]), sqlQ(name), sqlQ(f[6]), sqlQ(pnow), sqlQ(name), sqlQ(jsonl)))
+				spawnedBy := ""              // #pane-hub: the self-declared parent edge
+				declMu.Lock()
+				if d, ok := declared[uuid]; ok {
+					spawnedBy = d.SpawnedBy
+				}
+				declMu.Unlock()
+				b.WriteString(fmt.Sprintf("INSERT INTO panes VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s,%s,%s);\n",
+					sqlQ(f[0]), f[1], f[2], sqlQ(f[3]), sqlQ(uuid), sqlQ(f[5]), sqlQ(f[7]), sqlQ(f[7]), sqlQ(name), sqlQ(f[6]), sqlQ(pnow), sqlQ(name), sqlQ(jsonl), sqlQ(spawnedBy)))
 				counts["panes"]++
 			}
 			wout, _ := exec.Command(tb, "list-windows", "-a", "-F", "#{session_name}|#{window_index}|#{window_name}|#{window_layout}").Output()
@@ -2312,7 +2318,12 @@ func (c *collector) syncDB() (map[string]int, error) {
 		var items []workItem
 		if json.Unmarshal(data, &items) == nil {
 			for _, it := range items {
-				b.WriteString(fmt.Sprintf("INSERT INTO work VALUES(%d,%s,%s,%s,%s,%s,%d,%s,%s);\n", it.ID, sqlQ(it.Text), sqlQ(it.Status), sqlQ(it.By), sqlQ(it.TS), sqlQ(it.Assignee), it.Prio, sqlQ(it.FlippedBy), sqlQ(foldLabel(it.By))))
+				canon := foldLabel(it.By)
+				origin := "" // #pane-hub: author label -> uuid -> LIVE pane (allocation is sibling-scoped, not dumb)
+				if u := declaredUUID(it.By); u != "" {
+					origin = paneForUUID(u)
+				}
+				b.WriteString(fmt.Sprintf("INSERT INTO work VALUES(%d,%s,%s,%s,%s,%s,%d,%s,%s,%s);\n", it.ID, sqlQ(it.Text), sqlQ(it.Status), sqlQ(it.By), sqlQ(it.TS), sqlQ(it.Assignee), it.Prio, sqlQ(it.FlippedBy), sqlQ(canon), sqlQ(origin)))
 				counts["work"]++
 			}
 		}
