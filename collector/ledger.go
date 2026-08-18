@@ -154,7 +154,10 @@ func isRecord(text string) bool {
 // Composed from isRecord so the two rules can never drift apart again (#334:
 // the meta-guard had its own list, missing ACT — and both were missing DONE).
 func noVerifySpawn(text string) bool {
-	return isRecord(text) || strings.HasPrefix(strings.TrimSpace(text), "[verify")
+	// Case-insensitive (#733 tail 2): %9 writes verdicts "[VERIFY #747 …" — the
+	// case-sensitive check let a verify-verdict spawn a verify-of-a-verify
+	// (#770/#772), silently breaking the depth-1 bound.
+	return isRecord(text) || strings.HasPrefix(strings.ToLower(strings.TrimSpace(text)), "[verify")
 }
 
 func pickNext(items []workItem) int {
