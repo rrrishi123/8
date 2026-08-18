@@ -51,6 +51,13 @@ func (c *collector) handleSQL(w http.ResponseWriter, r *http.Request) {
 		}
 		if json.Unmarshal(raw, &b) == nil && strings.TrimSpace(b.Query) != "" {
 			q = strings.TrimSpace(b.Query)
+		} else {
+			// #765 (%9's flag): a malformed JSON body used to FALL THROUGH as raw
+			// SQL starting with '{' and die at the write-gate with a misleading
+			// error. A body that looks like JSON but isn't valid {query} is a
+			// caller bug — say so plainly.
+			http.Error(w, `{"error":"body looks like JSON but is not valid {\"query\":\"...\"} — check quoting (single quotes are not JSON)"}`, http.StatusBadRequest)
+			return
 		}
 	}
 	if q == "" {
@@ -73,8 +80,11 @@ func (c *collector) handleSQL(w http.ResponseWriter, r *http.Request) {
 	// witnesses the OUTCOME — a mutation is witnessed as effect, not just intent.
 	c.publish(fmt.Sprintf(`{"session":"db","origin":"COLLECTOR","frame":{"method":"sql.query","params":{"actor":%q,"q":%q}}}`, actor, q))
 	w.Header().Set("Content-Type", "application/json")
-	up := strings.ToUpper(q)
-	if strings.HasPrefix(up, "SELECT") || strings.HasPrefix(up, "WITH") || strings.HasPrefix(up, "PRAGMA") {
+	// #765: read-detection runs on the STRIPPED text — a leading comment made a
+	// plain SELECT look like a write and 403 at the gate. Same stripper as the
+	// deny-scan (#400): one notion of "the bare SQL" everywhere.
+	up := strings.ToUpper(strings.TrimSpace(stripSQL(q)))
+	if strings.HasPrefix(up, "SELECT") || strings.HasPrefix(up, "WITH") || strings.HasPrefix(up, "PRAGMA") || strings.HasPrefix(up, "EXPLAIN") || strings.HasPrefix(up, "VALUES") {
 		rows, err := db.Query(q)
 		if err != nil {
 			c.publish(fmt.Sprintf(`{"session":"db","origin":"COLLECTOR","frame":{"method":"sql.result","params":{"actor":%q,"error":%q}}}`, actor, err.Error()))
