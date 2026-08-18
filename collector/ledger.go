@@ -136,7 +136,7 @@ func isRecord(text string) bool {
 	// it spawned a [verify] — the jar of ash refilling itself. The rule must fit how
 	// the minds actually write, not the other way round.
 	t := strings.TrimPrefix(strings.TrimSpace(text), "[")
-	for _, p := range []string{"FINDING", "ACT (", "AUDIT", "GUARD", "DONE"} {
+	for _, p := range []string{"FINDING", "ACT (", "AUDIT", "GUARD", "DONE", "ACK", "CORRECTION"} {
 		if strings.HasPrefix(t, p) {
 			return true
 		}
@@ -553,6 +553,22 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 		now := time.Now().UTC().Format(time.RFC3339)
 		var ackID int64                // #313: the created/affected item's id, told not inferred; 0 = nothing matched
 		if p.Text != "" && p.ID == 0 { // add (optionally with plan-edges: deps, prio, assignee)
+			// COALESCE (#733): reconcile ticks are ephemeral signals, latest-wins —
+			// a new tick retires every prior tick still sitting todo, so the
+			// reminder-to-claim can never itself pile up as unclaimed work.
+			if strings.HasPrefix(strings.TrimSpace(p.Text), "[reconcile tick]") {
+				swept := 0
+				for i := range items {
+					if items[i].Status == "todo" && strings.HasPrefix(strings.TrimSpace(items[i].Text), "[reconcile tick]") {
+						items[i].Status = "done"
+						items[i].TS = now
+						swept++
+					}
+				}
+				if swept > 0 {
+					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.coalesce","params":{"prefix":"[reconcile tick]","swept":%d}}}`, swept))
+				}
+			}
 			var max int64
 			for _, it := range items {
 				if it.ID > max {
