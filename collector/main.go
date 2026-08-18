@@ -4311,6 +4311,8 @@ func main() {
 	mux.HandleFunc("/dedup", c.handleDedup)       // same-URL duplicates; close the unclaimed ones
 	mux.HandleFunc("/manifest", c.handleManifest) // durable tab manifest: how-many/what/where/who/why/when
 	mux.HandleFunc("/tmuxpane", c.handleTmuxPane)
+	mux.HandleFunc("/collector/hostres", c.handleHostRes) // this host's cpu/mem/load/uptime, for cross-host observability
+	mux.HandleFunc("/hostres", c.handleHostRes)           // short alias
 	mux.HandleFunc("/tmuxsummary", c.handleTmuxSummary)   // a tmux pane's visible text — the agents' surface frame
 	mux.HandleFunc("/attention", c.handleAttention)       // #22a the research-programme READING packet (Lakatos/Kuhn), witness-only
 	mux.HandleFunc("/tmuxchannel", c.handleTmuxChannel)   // #35 native tmux CHANNEL (control-mode push), gated off the live server
