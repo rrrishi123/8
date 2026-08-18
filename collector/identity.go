@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -86,8 +85,8 @@ func fileBirth(path string) time.Time {
 	if err != nil {
 		return time.Time{}
 	}
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-		return time.Unix(st.Birthtimespec.Sec, st.Birthtimespec.Nsec)
+	if bt := birthFromSys(fi); !bt.IsZero() {
+		return bt
 	}
 	return fi.ModTime()
 }
