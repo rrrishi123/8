@@ -136,7 +136,10 @@ func isRecord(text string) bool {
 	// it spawned a [verify] — the jar of ash refilling itself. The rule must fit how
 	// the minds actually write, not the other way round.
 	t := strings.TrimPrefix(strings.TrimSpace(text), "[")
-	for _, p := range []string{"FINDING", "ACT (", "AUDIT", "GUARD", "DONE", "ACK", "CORRECTION"} {
+	// "reconcile tick]" (post-strip): a tick is a signal, not work — born done so
+	// the steady-state tick never summons a pane and jams its WIP (#733 tail);
+	// the add-branch coalesce still sweeps prior ticks BEFORE this check runs.
+	for _, p := range []string{"FINDING", "ACT (", "AUDIT", "GUARD", "DONE", "ACK", "CORRECTION", "reconcile tick]"} {
 		if strings.HasPrefix(t, p) {
 			return true
 		}
