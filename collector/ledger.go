@@ -839,7 +839,32 @@ var interiorRe = regexp.MustCompile(`(?i)typed[^.]{0,30}never sent|never receive
 // (each mind carries at most one verify at a time — fan-width = idle panes by
 // construction), and depth-1 is already noVerifySpawn.
 func (c *collector) derangedVerifier(authorLabel string) string {
-	panes := liveClaudePanes()
+	// FAMILY-SCOPED (#754 gate 2, tightened): liveClaudePanes() includes
+	// UNRELATED claude panes on this host (%0/%1: kosaten lanes) and verifies
+	// leaked outside the family (#777/#781/#812 routed to %0). The ring is
+	// those who DECLARED — a pane joins by POST /identity, not by merely
+	// running claude on the same box.
+	tb := tmuxBin()
+	if tb == "" {
+		return ""
+	}
+	uu := paneUUIDs()
+	names := map[string]string{}
+	var panes []string
+	for _, p := range liveClaudePanes() {
+		out, err := exec.Command(tb, "display-message", "-p", "-t", p, "#{pane_pid}").Output()
+		if err != nil {
+			continue
+		}
+		uuid := uu[strings.TrimSpace(string(out))]
+		if uuid == "" {
+			continue // undeclared: not family, never a verifier
+		}
+		if name, _ := nameForUUID(uuid); name != "" {
+			panes = append(panes, p)
+			names[p] = name
+		}
+	}
 	if len(panes) == 0 {
 		return ""
 	}
@@ -860,14 +885,8 @@ func (c *collector) derangedVerifier(authorLabel string) string {
 	if next == authorPane {           // single-pane world: no independent verifier exists
 		return ""
 	}
-	if tb := tmuxBin(); tb != "" {
-		if out, err := exec.Command(tb, "display-message", "-p", "-t", next, "#{pane_pid}").Output(); err == nil {
-			if uuid := paneUUIDs()[strings.TrimSpace(string(out))]; uuid != "" {
-				if name, _ := nameForUUID(uuid); name != "" {
-					return name
-				}
-			}
-		}
+	if name := names[next]; name != "" {
+		return name
 	}
 	return next
 }
