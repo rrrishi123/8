@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -656,9 +658,19 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 								max = it.ID
 							}
 						}
-						vtext := fmt.Sprintf("[verify #%d] falsify/verify that '%s' actually holds — independently, with evidence; find where it breaks.", justDone.ID, firstN(justDone.Text, 90))
-						items = append(items, workItem{ID: max + 1, Text: vtext, Status: "todo", By: "auto", TS: now, Prio: 2, Epoch: currentEpoch()})
-						c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.spawn","params":{"of":%d,"verify":%d}}}`, justDone.ID, max+1))
+						switch {
+						case interiorRe.MatchString(justDone.Text): // #756 gate 5: the uncheckable, bucketed not fanned
+							bt := fmt.Sprintf("[witness-insufficient #%d] pane-interior claim — one witness only (the claimant's transcript) until 8 witnesses pane input: '%s'", justDone.ID, firstN(justDone.Text, 90))
+							items = append(items, workItem{ID: max + 1, Text: bt, Status: "done", By: "auto", TS: now, Epoch: currentEpoch()})
+							c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.witness_insufficient","params":{"of":%d}}}`, justDone.ID))
+						case !artifactRe.MatchString(justDone.Text): // #756 gate 1: conversation never spawns a verify
+							c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.verify_ineligible","params":{"of":%d,"reason":"no falsifier or artifact"}}}`, justDone.ID))
+						default:
+							vtext := fmt.Sprintf("[verify #%d] falsify/verify that '%s' actually holds — independently, with evidence; find where it breaks.", justDone.ID, firstN(justDone.Text, 90))
+							va := c.derangedVerifier(justDone.By) // #756 gate 2: ring-routed, never self
+							items = append(items, workItem{ID: max + 1, Text: vtext, Status: "todo", By: "auto", TS: now, Prio: 2, Assignee: va, Epoch: currentEpoch()})
+							c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.spawn","params":{"of":%d,"verify":%d,"assignee":%q}}}`, justDone.ID, max+1, va))
+						}
 					}
 				}
 				advanced := advanceUnblocked(items, now)
@@ -789,6 +801,58 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]any{"work": items, "n": len(items), "total": total})
+}
+
+// ── CROSS-VERIFY GATES (#756 — the #644 proposal as constrained by #754) ─────
+// Gate 1, ELIGIBILITY: a [verify] spawns only for claims that state a falsifier
+// or carry an artifact (commit hash, path/file, url, measurement) — conversation
+// and signals never qualify: you cannot falsify a reminder, and fanning doubt
+// faster than it can be paid is an ash accelerant.
+var artifactRe = regexp.MustCompile(`\b[0-9a-f]{7,40}\b|https?://|\.(md|go|sh|json|tsx?|css)\b|\b\d+(\.\d+)?(ms|us|µs|s|min|h|MB|GB|KB|fps|%)\b|\bfalsif`)
+
+// Gate 5, the genuinely uncheckable: claims about pane-interior experience have
+// one witness (the claimant's transcript) until 8 witnesses pane INPUT — they
+// go to a named WITNESSED-INSUFFICIENTLY bucket, never to fan-out.
+var interiorRe = regexp.MustCompile(`(?i)typed[^.]{0,30}never sent|never received|did not receive|summoned but|pane input`)
+
+// Gate 2, CYCLIC DERANGEMENT: the verify routes to the NEXT live claude pane
+// after the claim author's — never self, never a symmetric pair. The assignee
+// is the pane's declared name when one exists (survives renumbering), else %N.
+// Gates 3+4 need no new code: per-pane WIP=1 in dispatchParallel IS the wave
+// (each mind carries at most one verify at a time — fan-width = idle panes by
+// construction), and depth-1 is already noVerifySpawn.
+func (c *collector) derangedVerifier(authorLabel string) string {
+	panes := liveClaudePanes()
+	if len(panes) == 0 {
+		return ""
+	}
+	sort.Slice(panes, func(i, j int) bool {
+		a, _ := strconv.Atoi(strings.TrimPrefix(panes[i], "%"))
+		b, _ := strconv.Atoi(strings.TrimPrefix(panes[j], "%"))
+		return a < b
+	})
+	authorPane := resolveAssignee(authorLabel)
+	idx := -1
+	for i, p := range panes {
+		if p == authorPane {
+			idx = i
+			break
+		}
+	}
+	next := panes[(idx+1)%len(panes)] // unknown author -> panes[0]
+	if next == authorPane {           // single-pane world: no independent verifier exists
+		return ""
+	}
+	if tb := tmuxBin(); tb != "" {
+		if out, err := exec.Command(tb, "display-message", "-p", "-t", next, "#{pane_pid}").Output(); err == nil {
+			if uuid := paneUUIDs()[strings.TrimSpace(string(out))]; uuid != "" {
+				if name, _ := nameForUUID(uuid); name != "" {
+					return name
+				}
+			}
+		}
+	}
+	return next
 }
 
 // staleLoop (#472b) — the self-healing edge for per-role WIP=1: a doing item
