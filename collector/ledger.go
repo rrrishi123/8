@@ -661,7 +661,21 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 								max = it.ID
 							}
 						}
+						// #809: dedupe by TARGET — repairing a stale status must not
+						// re-mint a [verify #N] that already exists in any status
+						// (flipping #398 done minted #804 minutes after #800/#803
+						// verified it: re-doubting a fresh verdict is ritual).
+						verifyExists := false
+						vprefix := fmt.Sprintf("[verify #%d]", justDone.ID)
+						for _, it := range items {
+							if strings.HasPrefix(strings.TrimSpace(it.Text), vprefix) {
+								verifyExists = true
+								break
+							}
+						}
 						switch {
+						case verifyExists: // #809: already doubted — skip, witnessed
+							c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.verify_skipped","params":{"of":%d,"reason":"verify already exists"}}}`, justDone.ID))
 						case interiorRe.MatchString(justDone.Text): // #756 gate 5: the uncheckable, bucketed not fanned
 							bt := fmt.Sprintf("[witness-insufficient #%d] pane-interior claim — one witness only (the claimant's transcript) until 8 witnesses pane input: '%s'", justDone.ID, firstN(justDone.Text, 90))
 							items = append(items, workItem{ID: max + 1, Text: bt, Status: "done", By: "auto", TS: now, Epoch: currentEpoch()})
