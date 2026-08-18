@@ -567,3 +567,9 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .pc-send { cursor: pointer; }
 .pc-res.ok { color: #8c8; }
 .pc-res.err { color: #c88; }
+
+/* ── canvas send overlay + bundle-age stamp (#814) ── */
+.canvas-send { position: absolute; right: 16px; top: 46px; z-index: 60; width: 380px; background: var(--panel, #16181d); border: 1px solid var(--line, #333); border-radius: 8px; box-shadow: 0 8px 30px rgba(0,0,0,.5); }
+.cs-head { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line, #333); font-size: 12px; letter-spacing: .06em; }
+.cs-x { cursor: pointer; background: none; border: none; color: inherit; }
+.pc-age { margin-left: auto; font-size: 10px; opacity: .55; }

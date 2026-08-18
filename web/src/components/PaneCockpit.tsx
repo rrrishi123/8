@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
 import { identity, panesSend, type PaneIdentity, type PaneSendResult } from '../lib/api';
 
+declare const __BUILD_TS__: number;
+const bundleAge = () => { const h = (Date.now() - __BUILD_TS__) / 36e5; return h < 1 ? `${Math.round(h*60)}m` : h < 48 ? `${Math.round(h)}h` : `${Math.round(h/24)}d`; };
+
 // PANE COCKPIT (#641): the operator's side of the /panes/send nerve — list the
 // live claude panes (from live /identity: pane + self-declared name + title),
 // pick all or any subset, one prompt, Send. The backend fans it through the
@@ -39,7 +42,15 @@ export function PaneCockpit() {
     setBusy(true); setErr(''); setRes(null);
     try {
       setRes(await panesSend(text, chosen, allSelected || chosen.length === 0));
-    } catch (e) { setErr(String(e instanceof Error ? e.message : e)); }
+    } catch (e) {
+      const msg = String(e instanceof Error ? e.message : e);
+      // #814 root-cause guard: a NetworkError from a long-open tab is almost
+      // always a STALE BUNDLE (vite HMR did not fully apply a new module) —
+      // name it instead of failing mutely.
+      setErr(/NetworkError|Failed to fetch/i.test(msg)
+        ? `${msg} — likely a STALE BUNDLE (this tab's bundle is ${bundleAge()} old): hard-reload (Cmd+Shift+R)`
+        : msg);
+    }
     setBusy(false);
   };
 
@@ -49,6 +60,7 @@ export function PaneCockpit() {
         <label className="pc-row pc-all">
           <input type="checkbox" checked={allSelected} onChange={toggleAll} />
           <b>all live claude panes ({panes.length})</b>
+          <span className="pc-age" title="bundle age — if this is old and Send fails, hard-reload the tab">bundle {bundleAge()}</span>
         </label>
         {panes.map((p) => (
           <label key={p.pane} className="pc-row" title={p.title || ''}>

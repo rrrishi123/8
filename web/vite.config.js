@@ -4,6 +4,9 @@ import react from '@vitejs/plugin-react';
 // replaces the throwaway python static server). It talks to the collector
 // at VITE_COLLECTOR_URL (default :7070).
 export default defineConfig({
+  // #814: baked at DEV-SERVER START — the UI renders its age so a stale bundle
+  // in a long-open tab is VISIBLE instead of silently NetworkErroring.
+  define: { __BUILD_TS__: JSON.stringify(Date.now()) },
     plugins: [react()],
     server: { port: 8088, strictPort: true },
 });
