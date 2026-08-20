@@ -336,6 +336,7 @@ func (c *collector) handleProcInfo(w http.ResponseWriter, r *http.Request) {
 	post := func(path, body string) ([]byte, error) {
 		return c.geckoPost("POST", path, body) // auto-recovers the session on recycle
 	}
+	post("/timeouts", `{"script":30000}`) // async scripts need a script timeout, or /execute/async returns empty (same as execChrome)
 	if _, err := post("/moz/context", `{"context":"chrome"}`); err != nil {
 		http.Error(w, `{"error":"chrome context: `+err.Error()+`"}`, http.StatusBadGateway)
 		return
@@ -634,9 +635,11 @@ cb(JSON.stringify({parked:v.u,mb:v.mb}));
 	log.Printf("aperture: watching (soft=%dMB, recycle=%dMB, cooldown=%s)", softMB, recycleMB, cooldown)
 	for {
 		time.Sleep(30 * time.Second)
-		if n := c.lastCapture.Load(); n == 0 || time.Since(time.Unix(0, n)) > 90*time.Second {
-			continue // idle — nothing accumulating, nothing to flush
-		}
+		// Check parent memory EVERY cycle, capture or not. The graphics-surface
+		// bloat OUTLIVES the capture that created it — gating this on lastCapture
+		// meant an idle 7GB parent was never reclaimed (force-quit territory,
+		// 2026-08-20). The `before < softMB` guard below is the real "nothing to
+		// do" short-circuit; a memScript call every 30s is cheap.
 		if !lastFire.IsZero() && time.Since(lastFire) < cooldown {
 			continue
 		}
