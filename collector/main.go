@@ -2320,7 +2320,9 @@ func (c *collector) syncDB() (map[string]int, error) {
 			for _, it := range items {
 				canon := foldLabel(it.By)
 				origin := "" // #pane-hub: author label -> uuid -> LIVE pane (allocation is sibling-scoped, not dumb)
-				if u := declaredUUID(it.By); u != "" {
+				if isPaneID(it.By) {
+					origin = it.By // the author label IS a pane id — it is the origin pane, no declaration needed
+				} else if u := declaredUUID(it.By); u != "" {
 					origin = paneForUUID(u)
 				}
 				b.WriteString(fmt.Sprintf("INSERT INTO work VALUES(%d,%s,%s,%s,%s,%s,%d,%s,%s,%s);\n", it.ID, sqlQ(it.Text), sqlQ(it.Status), sqlQ(it.By), sqlQ(it.TS), sqlQ(it.Assignee), it.Prio, sqlQ(it.FlippedBy), sqlQ(canon), sqlQ(origin)))

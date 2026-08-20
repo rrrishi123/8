@@ -385,6 +385,21 @@ func declaredUUID(label string) string {
 	return ""
 }
 
+// isPaneID reports whether s is a tmux pane id like "%7" (a % then digits).
+// When work is authored by such a label, the label IS the origin pane — no
+// self-declaration is needed to relate the row back to the pane that made it.
+func isPaneID(s string) bool {
+	if len(s) < 2 || s[0] != '%' {
+		return false
+	}
+	for _, ch := range s[1:] {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // foldLabel — any label (declared name, self-declared alias, uuid) to the one
 // declared name; "" when no mind has claimed it (the blank is honest).
 func foldLabel(label string) string {
