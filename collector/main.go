@@ -2334,6 +2334,12 @@ func (c *collector) syncDB() (map[string]int, error) {
 					origin = it.By // the author label IS a pane id — it is the origin pane, no declaration needed
 				} else if u := declaredUUID(it.By); u != "" {
 					origin = paneForUUID(u)
+				} else if u := roleUUID(strings.TrimPrefix(it.By, "validator-")); u != "" {
+					// #855 tail: roles.json is the DURABLE declaration layer — live
+					// declarations are wiped by every collector restart (the #854(4)
+					// amnesia), but the family's names are standing marks on disk.
+					// validator-philo/validator-pmf fold to their role names.
+					origin = paneForUUID(u)
 				}
 				originSQL := "NULL" // no origin -> NULL, not '' (FK-clean, and honest about "unknown")
 				if origin != "" {
