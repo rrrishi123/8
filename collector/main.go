@@ -2243,7 +2243,7 @@ func (c *collector) syncDB() (map[string]int, error) {
 			// pane_id is UNIQUE so it can be a FOREIGN KEY target; spawned_by is a
 			// self-reference (which pane spawned this one) — both make the pane-hub
 			// relation visible in the diagram.
-			b.WriteString(`DROP TABLE IF EXISTS panes; CREATE TABLE panes(session TEXT, win INTEGER, pane INTEGER, pane_id TEXT UNIQUE, claude_uuid TEXT, cwd TEXT, title TEXT, label TEXT, role TEXT, bypass INTEGER DEFAULT 1, cmd TEXT, updated_at TEXT, canonical_name TEXT, jsonl_path TEXT, spawned_by TEXT, FOREIGN KEY(spawned_by) REFERENCES panes(pane_id));` + "\n")
+			b.WriteString(`DROP TABLE IF EXISTS panes; CREATE TABLE panes(session TEXT, win INTEGER, pane INTEGER, pane_id TEXT PRIMARY KEY, claude_uuid TEXT, cwd TEXT, title TEXT, label TEXT, role TEXT, bypass INTEGER DEFAULT 1, cmd TEXT, updated_at TEXT, canonical_name TEXT, jsonl_path TEXT, spawned_by TEXT, FOREIGN KEY(spawned_by) REFERENCES panes(pane_id));` + "\n")
 			uu := paneUUIDs()
 			pnow := time.Now().UTC().Format(time.RFC3339)
 			for _, ln := range plines {
@@ -2366,6 +2366,10 @@ func (c *collector) syncDB() (map[string]int, error) {
 		}
 	}
 	b.WriteString("COMMIT;\n")
+	// Checkpoint the WAL into the main db file so any reader that lags on the WAL
+	// (e.g. DBeaver) sees the current schema, and the WAL doesn't grow unbounded
+	// under the 30s DROP/CREATE churn.
+	b.WriteString("PRAGMA wal_checkpoint(TRUNCATE);\n")
 
 	cmd := exec.Command("sqlite3", eightDB())
 	cmd.Stdin = strings.NewReader(b.String())
