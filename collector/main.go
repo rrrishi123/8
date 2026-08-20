@@ -2218,7 +2218,11 @@ func (c *collector) syncDB() (map[string]int, error) {
 	// the projection, so /sql could report how-much-is-undone but never WHO owns
 	// it; the distribution of work across minds is exactly what "how ready are
 	// we" asks, and the witness omitted it.
-	b.WriteString(`DROP TABLE IF EXISTS work; CREATE TABLE work(id INTEGER PRIMARY KEY, text TEXT, status TEXT, by_who TEXT, ts TEXT, assignee TEXT, prio INTEGER, flipped_by TEXT, by_canon TEXT, origin_pane TEXT);` + "\n")
+	// origin_pane carries a live pane id (%N) — declared as a FOREIGN KEY to
+	// panes(pane_id) so the pane-hub relation is visible (DBeaver draws it, /sql
+	// joins on it). Enforcement stays off (no PRAGMA foreign_keys), so historical
+	// rows with no origin (NULL) are fine.
+	b.WriteString(`DROP TABLE IF EXISTS work; CREATE TABLE work(id INTEGER PRIMARY KEY, text TEXT, status TEXT, by_who TEXT, ts TEXT, assignee TEXT, prio INTEGER, flipped_by TEXT, by_canon TEXT, origin_pane TEXT, FOREIGN KEY(origin_pane) REFERENCES panes(pane_id));` + "\n")
 	b.WriteString(`DROP TABLE IF EXISTS benches; CREATE TABLE benches(id INTEGER, ts TEXT, tag TEXT, session TEXT, n INTEGER, equiv_p50 REAL, equiv_p99 REAL, byte_ratio REAL);` + "\n")
 
 	// #437: identity DERIVED live (no roster file) — names are self-declared.
@@ -2236,7 +2240,10 @@ func (c *collector) syncDB() (map[string]int, error) {
 			}
 		}
 		if len(plines) > 0 {
-			b.WriteString(`DROP TABLE IF EXISTS panes; CREATE TABLE panes(session TEXT, win INTEGER, pane INTEGER, pane_id TEXT, claude_uuid TEXT, cwd TEXT, title TEXT, label TEXT, role TEXT, bypass INTEGER DEFAULT 1, cmd TEXT, updated_at TEXT, canonical_name TEXT, jsonl_path TEXT, spawned_by TEXT);` + "\n")
+			// pane_id is UNIQUE so it can be a FOREIGN KEY target; spawned_by is a
+			// self-reference (which pane spawned this one) — both make the pane-hub
+			// relation visible in the diagram.
+			b.WriteString(`DROP TABLE IF EXISTS panes; CREATE TABLE panes(session TEXT, win INTEGER, pane INTEGER, pane_id TEXT UNIQUE, claude_uuid TEXT, cwd TEXT, title TEXT, label TEXT, role TEXT, bypass INTEGER DEFAULT 1, cmd TEXT, updated_at TEXT, canonical_name TEXT, jsonl_path TEXT, spawned_by TEXT, FOREIGN KEY(spawned_by) REFERENCES panes(pane_id));` + "\n")
 			uu := paneUUIDs()
 			pnow := time.Now().UTC().Format(time.RFC3339)
 			for _, ln := range plines {
@@ -2325,7 +2332,11 @@ func (c *collector) syncDB() (map[string]int, error) {
 				} else if u := declaredUUID(it.By); u != "" {
 					origin = paneForUUID(u)
 				}
-				b.WriteString(fmt.Sprintf("INSERT INTO work VALUES(%d,%s,%s,%s,%s,%s,%d,%s,%s,%s);\n", it.ID, sqlQ(it.Text), sqlQ(it.Status), sqlQ(it.By), sqlQ(it.TS), sqlQ(it.Assignee), it.Prio, sqlQ(it.FlippedBy), sqlQ(canon), sqlQ(origin)))
+				originSQL := "NULL" // no origin -> NULL, not '' (FK-clean, and honest about "unknown")
+				if origin != "" {
+					originSQL = sqlQ(origin)
+				}
+				b.WriteString(fmt.Sprintf("INSERT INTO work VALUES(%d,%s,%s,%s,%s,%s,%d,%s,%s,%s);\n", it.ID, sqlQ(it.Text), sqlQ(it.Status), sqlQ(it.By), sqlQ(it.TS), sqlQ(it.Assignee), it.Prio, sqlQ(it.FlippedBy), sqlQ(canon), originSQL))
 				counts["work"]++
 			}
 		}
