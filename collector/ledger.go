@@ -359,6 +359,7 @@ func (c *collector) dispatchParallel(items []workItem, now string) bool {
 			}
 		}
 	}
+	family := ledgerFamily(items) // #896: the wake reaches only minds with lineage
 	changed := false
 	for _, pane := range liveClaudePanes() {
 		if busy[pane] {
@@ -377,14 +378,37 @@ func (c *collector) dispatchParallel(items []workItem, now string) bool {
 			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":"doing","flipped_by":"auto:playlist"}}}`, items[idx].ID))
 			busy[pane] = true
 			changed = true
-		} else if n := countUnclaimed(items, done); n > 0 {
+		} else if family[pane] {
 			// #472 (amended #474/#475): the pane's own lane is empty but
 			// unclaimed work exists — WAKE, never assign: the router picks WHEN
 			// a mind stirs, never WHAT it does. Purpose flows mind -> queue.
-			c.wake(pane, n)
+			// #896: but WAKE only reaches the FAMILY — panes that have touched
+			// this ledger (authored/assigned/flipped). A host-resident pane
+			// (%0/%1/%3/%4) that never participated is NOT ours to wake; the old
+			// spray fired this for every live claude pane, which is the bug.
+			if n := countUnclaimed(items, done); n > 0 {
+				c.wake(pane, n)
+			}
 		}
 	}
 	return changed
+}
+
+// ledgerFamily — the set of panes with LINEAGE in this work ledger: any pane that
+// authored (by), was assigned, or flipped an item. These are the minds that share
+// context; dispatch's WAKE reaches only them, never host-resident panes that never
+// touched the work. Provenance-derived, so it grows as the declaration layer maps
+// named authors (philo/higgs) back to their pane — no hardcoded roster (#896).
+func ledgerFamily(items []workItem) map[string]bool {
+	fam := map[string]bool{}
+	for _, it := range items {
+		for _, who := range []string{it.Assignee, it.By, it.FlippedBy} {
+			if p := resolveAssignee(who); isPaneID(p) {
+				fam[p] = true
+			}
+		}
+	}
+	return fam
 }
 
 // rawAssignee pulls the literal assignee value straight from the raw query, so a
