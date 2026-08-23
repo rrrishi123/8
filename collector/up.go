@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,6 +65,19 @@ func portUp(addr string) bool {
 	return true
 }
 
+// healthUp — LIVENESS IS NOT READINESS (#931): a wedged collector still
+// accepts TCP, so portUp misread a starved process as "already up" while
+// every endpoint timed out. The collector is up only if /health ANSWERS.
+func healthUp(addr string) bool {
+	cl := &http.Client{Timeout: 2 * time.Second}
+	resp, err := cl.Get("http://" + addr + "/health")
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == 200
+}
+
 // repoRoot derives the four-body root from THIS binary's location — the collector
 // lives at <root>/8/collector/collector. Never a hardcoded /Users path.
 func repoRoot() string {
@@ -96,7 +110,7 @@ func runUp() {
 
 	// BODY 1 — the collector (this binary). Bundled; needs no substrate. Idempotent.
 	cargs := collectorArgs()
-	if portUp(probeAddr(cargs)) {
+	if healthUp(probeAddr(cargs)) {
 		fmt.Printf("  collector:    already up on %s\n", probeAddr(cargs))
 	} else {
 		cmd := exec.Command(self, cargs...)

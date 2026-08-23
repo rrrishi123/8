@@ -610,8 +610,16 @@ func advanceUnblocked(items []workItem, now string) []int {
 }
 
 func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
-	c.tmu.Lock()
-	defer c.tmu.Unlock()
+	// #931 CONVOY FIX: only WRITES take c.tmu. GET reads are LOCK-FREE —
+	// writeWork is atomic temp+rename (#402), so a reader always sees a
+	// complete ledger. Serializing reads behind the same mutex that summon/
+	// dispatch hold across tmux execs convoyed every read behind minutes of
+	// shell-outs: /health answered in 12ms while /work timed out at 30s —
+	// the witness starved itself, not the watched.
+	if r.Method == http.MethodPost {
+		c.tmu.Lock()
+		defer c.tmu.Unlock()
+	}
 	var items []workItem
 	if b, err := os.ReadFile(workFile()); err == nil {
 		json.Unmarshal(b, &items)
@@ -693,7 +701,7 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 					}
 					ackID = items[i].ID
 					if p.Status == "doing" && p.By != "" && p.By != "operator" { // #343: a mind
-						items[i].AckedAt = now // taking its assignment IS the ack — delivery
+						items[i].AckedAt = now                // taking its assignment IS the ack — delivery
 						items[i].AckedBy = items[i].FlippedBy // loop closed on the record
 					}
 					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":%q,"flipped_by":%q}}}`, p.ID, p.Status, items[i].FlippedBy))
