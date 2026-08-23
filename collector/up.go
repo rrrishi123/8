@@ -112,6 +112,12 @@ func runUp() {
 	// the binary is a filed follow-up, not a silent omission.
 	fmt.Println("  cockpit:      out of scope — vite app (scripts/cockpit.sh); static-serve fold-in is filed")
 
+	// BODY 3 — the wire (MITM witness proxy, GET /host). Bundled machinery from
+	// http-mcp; absent binary degrades with a build hint (#311: shipped features
+	// must be live features — /host was code-only for 5 days because nothing
+	// started the wire).
+	wireUp(root, probeAddr(cargs))
+
 	// BODY 2 — the firefox seat. DISCOVERED substrate; absent => dormant, not fatal.
 	if s.Firefox == "" || s.Gecko == "" {
 		fmt.Println("  browser:      DORMANT — firefox/geckodriver absent; collector-only is a valid boot")
@@ -122,6 +128,41 @@ func runUp() {
 		return
 	}
 	packUp(root)
+}
+
+// wireBin discovers the wire binary — build.sh output first, then the install.sh
+// target, then PATH. Never a hardcoded user path.
+func wireBin(root string) string {
+	for _, p := range []string{
+		filepath.Join(root, "http-mcp", ".bin", "wire"),
+		os.ExpandEnv("$HOME/.8/bin/wire"),
+	} {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
+	return look("wire")
+}
+
+// wireUp starts the wire on :4724 witnessing into the collector (shared by `up`
+// and the watch guard). Idempotent; absent binary degrades, never fatal.
+func wireUp(root, collectorAddr string) {
+	if portUp("127.0.0.1:4724") {
+		fmt.Println("  wire:         already up on :4724")
+		return
+	}
+	wb := wireBin(root)
+	if wb == "" {
+		fmt.Println("  wire:         binary absent (http-mcp build.sh, or install.sh) — /host dormant")
+		return
+	}
+	cmd := exec.Command(wb, "-listen", ":4724", "-witness", "http://"+collectorAddr)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Start(); err != nil {
+		fmt.Printf("  wire:         FAILED: %v\n", err)
+	} else {
+		fmt.Printf("  wire:         started (pid %d, witness -> %s)\n", cmd.Process.Pid, collectorAddr)
+	}
 }
 
 // packUp launches the firefox seat via the browser pack (shared by `up` and the
@@ -237,6 +278,9 @@ func runWatch() {
 			if err := cmd.Start(); err == nil {
 				fmt.Printf("  collector was down -> revived (pid %d) args=%v\n", cmd.Process.Pid, cargs)
 			}
+		}
+		if !portUp("127.0.0.1:4724") { // wire down -> revive, same contract as the collector
+			wireUp(root, probeAddr(collectorArgs()))
 		}
 		pid, rssMB := foxSeat()
 		if pid != 0 && portUp("127.0.0.1:4444") {
