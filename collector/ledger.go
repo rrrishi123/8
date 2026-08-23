@@ -403,8 +403,14 @@ func ledgerFamily(items []workItem) map[string]bool {
 	fam := map[string]bool{}
 	for _, it := range items {
 		for _, who := range []string{it.Assignee, it.By, it.FlippedBy} {
-			if p := resolveAssignee(who); isPaneID(p) {
-				fam[p] = true
+			// LITERAL %N only. resolveAssignee(who) would resolve a NAME
+			// (conductor/chronicler/philo) through roles.json/declared -> uuid ->
+			// whatever pane currently matches — which leaks host panes (%0/%1/%3/%4)
+			// back into the family. A mind is family only if it touched the ledger
+			// under its own pane id; names are not lineage until the declaration
+			// layer maps them (#896).
+			if isPaneID(who) {
+				fam[who] = true
 			}
 		}
 	}
