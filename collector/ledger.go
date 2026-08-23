@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"regexp"
 	"sort"
 	"strconv"
@@ -937,7 +936,9 @@ func (c *collector) derangedVerifier(authorLabel string) string {
 	names := map[string]string{}
 	var panes []string
 	for _, p := range liveClaudePanes() {
-		out, err := exec.Command(tb, "display-message", "-p", "-t", p, "#{pane_pid}").Output()
+		// #933 tail: bounded — this ran RAW under c.tmu (my own unbounded
+		// exec in the write path, found while chasing the write-wedge #940).
+		out, err := tmuxOut(tb, "display-message", "-p", "-t", p, "#{pane_pid}")
 		if err != nil {
 			continue
 		}
