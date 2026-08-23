@@ -4404,6 +4404,7 @@ func main() {
 	mux.HandleFunc("/daemonsignal", c.handleDaemonSignal) // the daemons seat's CONTROL verb (watchdog protected)
 	mux.HandleFunc("/identity", c.handleIdentity)         // #437: live identity — GET derives, POST declares
 	mux.HandleFunc("/container", c.handleContainer)       // #850: inner-host — docker stats + colima list
+	mux.HandleFunc("/peers", c.handlePeers)               // #886: federation rendezvous — push register/heartbeat
 	mux.HandleFunc("/db", c.handleDB)                     // project the scattered stores into ~/.8/eight.db for DBeaver
 	mux.HandleFunc("/stopwatch", c.handleStopwatch)       // experiri: the witness's staleness made readable
 	mux.HandleFunc("/work", c.handleWork)
