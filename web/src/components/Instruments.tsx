@@ -4,7 +4,7 @@ import { useLocal } from './Dock';
 
 const BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
 
-interface WorkItem { id: number; text: string; status: string; by: string; ts: string; prio?: number; deps?: number[] }
+interface WorkItem { id: number; text: string; status: string; by: string; ts: string; prio?: number; deps?: number[]; assignee?: string }
 const NEXT: Record<string, string> = { todo: 'doing', doing: 'done', done: 'todo' };
 
 // INSTRUMENTS — the witness's own gauges. They are NOT the world (that's the
@@ -91,7 +91,12 @@ export function Instruments() {
               onDragOver={(e) => { if (it.status === 'todo') e.preventDefault(); }}
               onDrop={() => dropOn(it)}>
               <button className="work-dot" title={`${it.status} → ${NEXT[it.status]}`} onClick={() => cycle(it)}>{it.status === 'todo' ? '•' : it.status === 'doing' ? '◐' : '✓'}</button>
-              <span className="work-text" title={`#${it.id} · ${it.by} · ${it.ts}${it.prio ? ' · prio ' + it.prio : ''}`}>{it.text}</span>
+              <span className="work-edge" title="who incepted → which pane it's routed to (#849)">
+                <span className="we-from">{it.by || '·'}</span>
+                <span className="we-arrow">→</span>
+                <span className={`we-to${it.assignee ? '' : ' none'}`}>{it.assignee || 'pool'}</span>
+              </span>
+              <span className="work-text" title={`#${it.id} · ${it.by}${it.assignee ? ' → ' + it.assignee : ''} · ${it.ts}${it.prio ? ' · prio ' + it.prio : ''}`}>{it.text}</span>
               {it.status === 'todo' && (
                 <span className="work-prio">
                   <button title="raise priority" onClick={() => reprio(it, 1)}>▲</button>
