@@ -91,6 +91,20 @@ func repoRoot() string {
 	return "."
 }
 
+// readyAddr — READINESS, not liveness (#931: "the probe asserts where it should
+// witness"). A wedged collector keeps accepting TCP (portUp true) while every
+// handler blocks — so up/watch misread it as up and never revived it. Readiness
+// requires /health to actually ANSWER 200 within a short bound.
+func readyAddr(addr string) bool {
+	cl := &http.Client{Timeout: 2 * time.Second}
+	resp, err := cl.Get("http://" + addr + "/health")
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == 200
+}
+
 func runUp() {
 	root := repoRoot()
 	s := discoverSubstrate()
@@ -286,7 +300,7 @@ func runWatch() {
 	fmt.Println("8 watch — supervising the collector + a seen firefox seat (Go os/exec + POSIX ps)")
 	seenFox, highMem := false, 0
 	for {
-		if cargs := collectorArgs(); !portUp(probeAddr(cargs)) {
+		if cargs := collectorArgs(); !readyAddr(probeAddr(cargs)) { // #931: readiness, not just an open port
 			cmd := exec.Command(self, cargs...)
 			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 			if err := cmd.Start(); err == nil {

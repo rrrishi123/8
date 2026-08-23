@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,6 +13,24 @@ import (
 	"sync"
 	"time"
 )
+
+// tmuxOut runs a tmux command with a BOUNDED timeout (#931): the wedge was a
+// hung tmux call under c.tmu holding the lock forever while :7070 kept
+// accepting TCP — the whole bus dark behind one stuck shell-out. A bounded
+// exec means a hung tmux costs at most this timeout of lock-hold, then the
+// handler proceeds with the honest degraded answer (pane unresolvable), and
+// the readiness guard can revive a collector that did wedge.
+func tmuxOut(tb string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, tb, args...).Output()
+}
+
+func tmuxRun(tb string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, tb, args...).Run()
+}
 
 // ── TMUX — the agents' surface, native (the system's own eyes, no claude-deck) ──
 type tmuxPaneRec struct{ ID, Loc, Cmd, Title string }
@@ -35,7 +54,7 @@ func tmuxPanes() []tmuxPaneRec {
 	if tb == "" {
 		return nil
 	}
-	out, err := exec.Command(tb, "list-panes", "-a", "-F", "#{pane_id}|#{session_name}:#{window_index}.#{pane_index}|#{pane_current_command}|#{pane_title}").Output()
+	out, err := tmuxOut(tb, "list-panes", "-a", "-F", "#{pane_id}|#{session_name}:#{window_index}.#{pane_index}|#{pane_current_command}|#{pane_title}")
 	if err != nil {
 		return nil
 	}
@@ -237,7 +256,7 @@ func paneJsonlByContent(tb, pane, projDir string) string {
 // yields nothing we fall back to the old cwd+content match (paneJsonl).
 func paneTranscript(tb, pane string) (string, time.Time) {
 	pidOf := ""
-	if out, err := exec.Command(tb, "display-message", "-p", "-t", pane, "#{pane_pid}").Output(); err == nil {
+	if out, err := tmuxOut(tb, "display-message", "-p", "-t", pane, "#{pane_pid}"); err == nil {
 		pidOf = strings.TrimSpace(string(out))
 	}
 	if pidOf != "" {
@@ -477,7 +496,7 @@ func (c *collector) handleIdentity(w http.ResponseWriter, r *http.Request) {
 	}
 	pidOf := map[string]string{}
 	if tb := tmuxBin(); tb != "" {
-		if out, err := exec.Command(tb, "list-panes", "-a", "-F", "#{pane_id}|#{pane_pid}").Output(); err == nil {
+		if out, err := tmuxOut(tb, "list-panes", "-a", "-F", "#{pane_id}|#{pane_pid}"); err == nil {
 			for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 				if id, pid, ok := strings.Cut(ln, "|"); ok {
 					pidOf[id] = pid

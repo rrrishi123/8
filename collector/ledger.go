@@ -288,7 +288,7 @@ func sendToPane(pane, msg string, onDead func()) bool {
 	if tb == "" || !paneAlive(pane) {
 		return false
 	}
-	if err := exec.Command(tb, "send-keys", "-t", pane, "-l", msg).Run(); err != nil || !paneAlive(pane) {
+	if err := tmuxRun(tb, "send-keys", "-t", pane, "-l", msg); err != nil || !paneAlive(pane) {
 		return false // exit status caught AND post-send aliveness re-checked: the TOCTOU head
 	}
 	settle := 700*time.Millisecond + time.Duration(len(msg)/4)*time.Millisecond
@@ -303,9 +303,9 @@ func sendToPane(pane, msg string, onDead func()) bool {
 			}
 			return
 		}
-		exec.Command(tb, "send-keys", "-t", pane, "Enter").Run()
+		tmuxRun(tb, "send-keys", "-t", pane, "Enter")
 		time.Sleep(500 * time.Millisecond)
-		exec.Command(tb, "send-keys", "-t", pane, "Enter").Run()
+		tmuxRun(tb, "send-keys", "-t", pane, "Enter")
 	}()
 	return true
 }
