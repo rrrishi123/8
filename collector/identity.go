@@ -361,9 +361,26 @@ func jsonlForUUID(uuid string) string {
 // nameForUUID — the mind's OWN declared name for a uuid; blank when undeclared.
 func nameForUUID(uuid string) (string, []string) {
 	declMu.Lock()
-	defer declMu.Unlock()
 	if d, ok := declared[uuid]; ok {
+		declMu.Unlock()
 		return d.Name, d.Aliases
+	}
+	declMu.Unlock()
+	// #933: roles.json reverse fallback — live declarations die on every
+	// restart (#854(4)), and the freshness gate resolves the mind's name
+	// through HERE: with amnesia, lastMarkTS("") is zero, staleness becomes
+	// undetectable, and the gate serves a 10-day-dead transcript as the arc
+	// (the exact failure it was built to prevent). The family's names are
+	// standing marks on disk; use them.
+	if b, err := os.ReadFile(rolesFile()); err == nil {
+		var m map[string]string
+		if json.Unmarshal(b, &m) == nil {
+			for name, u := range m {
+				if u == uuid {
+					return name, nil
+				}
+			}
+		}
 	}
 	return "", nil
 }
