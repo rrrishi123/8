@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { innerHost, type InnerHost } from '../lib/api';
+import { innerHost, type InnerHost, peers, type Peer } from '../lib/api';
 import { Matrix } from './Matrix';
 import { useLocal } from './Dock';
 
@@ -64,6 +64,14 @@ export function Instruments() {
   });
   const openCount = work.filter((w) => w.status !== 'done').length;
   const [inner, setInner] = useState<InnerHost | null>(null);
+  const [peerList, setPeerList] = useState<Peer[] | null>(null);
+  useEffect(() => {
+    if (open !== 'portal') return;
+    let dead = false;
+    const pull = () => peers().then((d) => { if (!dead) setPeerList(d.peers || []); }).catch(() => {});
+    pull(); const t = setInterval(pull, 5000);
+    return () => { dead = true; clearInterval(t); };
+  }, [open]);
   useEffect(() => {
     if (open !== 'inner') return;
     let dead = false;
@@ -80,6 +88,7 @@ export function Instruments() {
         <button className={`inst-chip${open === 'work' ? ' on' : ''}`} onClick={() => tog('work')} title="shared work surface">✓ {openCount}</button>
         <button className={`inst-chip${open === 'matrix' ? ' on' : ''}`} onClick={() => tog('matrix')} title="surfaces × senses — the map of the unfound">▦</button>
         <button className={`inst-chip${open === 'inner' ? ' on' : ''}`} onClick={() => tog('inner')} title="inner host — this machine's containers + colima VM (the 4-system observing its own containerized incarnation)">▣ host</button>
+        <button className={`inst-chip${open === 'portal' ? ' on' : ''}`} onClick={() => tog('portal')} title="portal — the federated 8 nodes (mac, omarchy, colima, claude-web) as co-present slices, from /peers">◈ portal</button>
       </div>
       {open === 'clock' && (
         <div className="inst-clock" title="top digits came THROUGH the capture pipeline; the gap to true time is the witness's staleness">
@@ -116,6 +125,22 @@ export function Instruments() {
             </div>
           ))}
           <input className="work-add" value={add} onChange={(e) => setAdd(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} placeholder="+ add work (Enter)" />
+        </div>
+      )}
+      {open === 'portal' && (
+        <div className="inst-portal">
+          <div className="inst-h">portal · {peerList ? `${peerList.length} peer${peerList.length === 1 ? '' : 's'}` : '…'}</div>
+          {peerList && peerList.length === 0 && <div className="ih-none">no peers registered — nodes join by POSTing /peers (push)</div>}
+          {peerList?.map((p) => (
+            <div key={p.host} className={`portal-slice${p.stale ? ' stale' : ''}`} title={`last beat ${p.at} · ${p.age_s}s ago · ${p.actor || ''}`}>
+              <div className="ps-head">
+                <span className="ps-host">{p.host}</span>
+                <span className={`ps-live ${p.stale ? 'down' : 'up'}`}>{p.stale ? `stale ${p.age_s}s` : `live ${p.age_s}s`}</span>
+              </div>
+              {p.thumbnail && <img className="ps-thumb" src={p.thumbnail} alt={`${p.host} firefox`} />}
+              {p.hostres != null && <pre className="ps-res">{JSON.stringify(p.hostres)}</pre>}
+            </div>
+          ))}
         </div>
       )}
       {open === 'inner' && (
