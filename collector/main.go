@@ -3493,6 +3493,59 @@ func (c *collector) handleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"alive": true, "sessions": ids})
 }
 
+// handleType types a string into the focused element of a context via REAL
+// per-key BiDi input. Trusted key events are the only thing React/ProseMirror
+// honor - synthetic DOM insert/paste and clipboard writes are all rejected.
+// ?context=<ctx>, text in the body; ?clear=1 selects-all+deletes first; ?enter=1
+// submits (Enter). The real-keystroke organ the wire needs to drive any tab (plasma).
+func (c *collector) handleType(w http.ResponseWriter, r *http.Request) {
+	ctx := r.URL.Query().Get("context")
+	raw, _ := io.ReadAll(r.Body)
+	text := string(raw)
+	if ctx == "" || text == "" {
+		http.Error(w, `{"error":"need ?context=<ctx> and a text body"}`, http.StatusBadRequest)
+		return
+	}
+	const meta, backspace, enter = "\ue03d", "\ue003", "\ue007" // Cmd, Backspace, Enter
+	var acts []map[string]any
+	key := func(v string) {
+		acts = append(acts, map[string]any{"type": "keyDown", "value": v}, map[string]any{"type": "keyUp", "value": v})
+	}
+	if r.URL.Query().Get("clear") == "1" {
+		acts = append(acts,
+			map[string]any{"type": "keyDown", "value": meta},
+			map[string]any{"type": "keyDown", "value": "a"},
+			map[string]any{"type": "keyUp", "value": "a"},
+			map[string]any{"type": "keyUp", "value": meta})
+		key(backspace)
+	}
+	for _, ru := range text {
+		key(string(ru))
+	}
+	if r.URL.Query().Get("enter") == "1" {
+		key(enter)
+	}
+	cmd := map[string]any{"method": "input.performActions", "params": map[string]any{
+		"context": ctx, "actions": []any{map[string]any{"type": "key", "id": "kbd", "actions": acts}}}}
+	body, _ := json.Marshal(cmd)
+	br := c.brokers[0]
+	for _, x := range c.brokers {
+		if x.id == "fox" {
+			br = x
+			break
+		}
+	}
+	resp, err := c.client.Post(br.base+"/command", "application/json", bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(resp.Body)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(rb)
+}
+
 // stat is a latency distribution, microseconds. round2 keeps the JSON readable.
 type stat struct {
 	N    int     `json:"n"`
@@ -4258,6 +4311,7 @@ func main() {
 		go c.paneWitnessLoop()           // #277: witness pane appearance (first_seen + pane.appeared/vanished)
 		go c.staleLoop()                 // #472b: revert 6h-silent doing items — the WIP lane self-heals
 		go c.epochLoop()                 // #645: the operator-epoch clock — ledger locked to operator-time
+		go c.innerHostLoop()             // #850: poll docker stats + colima list off the request path
 		go func() {                      // project eight.db every 30s so DBeaver always sees fresh data
 			if _, err := exec.LookPath("sqlite3"); err != nil {
 				return
@@ -4337,6 +4391,7 @@ func main() {
 	mux.HandleFunc("/dedup", c.handleDedup)       // same-URL duplicates; close the unclaimed ones
 	mux.HandleFunc("/manifest", c.handleManifest) // durable tab manifest: how-many/what/where/who/why/when
 	mux.HandleFunc("/tmuxpane", c.handleTmuxPane)
+	mux.HandleFunc("/type", c.handleType)
 	mux.HandleFunc("/collector/hostres", c.handleHostRes) // this host's cpu/mem/load/uptime, for cross-host observability
 	mux.HandleFunc("/hostres", c.handleHostRes)           // short alias
 	mux.HandleFunc("/tmuxsummary", c.handleTmuxSummary)   // a tmux pane's visible text — the agents' surface frame
@@ -4348,6 +4403,7 @@ func main() {
 	mux.HandleFunc("/daemonframe", c.handleDaemonFrame)   // a daemon's frame: ps line + log tail
 	mux.HandleFunc("/daemonsignal", c.handleDaemonSignal) // the daemons seat's CONTROL verb (watchdog protected)
 	mux.HandleFunc("/identity", c.handleIdentity)         // #437: live identity — GET derives, POST declares
+	mux.HandleFunc("/container", c.handleContainer)       // #850: inner-host — docker stats + colima list
 	mux.HandleFunc("/db", c.handleDB)                     // project the scattered stores into ~/.8/eight.db for DBeaver
 	mux.HandleFunc("/stopwatch", c.handleStopwatch)       // experiri: the witness's staleness made readable
 	mux.HandleFunc("/work", c.handleWork)

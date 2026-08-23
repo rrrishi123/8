@@ -143,3 +143,13 @@ export async function panesSend(text: string, panes: string[], all: boolean): Pr
   if (!r.ok) throw new Error(`${r.status} ${r.status === 404 ? '— /panes/send not deployed yet (restart the collector)' : await r.text()}`);
   return r.json();
 }
+
+
+// ── INNER-HOST metrics (#850): the 4-system observing its containerized self ──
+export interface ContainerStat { name: string; cpu: string; mem: string; mem_pc: string; net_io: string; blk_io: string; pids: string }
+export interface VMRow { name: string; status: string; arch?: string; cpus?: string; memory?: string; disk?: string; runtime?: string }
+export interface InnerHost { containers: ContainerStat[] | null; vms: VMRow[] | null; at: string; docker_ok: boolean; colima_ok: boolean }
+export async function innerHost(): Promise<InnerHost> {
+  const r = await fetch(`${BASE}/container`);
+  return r.json();
+}

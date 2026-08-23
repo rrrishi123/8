@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { innerHost, type InnerHost } from '../lib/api';
 import { Matrix } from './Matrix';
 import { useLocal } from './Dock';
 
@@ -62,6 +63,14 @@ export function Instruments() {
     return a.id - b.id;
   });
   const openCount = work.filter((w) => w.status !== 'done').length;
+  const [inner, setInner] = useState<InnerHost | null>(null);
+  useEffect(() => {
+    if (open !== 'inner') return;
+    let dead = false;
+    const pull = () => innerHost().then((d) => { if (!dead) setInner(d); }).catch(() => {});
+    pull(); const t = setInterval(pull, 5000);
+    return () => { dead = true; clearInterval(t); };
+  }, [open]);
   const tog = (k: string) => setOpen((cur) => (cur === k ? '' : k));
 
   return (
@@ -70,6 +79,7 @@ export function Instruments() {
         <button className={`inst-chip${open === 'clock' ? ' on' : ''}`} onClick={() => tog('clock')} title="experiri — the witness's staleness, on display">⏱ {now}</button>
         <button className={`inst-chip${open === 'work' ? ' on' : ''}`} onClick={() => tog('work')} title="shared work surface">✓ {openCount}</button>
         <button className={`inst-chip${open === 'matrix' ? ' on' : ''}`} onClick={() => tog('matrix')} title="surfaces × senses — the map of the unfound">▦</button>
+        <button className={`inst-chip${open === 'inner' ? ' on' : ''}`} onClick={() => tog('inner')} title="inner host — this machine's containers + colima VM (the 4-system observing its own containerized incarnation)">▣ host</button>
       </div>
       {open === 'clock' && (
         <div className="inst-clock" title="top digits came THROUGH the capture pipeline; the gap to true time is the witness's staleness">
@@ -106,6 +116,35 @@ export function Instruments() {
             </div>
           ))}
           <input className="work-add" value={add} onChange={(e) => setAdd(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} placeholder="+ add work (Enter)" />
+        </div>
+      )}
+      {open === 'inner' && (
+        <div className="inst-inner">
+          <div className="inst-h">inner host{inner ? ` · ${inner.at ? new Date(inner.at).toLocaleTimeString() : '…'}` : ' · …'}</div>
+          {inner?.vms && inner.vms.length > 0 && (
+            <div className="ih-vms">
+              {inner.vms.map((v) => (
+                <div key={v.name} className="ih-vm" title="colima VM">
+                  <span className="ih-name">{v.name}</span>
+                  <span className={`ih-status ${v.status === 'Running' ? 'up' : 'down'}`}>{v.status}</span>
+                  <span className="ih-spec">{v.cpus}cpu · {v.memory} · {v.disk} · {v.runtime}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="ih-ctable">
+            <div className="ih-crow ih-chead"><span>container</span><span>cpu</span><span>mem</span><span>pids</span></div>
+            {inner?.containers?.map((c) => (
+              <div key={c.name} className="ih-crow" title={`${c.name} · net ${c.net_io} · blk ${c.blk_io} · mem ${c.mem_pc}`}>
+                <span className="ih-cname">{c.name}</span>
+                <span>{c.cpu}</span>
+                <span>{c.mem.split(' / ')[0]}</span>
+                <span>{c.pids}</span>
+              </div>
+            ))}
+            {inner && !inner.docker_ok && <div className="ih-none">docker not reachable</div>}
+            {inner && inner.docker_ok && (!inner.containers || inner.containers.length === 0) && <div className="ih-none">no containers running</div>}
+          </div>
         </div>
       )}
       {open === 'matrix' && <Matrix />}

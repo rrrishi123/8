@@ -583,3 +583,17 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .we-arrow { color: var(--fg-faint, #6b7280); }
 .we-to { color: #63e6be; }
 .we-to.none { color: var(--fg-faint, #6b7280); font-style: italic; }
+
+/* inner-host panel — containers + colima VM (#850) */
+.inst-inner { max-height: 60vh; overflow: auto; }
+.ih-vms { padding: 4px 0; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.ih-vm { display: flex; gap: 6px; align-items: baseline; font-size: 10px; padding: 1px 10px; }
+.ih-name { font-weight: 600; color: #91a7ff; }
+.ih-status.up { color: #63e6be; }
+.ih-status.down { color: #ff8787; }
+.ih-spec { color: var(--fg-faint); }
+.ih-ctable { font-size: 10px; font-variant-numeric: tabular-nums; }
+.ih-crow { display: grid; grid-template-columns: 1fr 44px 60px 32px; gap: 6px; padding: 1px 10px; }
+.ih-chead { color: var(--fg-faint); text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid var(--border); font-size: 9px; }
+.ih-cname { color: #c5cbe3; overflow: hidden; text-overflow: ellipsis; }
+.ih-none { padding: 4px 10px; color: var(--fg-faint); font-style: italic; font-size: 10px; }
