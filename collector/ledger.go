@@ -151,7 +151,9 @@ func isRecord(text string) bool {
 	// "reconcile tick]" (post-strip): a tick is a signal, not work — born done so
 	// the steady-state tick never summons a pane and jams its WIP (#733 tail);
 	// the add-branch coalesce still sweeps prior ticks BEFORE this check runs.
-	for _, p := range []string{"FINDING", "ACT (", "AUDIT", "GUARD", "DONE", "ACK", "CORRECTION", "reconcile tick]"} {
+	// STATUS/SHIPPED/CLOSING/INSCRIPTION (#818/#828): record-forms the family
+	// demonstrably writes — both re-fired their AUTHOR as work before this line.
+	for _, p := range []string{"FINDING", "ACT (", "AUDIT", "GUARD", "DONE", "ACK", "CORRECTION", "STATUS", "SHIPPED", "CLOSING", "INSCRIPTION", "reconcile tick]"} {
 		if strings.HasPrefix(t, p) {
 			return true
 		}
