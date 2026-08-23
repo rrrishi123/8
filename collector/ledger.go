@@ -474,7 +474,11 @@ func (c *collector) summon(item workItem, reason string) bool {
 		return false
 	}
 	c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.summon","params":{"id":%d,"pane":%q,"reason":%q}}}`, item.ID, pane, reason))
-	c.stampDelivered(item.ID, pane) // #343: delivery FACT on the item, not just the feed
+	// #343: delivery FACT on the item, not just the feed. In a GOROUTINE because
+	// summon's callers (handleWork flip-to-doing, playlist dispatch) already hold
+	// c.tmu — an inline stamp re-locks and DEADLOCKS the whole work surface
+	// (the 2026-08-23 post-deploy wedge: every POST /work hung on the held mutex).
+	go c.stampDelivered(item.ID, pane)
 	return true
 }
 
