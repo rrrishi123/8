@@ -116,12 +116,32 @@ func (c *collector) handleAttention(w http.ResponseWriter, r *http.Request) {
 	// many minds share one directory. Same chain as /identity (#437).
 	newest, newestT := paneTranscript(tb, pane)
 	packet := map[string]any{"pane": pane}
-	if newest == "" {
-		packet["note"] = "no Claude transcript resolvable for this pane — nothing to focus on yet"
+	// #915 FRESHNESS GATE: resolve the mind's name and re-verify the transcript
+	// pointer against its newest live mark. A rotted/absent pointer must NOT be
+	// served as the arc; fall to the marks — the only live substrate.
+	uu := paneUUIDs()
+	pidOf := ""
+	if out, err := exec.Command(tb, "display-message", "-p", "-t", pane, "#{pane_pid}").Output(); err == nil {
+		pidOf = strings.TrimSpace(string(out))
+	}
+	mindName, _ := nameForUUID(uu[pidOf])
+	if newest == "" || jsonlStale(newestT, mindName) {
+		packet["transcript"] = newest
+		packet["transcript_mtime"] = func() string {
+			if newestT.IsZero() {
+				return ""
+			}
+			return newestT.UTC().Format(time.RFC3339)
+		}()
+		packet["stale"] = true
+		for k, v := range marksArc(mindName) {
+			packet[k] = v
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(packet)
 		return
 	}
+	packet["source"] = "transcript"
 	// richer material than /tmuxsummary: the ARC (ordered tool sequence reveals
 	// what it's DOING), fuller prompts, and the last several things it SAID — the
 	// raw vocabulary the reading is derived from.

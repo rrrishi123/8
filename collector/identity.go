@@ -510,3 +510,83 @@ func paneUUIDs() map[string]string {
 	}
 	return out
 }
+
+// ── FRESHNESS GATE + MARKS-SYNTHESIS (#915, higgs's audit) ───────────────────
+// The jsonl pointer is a CLAIM ("this file is the mind's arc"). The family's
+// transcripts all froze at a harness cutover (2026-08-13 15:33) while the minds
+// kept posting live marks — so the claim silently outlived its verification.
+// The fix is the system's own law applied to identity: re-verify the pointer
+// against the clock (the mind's newest work-mark), and when it fails, read the
+// arc from the substrate that IS live and re-readable — the marks themselves.
+
+// lastMarkTS — the newest work-mark timestamp authored by a mind (its declared
+// name or any alias, via foldLabel). Zero when the mind has no marks.
+func lastMarkTS(name string) time.Time {
+	if name == "" {
+		return time.Time{}
+	}
+	b, err := os.ReadFile(workFile())
+	if err != nil {
+		return time.Time{}
+	}
+	var items []workItem
+	if json.Unmarshal(b, &items) != nil {
+		return time.Time{}
+	}
+	var newest time.Time
+	for _, it := range items {
+		if foldLabel(it.By) != name && it.By != name {
+			continue
+		}
+		if t, e := time.Parse(time.RFC3339, it.TS); e == nil && t.After(newest) {
+			newest = t
+		}
+	}
+	return newest
+}
+
+// jsonlStale — true when the transcript's mtime predates the mind's last mark:
+// the pointer is rotted, the mind lived on past its file. Also true when the
+// path is empty (nothing to serve).
+func jsonlStale(jsonlMtime time.Time, name string) bool {
+	if jsonlMtime.IsZero() {
+		return true
+	}
+	last := lastMarkTS(name)
+	return !last.IsZero() && jsonlMtime.Before(last)
+}
+
+// marksArc — synthesize a mind's arc from its work-marks when the transcript is
+// stale/absent. The marks are the only live, re-readable substrate (the
+// convergent conclusion of all three #898-#901 self-reads). Returns recent
+// authored texts newest-first plus counts, shaped to slot into /attention.
+func marksArc(name string) map[string]any {
+	b, err := os.ReadFile(workFile())
+	if err != nil {
+		return map[string]any{"source": "marks", "note": "no ledger"}
+	}
+	var items []workItem
+	json.Unmarshal(b, &items)
+	var mine []workItem
+	for _, it := range items {
+		if foldLabel(it.By) == name || it.By == name {
+			mine = append(mine, it)
+		}
+	}
+	recent := []string{}
+	for i := len(mine) - 1; i >= 0 && len(recent) < 15; i-- {
+		recent = append(recent, firstN(strings.ReplaceAll(mine[i].Text, "\n", " "), 200))
+	}
+	last := ""
+	if t := lastMarkTS(name); !t.IsZero() {
+		last = t.UTC().Format(time.RFC3339)
+	}
+	return map[string]any{
+		"source":    "marks",
+		"note":      "transcript stale or absent — arc synthesized from live work-marks (#915)",
+		"mind":      name,
+		"marks":     len(mine),
+		"last_mark": last,
+		"recent":    recent,
+	}
+}
