@@ -36,6 +36,17 @@ type workItem struct {
 	// X-8-Actor header as fallback, "auto:*" for machine flips — and an undeclared
 	// flip stays "" (the blank is honest; never guessed, never back-filled).
 	FlippedBy string `json:"flipped_by,omitempty"`
+	// Dispatch receipts (#343): queue-VISIBLE delivery facts, so a mind can
+	// verify its own assignment is live before spending tokens on it. Queue
+	// status is assignment INTENT; these are delivery FACT — the two can
+	// disagree silently (the #131 typed-but-never-sent case). delivered_* is
+	// stamped when summon's send actually lands in a live pane; acked_* when a
+	// non-operator mind flips the item doing. A prompt naming an item with no
+	// delivered_at is a stale/manual dispatch — treat accordingly.
+	DeliveredAt string `json:"delivered_at,omitempty"`
+	DeliveredTo string `json:"delivered_to,omitempty"`
+	AckedAt     string `json:"acked_at,omitempty"`
+	AckedBy     string `json:"acked_by,omitempty"`
 }
 
 // flipActor resolves who is flipping a status: declared body `by` wins, the
@@ -463,7 +474,35 @@ func (c *collector) summon(item workItem, reason string) bool {
 		return false
 	}
 	c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.summon","params":{"id":%d,"pane":%q,"reason":%q}}}`, item.ID, pane, reason))
+	c.stampDelivered(item.ID, pane) // #343: delivery FACT on the item, not just the feed
 	return true
+}
+
+// stampDelivered (#343) writes the delivery receipt onto the work item itself —
+// the feed frame is ephemeral, the queue is what a mind re-reads. Same lock+
+// read-modify-write shape as revertOrphan.
+func (c *collector) stampDelivered(id int64, pane string) {
+	c.tmu.Lock()
+	defer c.tmu.Unlock()
+	b, err := os.ReadFile(workFile())
+	if err != nil {
+		return
+	}
+	var items []workItem
+	if json.Unmarshal(b, &items) != nil {
+		return
+	}
+	for i := range items {
+		if items[i].ID == id {
+			items[i].DeliveredAt = time.Now().UTC().Format(time.RFC3339)
+			items[i].DeliveredTo = pane
+			break
+		}
+	}
+	if nb, err := json.MarshalIndent(items, "", " "); err == nil {
+		_ = os.WriteFile(workFile(), nb, 0o644)
+	}
+	c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.delivered","params":{"id":%d,"pane":%q}}}`, id, pane))
 }
 
 // revertOrphan — the summon's Enter never landed (pane died mid-settle): flip
@@ -653,6 +692,10 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 						items[i].FlippedBy += " (swept)"
 					}
 					ackID = items[i].ID
+					if p.Status == "doing" && p.By != "" && p.By != "operator" { // #343: a mind
+						items[i].AckedAt = now // taking its assignment IS the ack — delivery
+						items[i].AckedBy = items[i].FlippedBy // loop closed on the record
+					}
 					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":%q,"flipped_by":%q}}}`, p.ID, p.Status, items[i].FlippedBy))
 					// Manual flip-to-doing by the OPERATOR still summons (the 2-way
 					// surface); agent-driven flips don't self-summon. #401: a failed
