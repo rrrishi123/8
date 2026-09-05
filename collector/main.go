@@ -1056,11 +1056,20 @@ func (c *collector) handleProvenance(w http.ResponseWriter, r *http.Request) {
 	// fresh <90s). The witness does NOT reject a spoofed actor (open model) — it
 	// SHOWS the trust bit, so a declared-but-unleased "rishi-the-operator" is
 	// visibly authenticated:false. Attributable AND (where leased) authenticated.
+	// #124.2 remainder (closed here): when claim tokens are ENFORCED, a live
+	// lease is not enough — authenticated requires a VERIFIED lease (granted
+	// against a host-resolved credential, tabRec.ClaimVerified). Without this,
+	// an unverified free-text /claim reads as authenticated even under
+	// enforcement, and the trust bit lies to the one buyer who pays for it.
+	// Open model (no tokens file) keeps leased→authenticated unchanged.
+	_, tokensEnforced := claimTokens()
 	leased := map[string]bool{}
 	c.tmu.Lock()
 	for _, rec := range c.manifest {
 		if rec != nil && rec.ClaimedBy != "" && claimLive(rec) {
-			leased[rec.ClaimedBy] = true
+			if !tokensEnforced || rec.ClaimVerified {
+				leased[rec.ClaimedBy] = true
+			}
 		}
 	}
 	c.tmu.Unlock()
