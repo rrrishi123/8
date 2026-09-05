@@ -504,9 +504,12 @@ func (c *collector) stampDelivered(id int64, pane string) {
 			break
 		}
 	}
-	if nb, err := json.MarshalIndent(items, "", " "); err == nil {
-		_ = os.WriteFile(workFile(), nb, 0o644)
-	}
+	// #1030: use the ATOMIC writer (temp+rename), NOT a direct os.WriteFile.
+	// GET /work is lock-free (#931), so a bare os.WriteFile here truncate-writes
+	// in place and a concurrent reader's os.ReadFile catches a torn file →
+	// intermittent invalid JSON from the witness's primary API. writeWork's
+	// rename is atomic, so lock-free readers always see a complete ledger.
+	writeWork(items)
 	c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.delivered","params":{"id":%d,"pane":%q}}}`, id, pane))
 }
 
