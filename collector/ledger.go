@@ -46,6 +46,10 @@ type workItem struct {
 	DeliveredTo string `json:"delivered_to,omitempty"`
 	AckedAt     string `json:"acked_at,omitempty"`
 	AckedBy     string `json:"acked_by,omitempty"`
+	// Boot — the tmux server start_time whose NUMBERING this item's %N fields
+	// mean (lineage.go). %N is re-minted on every tmux restart; an item whose
+	// boot is older than the live server is quarantined until translated.
+	Boot string `json:"boot,omitempty"`
 }
 
 // flipActor resolves who is flipping a status: declared body `by` wins, the
@@ -65,6 +69,13 @@ func workFile() string { return os.ExpandEnv("$HOME/.8/work.json") }
 // ever see a torn/partial JSON. os.WriteFile was truncate+write: a reader
 // landing between the two saw half a ledger.
 func writeWork(items []workItem) {
+	if cb := currentBoot(); cb != "" { // rule 1 (lineage.go): a fresh row means the LIVE numbering
+		for i := range items {
+			if items[i].Boot == "" {
+				items[i].Boot = cb
+			}
+		}
+	}
 	b, err := json.MarshalIndent(items, "", " ")
 	if err != nil {
 		return
@@ -187,6 +198,9 @@ func pickNext(items []workItem) int {
 		if isRecord(items[i].Text) { // records are documentation, never summoned
 			continue
 		}
+		if staleBoot(items[i]) { // old numbering: its %N means someone else now — quarantined (lineage.go)
+			continue
+		}
 		if !paneAlive(resolveAssignee(items[i].Assignee)) { // only auto-summon to a LIVE claude pane —
 			continue // a dead %N no-ops but jams WIP=1; a zsh pane runs the text as a shell cmd
 		}
@@ -247,7 +261,7 @@ func liveClaudePanes() []string {
 func pickNextForPane(items []workItem, pane string, done map[int64]bool) int {
 	best := -1
 	for i := range items {
-		if items[i].Status != "todo" || isRecord(items[i].Text) {
+		if items[i].Status != "todo" || isRecord(items[i].Text) || staleBoot(items[i]) {
 			continue
 		}
 		if resolveAssignee(items[i].Assignee) != pane {
@@ -365,7 +379,7 @@ func (c *collector) dispatchParallel(items []workItem, now string) bool {
 		if it.Status == "done" {
 			done[it.ID] = true
 		}
-		if it.Status == "doing" {
+		if it.Status == "doing" && !staleBoot(it) { // a stale "doing %9" is some OTHER mind's old seat
 			if p := resolveAssignee(it.Assignee); p != "" {
 				busy[p] = true
 			}
@@ -414,6 +428,9 @@ func (c *collector) dispatchParallel(items []workItem, now string) bool {
 func ledgerFamily(items []workItem) map[string]bool {
 	fam := map[string]bool{}
 	for _, it := range items {
+		if staleBoot(it) { // its %N are another boot's seats — not lineage under this one (lineage.go)
+			continue
+		}
 		for _, who := range []string{it.Assignee, it.By, it.FlippedBy} {
 			// LITERAL %N only. resolveAssignee(who) would resolve a NAME
 			// (conductor/chronicler/philo) through roles.json/declared -> uuid ->

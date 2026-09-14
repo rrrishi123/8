@@ -48,6 +48,7 @@ func (c *collector) witnessPanes() {
 		}
 	}
 	c.pmu.Unlock()
+	c.witnessLineage(now) // boot epoch + %N->uuid lineage + re-mint of stale ledger rows (lineage.go)
 }
 
 // handlePanes — GET /panes: the witnessed pane roster, each with its first_seen
@@ -93,5 +94,5 @@ func (c *collector) handlePanes(w http.ResponseWriter, r *http.Request) {
 		out = append(out, paneView{p.ID, p.Loc, p.Cmd, p.Title, seen[p.ID], name, uuid, jsonlForUUID(uuid)})
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"panes": out, "n": len(out)})
+	_ = json.NewEncoder(w).Encode(map[string]any{"panes": out, "n": len(out), "boot": currentBoot()})
 }

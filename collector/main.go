@@ -4419,7 +4419,8 @@ func main() {
 	mux.HandleFunc("/work", c.handleWork)
 	mux.HandleFunc("/work/next", c.handleWorkNext)
 	mux.HandleFunc("/work/playlist", c.handlePlaylist)
-	mux.HandleFunc("/panes", c.handlePanes)          // #277 witnessed pane roster (first_seen per pane)
+	mux.HandleFunc("/panes", c.handlePanes)
+	mux.HandleFunc("/lineage", c.handleLineage)      // %N per tmux boot -> uuid; quarantined stale rows (lineage.go)          // #277 witnessed pane roster (first_seen per pane)
 	mux.HandleFunc("/panes/send", c.handlePanesSend) // type one prompt into selected panes / all live claude at once — the operator+agent fan-out nerve
 	mux.HandleFunc("/sql", c.handleSQL)              // #280 the DB primitive: a CALL dialect over eight.db (modernc, witnessed; #315)
 	mux.HandleFunc("/watch", c.handleWatch)
