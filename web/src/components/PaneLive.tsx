@@ -117,10 +117,10 @@ export function PaneLive({ initial = '%24' }: { initial?: string }) {
         )}
       </div>
       <table className="pl-table">
-        <thead><tr><th>t</th><th>ctx</th><th>in</th><th>read</th><th>new</th><th>out</th></tr></thead>
+        <thead><tr><th>t</th><th>ctx</th><th>in</th><th>read</th><th>new</th><th>out</th><th title="thinking tokens billed this turn — the text itself is redacted by the API (signature only)">think</th></tr></thead>
         <tbody>
           {turns.slice(-12).reverse().map((t, i) => (
-            <tr key={i}><td>{hhmm(t.ts)}</td><td><b>{k(t.context_tokens)}</b></td><td>{k(t.input_tokens)}</td><td>{k(t.cache_read_input_tokens)}</td><td>{k(t.cache_creation_input_tokens)}</td><td>{k(t.output_tokens)}</td></tr>
+            <tr key={i}><td>{hhmm(t.ts)}</td><td><b>{k(t.context_tokens)}</b></td><td>{k(t.input_tokens)}</td><td>{k(t.cache_read_input_tokens)}</td><td>{k(t.cache_creation_input_tokens)}</td><td>{k(t.output_tokens)}</td><td>{t.thinking_tokens ? k(t.thinking_tokens) : '·'}</td></tr>
           ))}
         </tbody>
       </table>
