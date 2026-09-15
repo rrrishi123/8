@@ -247,6 +247,9 @@ func (c *collector) witnessLineage(now string) {
 	}
 	bootMoved := boot != lastBoot
 	lastBoot = boot
+	if os.Getenv("EIGHT_LINEAGE_OBSERVE") == "1" { // a second witness on another tmux server: record, never re-mint
+		return
+	}
 	if !bootMoved && remintPending == 0 && len(fresh) == 0 {
 		return
 	}
