@@ -529,22 +529,49 @@ func (c *collector) handleIdentity(w http.ResponseWriter, r *http.Request) {
 // args carry `--resume <uuid>` binds that uuid to its parent pid (the pane).
 func paneUUIDs() map[string]string {
 	out := map[string]string{}
-	ps, err := exec.Command("ps", "-eo", "ppid,args").Output()
+	ps, err := exec.Command("ps", "-eo", "pid,ppid,args").Output()
 	if err != nil {
 		return out
 	}
 	for _, line := range strings.Split(string(ps), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 {
+			continue
+		}
+		pid, ppid := f[0], f[1]
+		// 2026-09-15: the CLI's own session file is authoritative — argv's
+		// --resume goes STALE after /clear (the process mints a new session id
+		// but keeps its argv), and a fresh `claude` has no --resume at all.
+		if sid := sessionIDFor(pid); sid != "" {
+			out[ppid] = sid
+			continue
+		}
 		i := strings.Index(line, "--resume")
 		if i < 0 {
 			continue
 		}
 		rest := strings.Fields(strings.TrimPrefix(strings.TrimPrefix(line[i:], "--resume="), "--resume"))
-		f := strings.Fields(line)
-		if len(rest) > 0 && len(f) > 0 && len(rest[0]) >= 32 {
-			out[f[0]] = rest[0]
+		if len(rest) > 0 && len(rest[0]) >= 32 {
+			out[ppid] = rest[0]
 		}
 	}
 	return out
+}
+
+// sessionIDFor — ~/.claude/sessions/<pid>.json {pid, sessionId, tmux, ...} is
+// written by Claude Code for each live interactive process. Blank if absent.
+func sessionIDFor(pid string) string {
+	b, err := os.ReadFile(os.ExpandEnv("$HOME/.claude/sessions/") + pid + ".json")
+	if err != nil {
+		return ""
+	}
+	var v struct {
+		SessionID string `json:"sessionId"`
+	}
+	if json.Unmarshal(b, &v) != nil || len(v.SessionID) < 32 {
+		return ""
+	}
+	return v.SessionID
 }
 
 // ── FRESHNESS GATE + MARKS-SYNTHESIS (#915, higgs's audit) ───────────────────

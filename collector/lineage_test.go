@@ -144,3 +144,12 @@ func TestWSFrameAndUsage(t *testing.T) {
 		t.Fatalf("non-loopback must be refused, got %v", err)
 	}
 }
+
+func TestSessionIDFor(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	os.MkdirAll(os.ExpandEnv("$HOME/.claude/sessions"), 0o755)
+	os.WriteFile(os.ExpandEnv("$HOME/.claude/sessions/4242.json"), []byte(`{"pid":4242,"sessionId":"f9129044-e1f3-4ff4-862a-fe4dcb1cdbda","tmux":"kosaten1:@4.%24"}`), 0o644)
+	if sessionIDFor("4242") != "f9129044-e1f3-4ff4-862a-fe4dcb1cdbda" || sessionIDFor("1") != "" {
+		t.Fatal("sessionIDFor wrong")
+	}
+}
