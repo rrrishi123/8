@@ -121,7 +121,7 @@ func budgetNow() *budget {
 			continue
 		}
 		st, _ := fh.Stat()
-		off := st.Size() - 256*1024
+		off := st.Size() - 8*1024*1024 // a record carries the whole request body (200KB+): window must hold several
 		if off < 0 {
 			off = 0
 		}
@@ -137,7 +137,7 @@ func budgetNow() *budget {
 				TS  string            `json:"ts"`
 				Res map[string]string `json:"res_headers"`
 			}
-			if json.Unmarshal(lines[i], &rec) != nil || rec.Res == nil || rec.Res["anthropic-ratelimit-unified-reset"] == "" {
+			if json.Unmarshal(lines[i], &rec) != nil || rec.Res == nil || !hasUnified(rec.Res) {
 				continue
 			}
 			if rec.TS <= bestTS {
@@ -241,4 +241,15 @@ func (c *collector) handlePaneTap(w http.ResponseWriter, r *http.Request) {
 	}
 	c.publish(fmt.Sprintf(`{"session":"panes","origin":"COLLECTOR","frame":{"method":"pane.tap","params":{"pane":%q,"inspector":%q}}}`, pane, wsurl))
 	_ = json.NewEncoder(w).Encode(map[string]any{"pane": pane, "inspector": wsurl, "result": res})
+}
+
+// hasUnified — any anthropic-ratelimit-unified-*-reset header (the bare
+// "-reset" is not always sent; the per-window ones are).
+func hasUnified(h map[string]string) bool {
+	for k := range h {
+		if strings.HasPrefix(strings.ToLower(k), "anthropic-ratelimit-unified-") && strings.HasSuffix(k, "-reset") {
+			return true
+		}
+	}
+	return false
 }
