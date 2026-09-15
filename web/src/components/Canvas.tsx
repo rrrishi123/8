@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { PaneCockpit } from './PaneCockpit';
+import { PaneLive } from './PaneLive';
 import { Viewport } from './Viewport';
 import { Instruments } from './Instruments';
 import { Resources } from './Resources';
@@ -58,6 +59,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   const dragDeck = useRef<{ key: string; px: number; py: number; bx: number; by: number } | null>(null);
   const [showSelf, setShowSelf] = useLocal<boolean>('showSelf', false); // reflexive breakpoint: let this 8 SEE its own tab (1 tab → 2 panes → controls itself)
   const [theater, setTheater] = useState(false);
+  const [liveOpen, setLiveOpen] = useState(false); // pane · live: one pane as a pod — measured tokens, process, inspector
   const [sendOpen, setSendOpen] = useState(false); // #814: the fan-out nerve, reachable from canvas mode too // watch the pinned card at the real tab's full size (1:1)
   useEffect(() => { if (!theater) return; const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setTheater(false); }; window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey); }, [theater]);
   const [addFor, setAddFor] = useState('');       // which deck's "+ tab" input is open
@@ -451,9 +453,16 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
         <button className={showSelf ? 'on' : ''} onClick={() => setShowSelf((v) => !v)} title="reflexive: let this 8 see its OWN tab (1 tab → 2 panes → controls itself)">⟲ self</button>
         <button className={theater ? 'on' : ''} onClick={() => setTheater((v) => !v)} title="watch the pinned card at the real tab's full size (1:1) — stay on 8, see the action live">⛶ watch</button>
         <button className={sendOpen ? 'on' : ''} onClick={() => setSendOpen((v) => !v)} title="broadcast one prompt to selected/all live claude panes (POST /panes/send)">📣 send</button>
+        <button className={liveOpen ? 'on' : ''} onClick={() => setLiveOpen((v) => !v)} title="one pane as a pod: measured context per turn (usage), process, inspector">🫀 live</button>
         <button onClick={() => setPosBy({})} title="forget operator positions — return to the deterministic layout">⌂ layout</button>
         <span className="persp-z">{stacks.length} decks · {cells.length} cards · {Math.round(cam.z * 100)}%</span>
       </div>
+      {liveOpen && (
+        <div className="canvas-send canvas-live" onPointerDown={(e) => e.stopPropagation()}>
+          <div className="cs-head">pane · live<button className="cs-x" onClick={() => setLiveOpen(false)}>✕</button></div>
+          <PaneLive />
+        </div>
+      )}
       {sendOpen && (
         <div className="canvas-send" onPointerDown={(e) => e.stopPropagation()}>
           <div className="cs-head">panes · send<button className="cs-x" onClick={() => setSendOpen(false)}>✕</button></div>

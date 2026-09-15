@@ -7,6 +7,7 @@ import { Interaction } from './components/Interaction';
 import { SessionStream } from './components/SessionStream';
 import { Resources } from './components/Resources';
 import { PaneCockpit } from './components/PaneCockpit';
+import { PaneLive } from './components/PaneLive';
 import { Bench } from './components/Bench';
 import { Splitter, SideStack, useLocal } from './components/Dock';
 import { ThemePicker } from './components/ThemePicker';
@@ -168,6 +169,7 @@ export default function App() {
             { id: 'inspector', title: 'inspector', node: <Inspector row={selected} /> },
             { id: 'curl', title: 'compose', node: <PasteCurl /> },
             { id: 'panes', title: 'panes · send', node: <PaneCockpit /> },
+            { id: 'pane-live', title: 'pane · live', node: <PaneLive /> },
           ]} />
         </div>
           </>

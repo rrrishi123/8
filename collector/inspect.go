@@ -348,3 +348,100 @@ func (c *collector) handlePaneInspect(w http.ResponseWriter, r *http.Request) {
 	c.publish(fmt.Sprintf(`{"session":"panes","origin":"COLLECTOR","frame":{"method":"pane.inspect","params":{"pane":%q,"inspector":%q,"expr":%q}}}`, pane, wsurl, firstN(expr, 80)))
 	_ = json.NewEncoder(w).Encode(map[string]any{"pane": pane, "inspector": wsurl, "expr": expr, "result": res})
 }
+
+// ── /panes/usage — the session's own token record, turn by turn ────────────────
+// GET /panes/usage?pane=%N[&n=40]: the newest N assistant turns from the pane's
+// CURRENT session file (identity via ~/.claude/sessions/<pid>.json, so a /clear
+// is followed), with every usage field the API returned. This is the measured
+// weight; the TUI's /context is an estimate derived from the same lines.
+type usageTurn struct {
+	TS        string `json:"ts"`
+	Model     string `json:"model,omitempty"`
+	Input     int64  `json:"input_tokens"`
+	CacheRead int64  `json:"cache_read_input_tokens"`
+	CacheNew  int64  `json:"cache_creation_input_tokens"`
+	Output    int64  `json:"output_tokens"`
+	Thinking  int64  `json:"thinking_tokens,omitempty"`
+	Context   int64  `json:"context_tokens"` // input + cache_read + cache_creation
+}
+
+func usageTurns(path string, n int) []usageTurn {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	st, _ := f.Stat()
+	off := st.Size() - 4*1024*1024
+	if off < 0 {
+		off = 0
+	}
+	b := make([]byte, st.Size()-off)
+	if _, err := f.ReadAt(b, off); err != nil && err != io.EOF {
+		return nil
+	}
+	lines := bytes.Split(b, []byte("\n"))
+	var out []usageTurn
+	for i := len(lines) - 1; i >= 0 && len(out) < n; i-- {
+		if !bytes.Contains(lines[i], []byte(`"cache_read_input_tokens"`)) {
+			continue
+		}
+		var e struct {
+			Type      string `json:"type"`
+			Timestamp string `json:"timestamp"`
+			Message   struct {
+				Model string `json:"model"`
+				Usage struct {
+					In    int64 `json:"input_tokens"`
+					Read  int64 `json:"cache_read_input_tokens"`
+					Write int64 `json:"cache_creation_input_tokens"`
+					Out   int64 `json:"output_tokens"`
+					Det   struct {
+						Thinking int64 `json:"thinking_tokens"`
+					} `json:"output_tokens_details"`
+				} `json:"usage"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(lines[i], &e) != nil || e.Type != "assistant" {
+			continue
+		}
+		u := e.Message.Usage
+		out = append(out, usageTurn{TS: e.Timestamp, Model: e.Message.Model, Input: u.In, CacheRead: u.Read, CacheNew: u.Write, Output: u.Out, Thinking: u.Det.Thinking, Context: u.In + u.Read + u.Write})
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 { // oldest first
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
+func (c *collector) handlePaneUsage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	pane := r.URL.Query().Get("pane")
+	n, _ := strconv.Atoi(r.URL.Query().Get("n"))
+	if n <= 0 || n > 500 {
+		n = 40
+	}
+	pf := procOf(pane)
+	sid := ""
+	if pf.Pid > 0 {
+		sid = sessionIDFor(strconv.Itoa(pf.Pid))
+	}
+	if sid == "" {
+		if tb := tmuxBin(); tb != "" {
+			if o, e := tmuxOut(tb, "display-message", "-p", "-t", pane, "#{pane_pid}"); e == nil {
+				sid = paneUUIDs()[strings.TrimSpace(string(o))]
+			}
+		}
+	}
+	jp := jsonlForUUID(sid)
+	var size int64
+	if st, err := os.Stat(jp); err == nil {
+		size = st.Size()
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"pane": pane, "session": sid, "jsonl": jp, "jsonl_bytes": size,
+		"pid": pf.Pid, "rss_mb": pf.RSSMB, "inspector": pf.Inspector, "state": tuiOf(pane).State,
+		"turns": usageTurns(jp, n),
+		"note": "context_tokens = input + cache_read + cache_creation, as the API billed that turn; the TUI /context is an estimate",
+	})
+}
