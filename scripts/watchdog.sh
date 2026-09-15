@@ -110,7 +110,12 @@ while true; do
       # revive path MUST stay arg-parity with up.sh's collector start (the
       # 2026-07-27 drift: this line lacked it, so a watchdog-revived collector
       # went blind at the next recycle).
-      nohup collector/collector -listen :7070 -brokers "$BRK" -gecko "http://127.0.0.1:4444/session/$SID" -session-file "$HOME/.8/gecko.json" >/tmp/collector-8.log 2>&1 &
+      # WITNESS SERVER PIN (2026-09-16 rebirth): if ~/.8/witness-tmux.env names a
+      # tmux socket, the collector must witness THAT server across revives — else
+      # it defaults to $TMUX (the default server) and goes blind to the reborn
+      # fleet on eight2. Absent file = inherit env (pre-rebirth behaviour).
+      WT=""; [ -f "$HOME/.8/witness-tmux.env" ] && WT="TMUX=$(cat "$HOME/.8/witness-tmux.env")"
+      env $WT nohup collector/collector -listen :7070 -brokers "$BRK" -gecko "http://127.0.0.1:4444/session/$SID" -session-file "$HOME/.8/gecko.json" >/tmp/collector-8.log 2>&1 &
     fi
   else
     # Firefox PROCESS is GONE -> genuinely dead. Two consecutive to ride out a
