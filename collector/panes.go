@@ -48,7 +48,8 @@ func (c *collector) witnessPanes() {
 		}
 	}
 	c.pmu.Unlock()
-	c.witnessLineage(now) // boot epoch + %N->uuid lineage + re-mint of stale ledger rows (lineage.go)
+	probeTUI(tmuxPanes(), time.Now()) // #897: state + staleness per pane, every tick
+	c.witnessLineage(now)             // boot epoch + %N->uuid lineage + re-mint of stale ledger rows (lineage.go)
 }
 
 // handlePanes — GET /panes: the witnessed pane roster, each with its first_seen
@@ -67,6 +68,12 @@ func (c *collector) handlePanes(w http.ResponseWriter, r *http.Request) {
 		Canonical string `json:"canonical_name,omitempty"`
 		UUID      string `json:"claude_uuid,omitempty"`
 		Jsonl     string `json:"jsonl_path,omitempty"`
+		// #897: what the pane's TUI shows right now — working|idle|capped|stuck|shell,
+		// how long that exact screen has been up, and the modal's reset note.
+		State    string `json:"state,omitempty"`
+		SameForS int64  `json:"screen_same_for_s"`
+		Resets   string `json:"resets,omitempty"`
+		ProbedAt string `json:"probed_at,omitempty"`
 	}
 	c.pmu.Lock()
 	seen := make(map[string]string, len(c.panesSeen))
@@ -91,7 +98,8 @@ func (c *collector) handlePanes(w http.ResponseWriter, r *http.Request) {
 	for _, p := range tmuxPanes() {
 		uuid := uu[pidOf[p.ID]]
 		name, _ := nameForUUID(uuid)
-		out = append(out, paneView{p.ID, p.Loc, p.Cmd, p.Title, seen[p.ID], name, uuid, jsonlForUUID(uuid)})
+		t := tuiOf(p.ID)
+		out = append(out, paneView{p.ID, p.Loc, p.Cmd, p.Title, seen[p.ID], name, uuid, jsonlForUUID(uuid), t.State, t.SameForS, t.Resets, t.ProbedAt})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"panes": out, "n": len(out), "boot": currentBoot()})

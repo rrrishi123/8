@@ -436,6 +436,9 @@ func (c *collector) dispatchParallel(items []workItem, now string) bool {
 		if !inScope(scope, pane, p2u[pane]) { // a lane outside the playlist's scope is neither offered nor woken
 			continue
 		}
+		if !dispatchable(pane) { // #897: a capped/stuck pane is reported on /panes, never dispatched to
+			continue
+		}
 		if busy[pane] || inboxPendingForPane(pane, p2u) > 0 { // WIP=1 counts an un-answered OFFER as held
 			continue
 		}

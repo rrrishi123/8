@@ -139,7 +139,8 @@ func paneIdle(pane string) bool {
 	if err != nil {
 		return false
 	}
-	return !strings.Contains(string(out), "esc to interrupt")
+	state, _ := classifyScreen(string(out), "claude") // #897: capped/stuck are not idle either
+	return state == "idle"
 }
 
 // offer — enqueue the item into the mind's inbox; the item stays todo. Returns

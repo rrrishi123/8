@@ -83,3 +83,22 @@ func TestPlaylistScope(t *testing.T) {
 		t.Fatalf("scope wrong: %v", sc)
 	}
 }
+
+func TestClassifyScreen(t *testing.T) {
+	cases := []struct{ screen, cmd, want, resets string }{
+		{"  ⏵⏵ bypass permissions on · ← for agents", "claude.exe", "idle", ""},
+		{"✻ Thinking… (esc to interrupt)", "claude.exe", "working", ""},
+		{"You've hit your usage limit. Resets at 2:30pm", "claude.exe", "capped", "Resets at 2:30pm"},
+		{"Adjust monthly spend limit\n Resets 14:00", "claude", "capped", "Resets 14:00"},
+		{"rishirajs@mac ~ %", "zsh", "shell", ""},
+	}
+	for _, c := range cases {
+		s, r := classifyScreen(c.screen, c.cmd)
+		if s != c.want || r != c.resets {
+			t.Fatalf("%q -> %s/%q want %s/%q", c.screen, s, r, c.want, c.resets)
+		}
+	}
+	if !dispatchable("%none") {
+		t.Fatal("unprobed pane must remain dispatchable")
+	}
+}
