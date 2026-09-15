@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
+	"time"
 )
 
 // Replays 2026-09-14: tmux restored, every seat re-minted. Old boot A had
@@ -119,5 +122,25 @@ func TestKind(t *testing.T) {
 	json.Unmarshal(b, &got)
 	if got[0].Kind != "record" || got[1].Kind != "task" {
 		t.Fatalf("writeWork must stamp kind once: %+v", got)
+	}
+}
+
+func TestWSFrameAndUsage(t *testing.T) {
+	for _, n := range []int{5, 200, 70000} {
+		f := wsFrame(bytes.Repeat([]byte("x"), n))
+		if f[0] != 0x81 || f[1]&0x80 == 0 {
+			t.Fatalf("frame header wrong for n=%d", n)
+		}
+	}
+	p := t.TempDir() + "/s.jsonl"
+	os.WriteFile(p, []byte(`{"type":"user","message":{}}
+{"type":"assistant","timestamp":"2026-09-15T10:00:00Z","message":{"usage":{"input_tokens":2,"cache_read_input_tokens":30000,"cache_creation_input_tokens":4000}}}
+{"type":"attachment"}
+`), 0o644)
+	if n, at := lastUsage(p); n != 34002 || at != "2026-09-15T10:00:00Z" {
+		t.Fatalf("lastUsage = %d %s", n, at)
+	}
+	if _, err := wsDial("ws://8.8.8.8:1/x", time.Second); err == nil || !strings.Contains(err.Error(), "loopback") {
+		t.Fatalf("non-loopback must be refused, got %v", err)
 	}
 }

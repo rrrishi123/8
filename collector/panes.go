@@ -49,6 +49,7 @@ func (c *collector) witnessPanes() {
 	}
 	c.pmu.Unlock()
 	probeTUI(tmuxPanes(), time.Now()) // #897: state + staleness per pane, every tick
+	probeProcs(time.Now())            // pid / rss / inspector / context tokens, every ~30s (inspect.go)
 	c.witnessLineage(now)             // boot epoch + %N->uuid lineage + re-mint of stale ledger rows (lineage.go)
 }
 
@@ -74,6 +75,12 @@ func (c *collector) handlePanes(w http.ResponseWriter, r *http.Request) {
 		SameForS int64  `json:"screen_same_for_s"`
 		Resets   string `json:"resets,omitempty"`
 		ProbedAt string `json:"probed_at,omitempty"`
+		// inspect.go: the pane as a pod — its process, weight and debugger.
+		Pid       int    `json:"pid,omitempty"`
+		RSSMB     int    `json:"rss_mb,omitempty"`
+		CtxTokens int64  `json:"context_tokens,omitempty"`
+		CtxAt     string `json:"context_at,omitempty"`
+		Inspector string `json:"inspector,omitempty"`
 	}
 	c.pmu.Lock()
 	seen := make(map[string]string, len(c.panesSeen))
@@ -99,7 +106,9 @@ func (c *collector) handlePanes(w http.ResponseWriter, r *http.Request) {
 		uuid := uu[pidOf[p.ID]]
 		name, _ := nameForUUID(uuid)
 		t := tuiOf(p.ID)
-		out = append(out, paneView{p.ID, p.Loc, p.Cmd, p.Title, seen[p.ID], name, uuid, jsonlForUUID(uuid), t.State, t.SameForS, t.Resets, t.ProbedAt})
+		pf := procOf(p.ID)
+		out = append(out, paneView{p.ID, p.Loc, p.Cmd, p.Title, seen[p.ID], name, uuid, jsonlForUUID(uuid), t.State, t.SameForS, t.Resets, t.ProbedAt,
+			pf.Pid, pf.RSSMB, pf.CtxTokens, pf.CtxAt, pf.Inspector})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"panes": out, "n": len(out), "boot": currentBoot()})
