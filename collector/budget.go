@@ -74,6 +74,11 @@ func parseBudgetHeaders(h map[string]string, now time.Time) (map[string]budgetWi
 			continue
 		}
 		win, field := rest[:i], rest[i+1:]
+		switch win { // not windows: overage/fallback/representative carry policy, not budget
+		case "5h", "7d", "7d_oi":
+		default:
+			continue
+		}
 		bw := w[win]
 		switch field {
 		case "utilization":
