@@ -442,6 +442,6 @@ func (c *collector) handlePaneUsage(w http.ResponseWriter, r *http.Request) {
 		"pane": pane, "session": sid, "jsonl": jp, "jsonl_bytes": size,
 		"pid": pf.Pid, "rss_mb": pf.RSSMB, "inspector": pf.Inspector, "state": tuiOf(pane).State,
 		"turns": usageTurns(jp, n),
-		"note": "context_tokens = input + cache_read + cache_creation, as the API billed that turn; the TUI /context is an estimate",
+		"note":  "context_tokens = input + cache_read + cache_creation, as the API billed that turn; the TUI /context is an estimate",
 	})
 }
