@@ -366,3 +366,20 @@ func (c *collector) handleInbox(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GET or POST", 405)
 	}
 }
+
+// dropOfferEverywhere — remove an item's offer from every inbox (a flip via the
+// ledger may come after the assignee changed, so the key is not derivable).
+func dropOfferEverywhere(id int64) {
+	ents, err := os.ReadDir(inboxDir())
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		key := strings.TrimSuffix(e.Name(), ".json")
+		key = strings.Replace(key, "pane-", "%", 1)
+		dropOffer(key, id)
+	}
+}

@@ -787,6 +787,9 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 					if p.Sweep {
 						items[i].FlippedBy += " (swept)"
 					}
+					if p.Status != "todo" { // inbox.go: a flip resolves any standing offer of this item
+						dropOfferEverywhere(items[i].ID)
+					}
 					ackID = items[i].ID
 					if p.Status == "doing" && p.By != "" && p.By != "operator" { // #343: a mind
 						items[i].AckedAt = now                // taking its assignment IS the ack — delivery

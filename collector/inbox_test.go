@@ -19,6 +19,7 @@ func TestInboxOfferTakeDecline(t *testing.T) {
 	items := []workItem{
 		{ID: 1, Text: "first", Status: "todo", By: "%9", Assignee: "%99"},
 		{ID: 2, Text: "second", Status: "todo", By: "%9", Assignee: "%99"},
+		{ID: 3, Text: "third", Status: "todo", By: "%9", Assignee: "%99"},
 	}
 	writeWork(items)
 	c := &collector{}
@@ -72,6 +73,16 @@ func TestInboxOfferTakeDecline(t *testing.T) {
 	}
 	if n := inboxPendingForPane("%99", map[string]string{}); n != 0 {
 		t.Fatalf("inbox must be empty after decisions, got %d", n)
+	}
+	// a flip via the ledger resolves a standing offer too (no phantom WIP)
+	c.offer(items[2], "third")
+	if inboxPendingForPane("%99", map[string]string{}) != 1 {
+		t.Fatal("offer of #3 should be pending")
+	}
+	rr = httptest.NewRecorder()
+	c.handleWork(rr, httptest.NewRequest(http.MethodPost, "/work", strings.NewReader(`{"id":3,"status":"done","by":"tester","sweep":true}`)))
+	if rr.Code != 200 || inboxPendingForPane("%99", map[string]string{}) != 0 {
+		t.Fatalf("closing via /work must drop the offer: code=%d pending=%d", rr.Code, inboxPendingForPane("%99", map[string]string{}))
 	}
 	// bad request
 	rr = httptest.NewRecorder()
