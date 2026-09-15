@@ -51,6 +51,7 @@ func (c *collector) witnessPanes() {
 	probeTUI(tmuxPanes(), time.Now()) // #897: state + staleness per pane, every tick
 	probeProcs(time.Now())            // pid / rss / inspector / context tokens, every ~30s (inspect.go)
 	c.witnessLineage(now)             // boot epoch + %N->uuid lineage + re-mint of stale ledger rows (lineage.go)
+	c.syncPaneNames(time.Now())       // reflect names onto pane borders; honour user-owned @mind (names.go)
 }
 
 // handlePanes — GET /panes: the witnessed pane roster, each with its first_seen

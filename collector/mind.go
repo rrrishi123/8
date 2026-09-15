@@ -101,8 +101,8 @@ func (c *collector) healRole(name, seat, newUUID string) {
 		parts := strings.FieldsFunc(seat, func(r rune) bool { return r == ':' || r == '.' })
 		if len(parts) == 3 {
 			exec.Command("sqlite3", os.ExpandEnv("$HOME/.8/eight.db"),
-				fmt.Sprintf("update panes set claude_uuid=%q, jsonl_path=%q where session=%q and win=%s and pane=%s;",
-					newUUID, jsonlForUUID(newUUID), parts[0], parts[1], parts[2])).Run()
+				fmt.Sprintf("update panes set claude_uuid=%s, jsonl_path=%s where session=%s and win=%s and pane=%s;",
+					sqlStr(newUUID), sqlStr(jsonlForUUID(newUUID)), sqlStr(parts[0]), parts[1], parts[2])).Run()
 		}
 	}
 	c.publish(fmt.Sprintf(`{"session":"panes","origin":"COLLECTOR","frame":{"method":"mind.heal","params":{"name":%q,"seat":%q,"uuid":%q}}}`, name, seat, newUUID))
@@ -139,7 +139,7 @@ func (c *collector) resolveMinds(heal bool) []mindView {
 			if sn := seatName[p.Loc]; sn != "" {
 				name = sn // durable: this seat is a known mind whose uuid moved
 				issues = append(issues, "clear-detected: seat "+p.Loc+" is "+sn+" but its uuid moved to "+first8(uuid))
-				if heal && uuid != "" {
+				if heal && uuid != "" && !userOwned(uuid) {
 					c.healRole(name, p.Loc, uuid)
 					issues[len(issues)-1] = "clear-healed: " + name + " re-pointed to " + first8(uuid)
 				}
@@ -202,7 +202,7 @@ func (c *collector) resolveMinds(heal bool) []mindView {
 // setName binds a CHOSEN name to the mind currently at a seat/uuid, durably
 // (roles.json + identity.json + eight.db), removing any prior name for that
 // uuid. A rename is just a set. Returns the old name (if any).
-func (c *collector) setName(newName, seat, uuid string) (string, error) {
+func (c *collector) setName(newName, seat, uuid, source string) (string, error) {
 	newName = strings.TrimSpace(newName)
 	if newName == "" || uuid == "" {
 		return "", fmt.Errorf("need a non-empty name and a live uuid")
@@ -241,15 +241,22 @@ func (c *collector) setName(newName, seat, uuid string) (string, error) {
 	// eight.db canonical_name at the seat
 	if parts := strings.FieldsFunc(seat, func(r rune) bool { return r == ':' || r == '.' }); len(parts) == 3 {
 		exec.Command("sqlite3", os.ExpandEnv("$HOME/.8/eight.db"),
-			fmt.Sprintf("update panes set canonical_name=%q, role=%q where session=%q and win=%s and pane=%s;", newName, newName, parts[0], parts[1], parts[2])).Run()
+			fmt.Sprintf("update panes set canonical_name=%s, role=%s where session=%s and win=%s and pane=%s;", sqlStr(newName), sqlStr(newName), sqlStr(parts[0]), parts[1], parts[2])).Run()
 	}
 	c.publish(fmt.Sprintf(`{"session":"panes","origin":"COLLECTOR","frame":{"method":"mind.name","params":{"name":%q,"was":%q,"seat":%q,"uuid":%q}}}`, newName, old, seat, uuid))
 	// declared[] live cache so /panes reflects it at once
 	declMu.Lock()
 	declared[uuid] = declaredMind{Name: newName, At: time.Now().UTC().Format(time.RFC3339)}
 	declMu.Unlock()
+	if source == "" {
+		source = "user"
+	}
+	setNameSrc(uuid, source)
 	return old, nil
 }
+
+// sqlStr — a single-quoted SQLite string literal (doubles embedded quotes).
+func sqlStr(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 
 func first8(s string) string {
 	if len(s) > 8 {
@@ -288,7 +295,7 @@ func (c *collector) handleMind(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, `{"error":"that mind has no live uuid to bind a name to"}`, 409)
 					return
 				}
-				old, err := c.setName(set, m.Seat, m.UUID)
+				old, err := c.setName(set, m.Seat, m.UUID, "user")
 				if err != nil {
 					http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), 400)
 					return
