@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"testing"
 )
@@ -100,5 +101,23 @@ func TestClassifyScreen(t *testing.T) {
 	}
 	if !dispatchable("%none") {
 		t.Fatal("unprobed pane must remain dispatchable")
+	}
+}
+
+func TestKind(t *testing.T) {
+	if !isRecordItem(workItem{Kind: "record", Text: "do the thing"}) || isRecordItem(workItem{Kind: "task", Text: "[FINDING] x"}) {
+		t.Fatal("explicit kind must win over the prefix guess")
+	}
+	if !isRecordItem(workItem{Text: "[FINDING] legacy"}) || isRecordItem(workItem{Text: "legacy task"}) {
+		t.Fatal("blank kind falls back to the prefix guess")
+	}
+	t.Setenv("HOME", t.TempDir())
+	os.MkdirAll(os.ExpandEnv("$HOME/.8"), 0o755)
+	writeWork([]workItem{{ID: 1, Text: "[ACT (x)] old record"}, {ID: 2, Text: "old task"}})
+	var got []workItem
+	b, _ := os.ReadFile(workFile())
+	json.Unmarshal(b, &got)
+	if got[0].Kind != "record" || got[1].Kind != "task" {
+		t.Fatalf("writeWork must stamp kind once: %+v", got)
 	}
 }

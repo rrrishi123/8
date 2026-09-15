@@ -50,6 +50,11 @@ type workItem struct {
 	// mean (lineage.go). %N is re-minted on every tmux restart; an item whose
 	// boot is older than the live server is quarantined until translated.
 	Boot string `json:"boot,omitempty"`
+	// Kind — task | record (2026-09-15, #1088). A RECORD is a message/finding/
+	// act on the record: never offered, dispatched, woken for, or verified. A
+	// TASK is claimable work with an owner and a done condition. Explicit from
+	// creation on; blank (legacy) falls back to the isRecord prefix guess.
+	Kind string `json:"kind,omitempty"`
 	// DeclinedBy — the mind that was offered this and said no (inbox.go); the
 	// item went back to the pool. Its decision is on the record, not overridden.
 	DeclinedBy string `json:"declined_by,omitempty"`
@@ -76,6 +81,15 @@ func writeWork(items []workItem) {
 		for i := range items {
 			if items[i].Boot == "" {
 				items[i].Boot = cb
+			}
+		}
+	}
+	for i := range items { // #1088: every row carries an explicit kind from now on (legacy = prefix guess, once)
+		if items[i].Kind == "" {
+			if isRecord(items[i].Text) {
+				items[i].Kind = "record"
+			} else {
+				items[i].Kind = "task"
 			}
 		}
 	}
@@ -214,6 +228,14 @@ func isRecord(text string) bool {
 // (which state, not claim) and verify items themselves (depth-1 bound, #104).
 // Composed from isRecord so the two rules can never drift apart again (#334:
 // the meta-guard had its own list, missing ACT — and both were missing DONE).
+// isRecordItem — the explicit kind wins; blank kind = the legacy prefix guess.
+func isRecordItem(it workItem) bool {
+	if it.Kind != "" {
+		return it.Kind == "record"
+	}
+	return isRecord(it.Text)
+}
+
 func noVerifySpawn(text string) bool {
 	// Case-insensitive (#733 tail 2): %9 writes verdicts "[VERIFY #747 …" — the
 	// case-sensitive check let a verify-verdict spawn a verify-of-a-verify
@@ -233,7 +255,7 @@ func pickNext(items []workItem) int {
 		if items[i].Status != "todo" {
 			continue
 		}
-		if isRecord(items[i].Text) { // records are documentation, never summoned
+		if isRecordItem(items[i]) { // records are documentation, never summoned
 			continue
 		}
 		if staleBoot(items[i]) { // old numbering: its %N means someone else now — quarantined (lineage.go)
@@ -299,7 +321,7 @@ func liveClaudePanes() []string {
 func pickNextForPane(items []workItem, pane string, done map[int64]bool) int {
 	best := -1
 	for i := range items {
-		if items[i].Status != "todo" || isRecord(items[i].Text) || staleBoot(items[i]) {
+		if items[i].Status != "todo" || isRecordItem(items[i]) || staleBoot(items[i]) {
 			continue
 		}
 		if resolveAssignee(items[i].Assignee) != pane {
@@ -398,7 +420,7 @@ func (c *collector) wake(pane string, unclaimed int) {
 func countUnclaimed(items []workItem, done map[int64]bool) int {
 	n := 0
 	for i := range items {
-		if items[i].Status != "todo" || items[i].Assignee != "" || isRecord(items[i].Text) {
+		if items[i].Status != "todo" || items[i].Assignee != "" || isRecordItem(items[i]) {
 			continue
 		}
 		ok := true
@@ -722,6 +744,7 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			Prio     *int64  `json:"prio"`     // pointer: present-but-0 is a real reorder
 			Assignee string  `json:"assignee"` // route this task to a specific tmux pane
 			Sweep    bool    `json:"sweep"`    // #736: bookkeeping close — the CLOSER declares this flip is hygiene, not a claim: no [verify] spawns, flipped_by carries the intent
+			Kind     string  `json:"kind"`     // #1088: task|record — explicit on create; {id,kind} reclassifies
 		}
 		json.NewDecoder(r.Body).Decode(&p)
 		now := time.Now().UTC().Format(time.RFC3339)
@@ -752,11 +775,18 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			if p.By == "" {
 				p.By = "operator"
 			}
-			ni := workItem{ID: max + 1, Text: p.Text, Status: "todo", By: p.By, TS: now, Deps: p.Deps, Assignee: p.Assignee, Epoch: currentEpoch()}
+			ni := workItem{ID: max + 1, Text: p.Text, Status: "todo", By: p.By, TS: now, Deps: p.Deps, Assignee: p.Assignee, Kind: p.Kind, Epoch: currentEpoch()}
 			if ni.Assignee == "" && roleUUID(p.By) != "" { // a role's own filed task routes back to it — no orphan todos
 				ni.Assignee = p.By
 			}
-			if isRecord(p.Text) { // a FINDING/ACT/AUDIT/GUARD is a record, born done — it lands on the surface but is never summoned as work
+			if p.Kind == "" {
+				if isRecord(p.Text) {
+					p.Kind = "record"
+				} else {
+					p.Kind = "task"
+				}
+			}
+			if p.Kind == "record" { // a FINDING/ACT/AUDIT/GUARD (or a declared record) is born done — it lands on the surface but is never summoned as work
 				ni.Status = "done"
 			}
 			if p.Prio != nil {
@@ -765,11 +795,14 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			items = append(items, ni)
 			ackID = ni.ID
 			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.add","params":{"id":%d,"text":%q,"by":%q,"deps":%v}}}`, ni.ID, p.Text, p.By, p.Deps))
-		} else if p.ID > 0 && (p.Prio != nil || p.Assignee != "") && p.Status == "" { // ADJUST THE QUEUE (reorder / reassign) — operator or agent
+		} else if p.ID > 0 && (p.Prio != nil || p.Assignee != "" || p.Kind != "") && p.Status == "" { // ADJUST THE QUEUE (reorder / reassign) — operator or agent
 			for i := range items {
 				if items[i].ID == p.ID {
 					if p.Prio != nil {
 						items[i].Prio = *p.Prio
+					}
+					if p.Kind == "task" || p.Kind == "record" { // #1088: reclassify
+						items[i].Kind = p.Kind
 					}
 					if p.Assignee != "" {
 						items[i].Assignee = p.Assignee
@@ -812,6 +845,9 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			// tmux. A task with an unmet dep does NOT fire (the falsifiable invariant).
 			// This is the plan driving the agent, not Anthropic's task tool: it lives
 			// in the witness, on the feed, and prompts through the real tmux seat.
+			if p.Status == "done" && p.Sweep && playlistOn() { // a sweep spawns nothing (#736) but the lane still advances
+				c.dispatchParallel(items, now)
+			}
 			if p.Status == "done" && !p.Sweep { // #736: a declared sweep spawns nothing — closing litter must not mint litter
 				// AUTO-PROPAGATION (2026-08-11): a completed claim is not DONE until it
 				// has spawned its own falsification — the queue must not drain to empty
