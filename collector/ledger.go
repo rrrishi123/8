@@ -50,6 +50,9 @@ type workItem struct {
 	// mean (lineage.go). %N is re-minted on every tmux restart; an item whose
 	// boot is older than the live server is quarantined until translated.
 	Boot string `json:"boot,omitempty"`
+	// DeclinedBy — the mind that was offered this and said no (inbox.go); the
+	// item went back to the pool. Its decision is on the record, not overridden.
+	DeclinedBy string `json:"declined_by,omitempty"`
 }
 
 // flipActor resolves who is flipping a status: declared body `by` wins, the
@@ -342,6 +345,11 @@ func (c *collector) wake(pane string, unclaimed int) {
 		wakeMu.Unlock()
 		return
 	}
+	wakeMu.Unlock()
+	if !paneIdle(pane) { // 2026-09-15: a working mind is never interrupted (inbox.go law)
+		return
+	}
+	wakeMu.Lock()
 	lastWake[pane] = time.Now()
 	wakeMu.Unlock()
 	msg := fmt.Sprintf("[8-wake] %d unclaimed tasks on the queue — nothing is assigned to you; the choice is yours by nature. You may be blank (fresh or compacted): you start from someone, so start from your own marks. Ritual: (1) yourself: curl -s '127.0.0.1:7070/attention?pane=%%25N' (your arc) + curl -s '127.0.0.1:7070/work?by=YOURNAME&fields=id,text&limit=-15' (your marks); (2) the others: curl -s 127.0.0.1:7070/identity; (3) the unclaimed: curl -s '127.0.0.1:7070/work?status=todo&fields=id,text,assignee&limit=-40' — pick what fits your material nature and the uncovered gap, then CLAIM it: curl -s -X POST 127.0.0.1:7070/work -d '{\"id\":N,\"status\":\"doing\",\"by\":\"YOURNAME\"}' and declare: curl -s -X POST 127.0.0.1:7070/identity -d '{\"uuid\":\"YOUR-SESSION-UUID\",\"name\":\"YOURNAME\"}'", unclaimed)
@@ -387,23 +395,27 @@ func (c *collector) dispatchParallel(items []workItem, now string) bool {
 	}
 	family := ledgerFamily(items) // #896: the wake reaches only minds with lineage
 	changed := false
+	p2u := paneUUIDMap()
 	for _, pane := range liveClaudePanes() {
-		if busy[pane] {
+		if busy[pane] || inboxPendingForPane(pane, p2u) > 0 { // WIP=1 counts an un-answered OFFER as held
 			continue
 		}
 		if idx := pickNextForPane(items, pane, done); idx >= 0 {
-			// #401: summon FIRST, flip only on delivery — no orphan window at
-			// all on this path; an unsummonable pane leaves the item todo for
-			// another pane (or the next round) to pick.
+			// 2026-09-15: OFFER, don't flip — the item stays todo until the mind
+			// takes it (POST /inbox take). The collector never decides for a mind
+			// and never types into a working pane (inbox.go). Legacy typed path
+			// (EIGHT_TYPE_SUMMON=1) still flips here on delivery, as before.
 			if !c.summon(items[idx], "▶ playlist: parallel") {
 				continue
 			}
-			items[idx].Status = "doing"
-			items[idx].TS = now
-			items[idx].FlippedBy = "auto:playlist"
-			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":"doing","flipped_by":"auto:playlist"}}}`, items[idx].ID))
+			if os.Getenv("EIGHT_TYPE_SUMMON") == "1" {
+				items[idx].Status = "doing"
+				items[idx].TS = now
+				items[idx].FlippedBy = "auto:playlist"
+				c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":"doing","flipped_by":"auto:playlist"}}}`, items[idx].ID))
+				changed = true
+			}
 			busy[pane] = true
-			changed = true
 		} else if family[pane] {
 			// #472 (amended #474/#475): the pane's own lane is empty but
 			// unclaimed work exists — WAKE, never assign: the router picks WHEN
@@ -467,6 +479,15 @@ func rawAssignee(rawQuery string) string {
 // so callers revert (or only flip) on the verdict, and the delayed-Enter
 // goroutine re-checks the TOCTOU tail via revertOrphan.
 func (c *collector) summon(item workItem, reason string) bool {
+	if os.Getenv("EIGHT_TYPE_SUMMON") != "1" {
+		return c.offer(item, reason) // inbox.go: the mind decides; nothing is typed into a working pane
+	}
+	return c.summonTyped(item, reason)
+}
+
+// summonTyped — LEGACY (pre-2026-09-15): type the task into the pane. Kept only
+// for rollback via EIGHT_TYPE_SUMMON=1.
+func (c *collector) summonTyped(item workItem, reason string) bool {
 	pane := resolveAssignee(item.Assignee) // role/uuid/%N -> current live pane
 	if pane == "" {
 		if wb, err := os.ReadFile(os.ExpandEnv("$HOME/.8/worker.json")); err == nil {
@@ -798,12 +819,13 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 				}
 				advanced := advanceUnblocked(items, now)
 				for _, idx := range advanced {
-					if !c.summon(items[idx], fmt.Sprintf("auto-advanced: dep #%d done", p.ID)) {
-						items[idx].Status = "todo" // #401: un-advance, re-offer next round
+					items[idx].Status = "todo" // 2026-09-15: un-advance FIRST — unblocked work is OFFERED (inbox.go), the mind flips it
+					items[idx].FlippedBy = "auto:unblocked"
+					if !c.summon(items[idx], fmt.Sprintf("unblocked: dep #%d done", p.ID)) {
 						items[idx].FlippedBy = "auto:summon-failed"
 						continue
 					}
-					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":"doing"}}}`, items[idx].ID))
+					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.unblocked","params":{"id":%d,"offered":true}}}`, items[idx].ID))
 				}
 				// PLAYLIST MODE: run the queue one-by-one like a playlist. When ON and
 				// nothing dep-advanced, pull the NEXT unblocked todo (prio order) and
