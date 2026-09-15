@@ -306,6 +306,13 @@ func (c *collector) handleInbox(w http.ResponseWriter, r *http.Request) {
 			if p.Action == "take" {
 				it.Status, it.FlippedBy, it.TS = "doing", who, now
 				it.AckedAt, it.AckedBy = now, who
+				if it.Assignee == "" { // taking a pool item makes it yours: the lane follows the decision
+					if p.Pane != "" {
+						it.Assignee = p.Pane
+					} else {
+						it.Assignee = p.UUID
+					}
+				}
 				if it.DeliveredAt == "" {
 					it.DeliveredAt, it.DeliveredTo = now, keyFor(p.UUID, p.Pane)
 				}
