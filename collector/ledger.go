@@ -110,11 +110,40 @@ func firstN(s string, n int) string {
 func playlistFile() string { return os.ExpandEnv("$HOME/.8/playlist.on") }
 func playlistOn() bool     { _, err := os.Stat(playlistFile()); return err == nil }
 
+// playlistScope — WHO the playlist may dispatch to (2026-09-15): the flag file
+// may list pane ids / session uuids after "on"; nil = every family pane (the
+// legacy all-or-nothing). Lets one lane be brought up alone and observed.
+func playlistScope() map[string]bool {
+	b, err := os.ReadFile(playlistFile())
+	if err != nil {
+		return nil
+	}
+	var scope map[string]bool
+	for _, tok := range strings.FieldsFunc(string(b), func(r rune) bool { return r == '\n' || r == ',' || r == ' ' || r == '\t' }) {
+		if tok == "on" || tok == "" {
+			continue
+		}
+		if scope == nil {
+			scope = map[string]bool{}
+		}
+		scope[tok] = true
+	}
+	return scope
+}
+
+func inScope(scope map[string]bool, pane, uuid string) bool {
+	return scope == nil || scope[pane] || (uuid != "" && scope[uuid])
+}
+
 func (c *collector) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("on"); v != "" {
 		os.MkdirAll(os.ExpandEnv("$HOME/.8"), 0o755)
 		if v == "1" {
-			os.WriteFile(playlistFile(), []byte("on"), 0o644)
+			body := "on"
+			if sc := strings.TrimSpace(r.URL.Query().Get("scope")); sc != "" { // ?scope=%9,uuid,... : only these lanes play
+				body += "\n" + strings.ReplaceAll(sc, ",", "\n")
+			}
+			os.WriteFile(playlistFile(), []byte(body), 0o644)
 			// starting the playlist: pull the first track now. Under c.tmu like
 			// every other read-modify-write of work.json (#394: this path was
 			// lock-free — dispatchParallel mutates items, and an overlapping
@@ -134,7 +163,13 @@ func (c *collector) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"playlist":%v}`, playlistOn())
+	sc := []string{}
+	for k := range playlistScope() {
+		sc = append(sc, k)
+	}
+	sort.Strings(sc)
+	scb, _ := json.Marshal(sc)
+	fmt.Fprintf(w, `{"playlist":%v,"scope":%s}`, playlistOn(), scb)
 }
 
 func anyDoing(items []workItem) bool {
@@ -396,7 +431,11 @@ func (c *collector) dispatchParallel(items []workItem, now string) bool {
 	family := ledgerFamily(items) // #896: the wake reaches only minds with lineage
 	changed := false
 	p2u := paneUUIDMap()
+	scope := playlistScope()
 	for _, pane := range liveClaudePanes() {
+		if !inScope(scope, pane, p2u[pane]) { // a lane outside the playlist's scope is neither offered nor woken
+			continue
+		}
 		if busy[pane] || inboxPendingForPane(pane, p2u) > 0 { // WIP=1 counts an un-answered OFFER as held
 			continue
 		}

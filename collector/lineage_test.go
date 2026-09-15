@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 // Replays 2026-09-14: tmux restored, every seat re-minted. Old boot A had
 // %7=conductor, %9=higgs, %11=pmf, %0=host shell (no mind). New boot B seats
@@ -61,5 +64,22 @@ func TestRemintItems(t *testing.T) {
 	setCurrentBoot("")
 	if staleBoot(workItem{Boot: "A"}) {
 		t.Fatal("no tmux -> never quarantine")
+	}
+}
+
+func TestPlaylistScope(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	os.MkdirAll(os.ExpandEnv("$HOME/.8"), 0o755)
+	if playlistScope() != nil {
+		t.Fatal("no file -> nil scope")
+	}
+	os.WriteFile(playlistFile(), []byte("on"), 0o644)
+	if playlistScope() != nil || !inScope(nil, "%1", "") {
+		t.Fatal("bare on -> everyone")
+	}
+	os.WriteFile(playlistFile(), []byte("on\n%9\nabcd-uuid"), 0o644)
+	sc := playlistScope()
+	if !inScope(sc, "%9", "") || !inScope(sc, "%77", "abcd-uuid") || inScope(sc, "%10", "other") {
+		t.Fatalf("scope wrong: %v", sc)
 	}
 }

@@ -277,14 +277,41 @@ func (c *collector) handleInbox(w http.ResponseWriter, r *http.Request) {
 			"note": "reading = delivered. Decide: POST /inbox {\"id\":N,\"action\":\"take\"|\"decline\",\"uuid\":\"...\",\"by\":\"name\"}"})
 	case http.MethodPost:
 		var p struct {
-			ID     int64  `json:"id"`
-			Action string `json:"action"`
-			UUID   string `json:"uuid"`
-			Pane   string `json:"pane"`
-			By     string `json:"by"`
+			ID       int64  `json:"id"`
+			Action   string `json:"action"`
+			UUID     string `json:"uuid"`
+			Pane     string `json:"pane"`
+			By       string `json:"by"`
+			Assignee string `json:"assignee"` // offer only: whose inbox (role/%N/uuid); defaults to the item's own assignee
 		}
-		if json.NewDecoder(r.Body).Decode(&p) != nil || p.ID == 0 || (p.Action != "take" && p.Action != "decline") {
-			http.Error(w, `{"error":"need id + action take|decline"}`, 400)
+		if json.NewDecoder(r.Body).Decode(&p) != nil || p.ID == 0 || (p.Action != "take" && p.Action != "decline" && p.Action != "offer") {
+			http.Error(w, `{"error":"need id + action take|decline|offer"}`, 400)
+			return
+		}
+		if p.Action == "offer" { // a mind hands an item to another mind's inbox — no playlist, no typing
+			c.tmu.Lock()
+			var items []workItem
+			if b, err := os.ReadFile(workFile()); err == nil {
+				json.Unmarshal(b, &items)
+			}
+			var it *workItem
+			for i := range items {
+				if items[i].ID == p.ID {
+					if p.Assignee != "" && items[i].Assignee != p.Assignee {
+						items[i].Assignee = p.Assignee
+						writeWork(items)
+					}
+					cp := items[i]
+					it = &cp
+				}
+			}
+			c.tmu.Unlock()
+			if it == nil {
+				http.Error(w, `{"error":"no such item"}`, 404)
+				return
+			}
+			ok := c.offer(*it, "offered by "+firstNonEmpty(firstNonEmpty(p.By, p.UUID), firstNonEmpty(p.Pane, "a sibling")))
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": ok, "action": "offer", "item": it})
 			return
 		}
 		who := p.By
