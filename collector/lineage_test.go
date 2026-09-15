@@ -153,3 +153,17 @@ func TestSessionIDFor(t *testing.T) {
 		t.Fatal("sessionIDFor wrong")
 	}
 }
+
+func TestParseBudgetHeaders(t *testing.T) {
+	now := time.Unix(1789500000, 0)
+	h := map[string]string{
+		"anthropic-ratelimit-unified-5h-utilization": "0.21", "anthropic-ratelimit-unified-5h-status": "allowed", "anthropic-ratelimit-unified-5h-reset": "1789515000",
+		"anthropic-ratelimit-unified-7d-utilization": "0.38", "anthropic-ratelimit-unified-7d-status": "allowed", "anthropic-ratelimit-unified-7d-reset": "1789974000",
+		"anthropic-ratelimit-unified-representative-claim": "five_hour", "anthropic-ratelimit-unified-overage-status": "rejected",
+		"anthropic-ratelimit-unified-reset": "1789515000", "request-id": "req_x",
+	}
+	w, claim, ov := parseBudgetHeaders(h, now)
+	if len(w) != 2 || w["5h"].Utilization != 0.21 || w["5h"].ResetInS != 15000 || w["7d"].Status != "allowed" || claim != "five_hour" || ov != "rejected" {
+		t.Fatalf("parsed wrong: %+v %s %s", w, claim, ov)
+	}
+}

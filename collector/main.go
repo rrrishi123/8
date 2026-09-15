@@ -4423,9 +4423,11 @@ func main() {
 	mux.HandleFunc("/lineage", c.handleLineage)
 	mux.HandleFunc("/inbox", c.handleInbox)
 	mux.HandleFunc("/panes/inspect", c.handlePaneInspect)
-	mux.HandleFunc("/panes/usage", c.handlePaneUsage) // the session's measured token weight, turn by turn (inspect.go) // evaluate inside a pane's live process via its BUN_INSPECT socket (inspect.go)          // the mind pulls its offers and decides take|decline (inbox.go)      // %N per tmux boot -> uuid; quarantined stale rows (lineage.go)          // #277 witnessed pane roster (first_seen per pane)
-	mux.HandleFunc("/panes/send", c.handlePanesSend)  // type one prompt into selected panes / all live claude at once — the operator+agent fan-out nerve
-	mux.HandleFunc("/sql", c.handleSQL)               // #280 the DB primitive: a CALL dialect over eight.db (modernc, witnessed; #315)
+	mux.HandleFunc("/panes/usage", c.handlePaneUsage)
+	mux.HandleFunc("/panes/tap", c.handlePaneTap)    // make an inspected pane a request/response sensor (budget.go)
+	mux.HandleFunc("/budget", c.handleBudget)        // the unified rate limit, read from tapped responses; gates the playlist // the session's measured token weight, turn by turn (inspect.go) // evaluate inside a pane's live process via its BUN_INSPECT socket (inspect.go)          // the mind pulls its offers and decides take|decline (inbox.go)      // %N per tmux boot -> uuid; quarantined stale rows (lineage.go)          // #277 witnessed pane roster (first_seen per pane)
+	mux.HandleFunc("/panes/send", c.handlePanesSend) // type one prompt into selected panes / all live claude at once — the operator+agent fan-out nerve
+	mux.HandleFunc("/sql", c.handleSQL)              // #280 the DB primitive: a CALL dialect over eight.db (modernc, witnessed; #315)
 	mux.HandleFunc("/watch", c.handleWatch)
 	mux.HandleFunc("/timeline", c.handleTimeline)     // #13 the interleaved cross-substrate timeline
 	mux.HandleFunc("/provenance", c.handleProvenance) // #29 actor→atom→surface flow (declared X-8-Actor)

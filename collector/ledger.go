@@ -452,6 +452,9 @@ func (c *collector) dispatchParallel(items []workItem, now string) bool {
 	}
 	family := ledgerFamily(items) // #896: the wake reaches only minds with lineage
 	changed := false
+	if !c.budgetAllows() { // budget.go: a rejected/over-cap unified window pauses dispatch; it resumes after the reset by itself
+		return false
+	}
 	p2u := paneUUIDMap()
 	scope := playlistScope()
 	for _, pane := range liveClaudePanes() {
