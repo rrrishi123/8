@@ -167,3 +167,9 @@ func TestParseBudgetHeaders(t *testing.T) {
 		t.Fatalf("parsed wrong: %+v %s %s", w, claim, ov)
 	}
 }
+
+func TestFirst8(t *testing.T) {
+	if first8("12444bc8-4325") != "12444bc8" || first8("") != "—" || first8("abc") != "abc" {
+		t.Fatal("first8 wrong")
+	}
+}

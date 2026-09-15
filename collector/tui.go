@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -37,7 +38,43 @@ var (
 	tuiByPane = map[string]*tuiState{}
 	cappedRe  = regexp.MustCompile(`(?i)adjust monthly spend limit|usage limit|rate limit|out of (credits?|tokens)|upgrade to (increase|continue)|limit reached`)
 	resetsRe  = regexp.MustCompile(`(?i)resets?\s+(at\s+|in\s+)?[0-9][0-9:apm\s]*[0-9apm]`)
+	// the working-word: Claude Code's whimsical gerund on the spinner line
+	// ("✽ Enchanting…", "✻ Discombobulating…"). A mind's palette — you can only
+	// read a sibling's words by watching its pane work (#mind naming).
+	wordRe = regexp.MustCompile("([A-Z][a-z]{3,})\u2026")
 )
+
+var (
+	wordsMu     sync.Mutex
+	wordsByPane = map[string]map[string]int{} // pane -> word -> times seen
+)
+
+// wordsOf — the working-words witnessed in a pane, most-seen first (max 8).
+func wordsOf(pane string) []string {
+	wordsMu.Lock()
+	defer wordsMu.Unlock()
+	m := wordsByPane[pane]
+	if len(m) == 0 {
+		return nil
+	}
+	type kv struct {
+		w string
+		n int
+	}
+	var ks []kv
+	for w, n := range m {
+		ks = append(ks, kv{w, n})
+	}
+	sort.Slice(ks, func(i, j int) bool { return ks[i].n > ks[j].n })
+	out := make([]string, 0, len(ks))
+	for i, k := range ks {
+		if i >= 8 {
+			break
+		}
+		out = append(out, k.w)
+	}
+	return out
+}
 
 // classifyScreen — PURE: the state a screen text implies, and its reset note.
 func classifyScreen(screen, cmd string) (state, resets string) {
@@ -85,6 +122,17 @@ func probeTUI(panes []tmuxPaneRec, now time.Time) {
 		}
 		st.State, st.Resets, st.ProbedAt = state, resets, now.UTC().Format(time.RFC3339)
 		tuiMu.Unlock()
+		if state == "working" {
+			if mm := wordRe.FindAllStringSubmatch(string(out), -1); len(mm) > 0 {
+				word := mm[len(mm)-1][1] // the last gerund on screen = the current one
+				wordsMu.Lock()
+				if wordsByPane[p.ID] == nil {
+					wordsByPane[p.ID] = map[string]int{}
+				}
+				wordsByPane[p.ID][word]++
+				wordsMu.Unlock()
+			}
+		}
 	}
 	tuiMu.Lock()
 	for id := range tuiByPane {
@@ -93,6 +141,13 @@ func probeTUI(panes []tmuxPaneRec, now time.Time) {
 		}
 	}
 	tuiMu.Unlock()
+	wordsMu.Lock()
+	for id := range wordsByPane {
+		if !live[id] {
+			delete(wordsByPane, id)
+		}
+	}
+	wordsMu.Unlock()
 }
 
 // tuiOf — a snapshot for one pane (state + staleness), zero value when unprobed.
