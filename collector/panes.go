@@ -50,6 +50,7 @@ func (c *collector) witnessPanes() {
 	c.pmu.Unlock()
 	probeTUI(tmuxPanes(), time.Now()) // #897: state + staleness per pane, every tick
 	probeProcs(time.Now())            // pid / rss / inspector / context tokens, every ~30s (inspect.go)
+	c.autoTap()                       // arm the request tap on every inspected pane (budget.go) — budget flows without a manual /panes/tap
 	c.witnessLineage(now)             // boot epoch + %N->uuid lineage + re-mint of stale ledger rows (lineage.go)
 	c.syncPaneNames(time.Now())       // reflect names onto pane borders; honour user-owned @mind (names.go)
 }

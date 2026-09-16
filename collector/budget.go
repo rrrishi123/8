@@ -189,7 +189,12 @@ func (c *collector) handleBudget(w http.ResponseWriter, r *http.Request) {
 		names = append(names, k)
 	}
 	sort.Strings(names)
-	_ = json.NewEncoder(w).Encode(map[string]any{"budget": b, "windows": names, "playlist_allowed": !b.Gated})
+	age := budgetAgeSeconds(b)
+	tapped := 0
+	tappedPids.Range(func(_, _ any) bool { tapped++; return true })
+	_ = json.NewEncoder(w).Encode(map[string]any{"budget": b, "windows": names, "playlist_allowed": !b.Gated,
+		"observed_age_s": age, "sensors_armed": tapped,
+		"freshness": "budget refreshes only on a live /v1/messages call from a tapped pane; an all-idle fleet shows last-known (no consumption either)"})
 }
 
 // tapJS — installed inside an inspected pane: logs every API request (headers
@@ -252,4 +257,48 @@ func hasUnified(h map[string]string) bool {
 		}
 	}
 	return false
+}
+
+// ── AUTO-TAP (2026-09-16) — every inspected pane is a sensor, no manual step ──
+// The tap is in-process JS: it dies when the claude process restarts (rebirth,
+// relaunch) and a new pane is born untapped. This installs the tap on every
+// inspected pane whose pid we have not tapped yet, each probe tick. tapJS is
+// idempotent (returns early if __tap exists), so a collector restart re-arms
+// harmlessly. Result: budget flows whenever ANY pane makes a /v1/messages call.
+var tappedPids sync.Map // pid -> true
+
+func (c *collector) autoTap() {
+	procMu.Lock()
+	type pw struct {
+		pid int
+		ws  string
+	}
+	var todo []pw
+	for _, pf := range procByPane {
+		if pf.Inspector != "" && pf.Pid > 0 {
+			if _, done := tappedPids.Load(pf.Pid); !done {
+				todo = append(todo, pw{pf.Pid, pf.Inspector})
+			}
+		}
+	}
+	procMu.Unlock()
+	for _, t := range todo {
+		if _, err := wsEval(t.ws, tapJS); err == nil {
+			tappedPids.Store(t.pid, true)
+		}
+	}
+}
+
+// budgetAgeSeconds — how stale the newest budget observation is (−1 if none).
+func budgetAgeSeconds(b *budget) int64 {
+	if b == nil {
+		return -1
+	}
+	t, err := time.Parse(time.RFC3339, strings.Replace(b.ObservedAt, ".000Z", "Z", 1))
+	if err != nil {
+		if t, err = time.Parse("2006-01-02T15:04:05.000Z", b.ObservedAt); err != nil {
+			return -1
+		}
+	}
+	return int64(time.Since(t).Seconds())
 }
