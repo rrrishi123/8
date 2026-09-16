@@ -358,7 +358,10 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
       // the list, because this handler preventDefault'd everything but the live
       // image. Now any floating panel — instruments, feed, minimap — keeps its
       // own scroll; only the world (the "actual thing loaded") pans/zooms.)
-      if ((e.target as HTMLElement).closest('.vp-interactive, .instruments, .wire-log, .rec-bar, .minimap, .persp-bar')) return;
+      // each card/panel body scrolls ITSELF, not the map (fix: scrolling a tmux
+      // pane card used to pan the canvas — now .vp-text/.vp-tmux and the floating
+      // panels keep their own wheel, visibly distinct from the world's pan/zoom).
+      if ((e.target as HTMLElement).closest('.vp-text, .vp-tmux, .canvas-live, .canvas-send, .pane-live, .pl-table, .dpane, .vp-interactive, .instruments, .wire-log, .rec-bar, .minimap, .persp-bar')) return;
       e.preventDefault();
       if (e.ctrlKey || e.metaKey) {
         const r = el.getBoundingClientRect(); const mx = e.clientX - r.left, my = e.clientY - r.top;

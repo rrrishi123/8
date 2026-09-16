@@ -658,3 +658,18 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 
 .hud-refresh { background: none; border: 1px solid var(--line,#333); border-radius: 8px; color: inherit; cursor: pointer; font-size: 11px; padding: 0 5px; line-height: 1.4; }
 .hud-refresh:hover { background: #ffffff18; }
+
+/* VISIBLE, DISTINCT scroll per card/panel (fix: a card's scroll is its own, not the map's) */
+.vp-text, .vp-tmux, .canvas-live, .canvas-send, .pane-live, .pl-table {
+  scrollbar-width: thin; scrollbar-color: #4a5a6a #0b0f1400;
+}
+.vp-text::-webkit-scrollbar, .vp-tmux::-webkit-scrollbar, .canvas-live::-webkit-scrollbar,
+.canvas-send::-webkit-scrollbar, .pane-live::-webkit-scrollbar { width: 10px; height: 10px; }
+.vp-text::-webkit-scrollbar-thumb, .vp-tmux::-webkit-scrollbar-thumb, .canvas-live::-webkit-scrollbar-thumb,
+.canvas-send::-webkit-scrollbar-thumb, .pane-live::-webkit-scrollbar-thumb {
+  background: #4a5a6a; border-radius: 6px; border: 2px solid transparent; background-clip: padding-box;
+}
+.vp-text::-webkit-scrollbar-thumb:hover, .vp-tmux::-webkit-scrollbar-thumb:hover { background: #6a8098; }
+.vp-text::-webkit-scrollbar-track, .vp-tmux::-webkit-scrollbar-track { background: #0b0f1466; }
+/* the whole tmux pane body scrolls (was clipped at height:100%) */
+.vp-tmux { overflow: auto; }
