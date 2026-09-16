@@ -196,3 +196,79 @@ func (c *collector) handleCompose(w http.ResponseWriter, r *http.Request) {
 		"note": "resume this uuid to bring up a mind at the chosen context; floor ≈ 33k (system+tools+memory+seed)",
 	})
 }
+
+// ── DELEGATE (2026-09-16) — cheap work in a FRESH context ─────────────────────
+// My own turns re-send the whole transcript: ~357k tokens billed per turn even
+// when 1k is new. A fresh `claude -p` starts at the ~31k floor, does one task,
+// exits — ~10x cheaper. So isolated work should be DELEGATED, not done inline.
+// This spawns `claude -p <task> --output-format json` (its own new session), and
+// returns the result WITH the usage it billed, so the fleet routes by cost and
+// the budget/phase governs whether to spend. Like kosaten's delegate_work, but
+// first-party and budget-aware. BUN_INSPECT is stripped (else port collision).
+type delegateReq struct {
+	Task     string `json:"task"`
+	Cwd      string `json:"cwd"`
+	TimeoutS int    `json:"timeout_s"`
+}
+
+func (c *collector) handleDelegate(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != "POST" {
+		http.Error(w, `{"error":"POST {task,cwd,timeout_s}"}`, 405)
+		return
+	}
+	var req delegateReq
+	if json.NewDecoder(r.Body).Decode(&req) != nil || strings.TrimSpace(req.Task) == "" {
+		http.Error(w, `{"error":"need a task"}`, 400)
+		return
+	}
+	if req.Cwd == "" {
+		req.Cwd = os.ExpandEnv("$HOME/Desktop/repos")
+	}
+	if req.TimeoutS <= 0 || req.TimeoutS > 900 {
+		req.TimeoutS = 300
+	}
+	// budget guard: never spend when the hard cap has gated dispatch.
+	if b := c.budgetNow(); b != nil && b.Gated {
+		http.Error(w, fmt.Sprintf(`{"error":"budget gated: %s"}`, b.Reason), 429)
+		return
+	}
+	start := time.Now()
+	ctx, cancel := contextWithTimeout(req.TimeoutS)
+	defer cancel()
+	cmd := execCommandContext(ctx, "claude", "-p", req.Task, "--output-format", "json", "--dangerously-skip-permissions")
+	cmd.Dir = req.Cwd
+	cmd.Env = envWithout(os.Environ(), "BUN_INSPECT")
+	cmd.Stdin = devNull()
+	out, err := cmd.Output()
+	secs := time.Since(start).Seconds()
+	var env struct {
+		Result      string          `json:"result"`
+		SessionID   string          `json:"session_id"`
+		IsError     bool            `json:"is_error"`
+		TotalCost   float64         `json:"total_cost_usd"`
+		Usage       json.RawMessage `json:"usage"`
+		usageParsed struct {
+			In    int64 `json:"input_tokens"`
+			Read  int64 `json:"cache_read_input_tokens"`
+			Write int64 `json:"cache_creation_input_tokens"`
+			Out   int64 `json:"output_tokens"`
+		}
+	}
+	_ = json.Unmarshal(out, &env)
+	json.Unmarshal(env.Usage, &env.usageParsed)
+	cost := env.usageParsed.In + env.usageParsed.Read + env.usageParsed.Write
+	resp := map[string]any{
+		"result": env.Result, "session_id": env.SessionID, "is_error": env.IsError,
+		"cost_tokens": cost, "cost_usd": env.TotalCost, "seconds": int(secs),
+		"note": "fresh claude -p floor context; ~10x cheaper than an inline turn on a large session",
+	}
+	if err != nil && env.Result == "" {
+		resp["error"] = err.Error()
+		if len(out) > 0 {
+			resp["raw"] = string(out[:min(len(out), 500)])
+		}
+	}
+	c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.delegate","params":{"session":%q,"cost_tokens":%d,"seconds":%d}}}`, env.SessionID, cost, int(secs)))
+	_ = json.NewEncoder(w).Encode(resp)
+}
