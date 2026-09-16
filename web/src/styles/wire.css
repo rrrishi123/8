@@ -655,3 +655,6 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .persp-bar .hud .hud-bar { width: 100px; height: 9px; }
 .statusline .hud { font-size: 11.5px; }
 .pl-ago { opacity: .55; font-style: italic; }
+
+.hud-refresh { background: none; border: 1px solid var(--line,#333); border-radius: 8px; color: inherit; cursor: pointer; font-size: 11px; padding: 0 5px; line-height: 1.4; }
+.hud-refresh:hover { background: #ffffff18; }

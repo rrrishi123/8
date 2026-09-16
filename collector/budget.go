@@ -333,3 +333,25 @@ func budgetAgeSeconds(b *budget) int64 {
 	}
 	return int64(time.Since(t).Seconds())
 }
+
+// handleBudgetPoke — POST /budget/poke: fire ONE trivial claude -p call so a
+// fresh anthropic-ratelimit-unified-* header arrives, then return the renewed
+// budget. The refresh button the operator asked for: "renewed even by a simple
+// command like Reply with exactly ok". Cheap (~31k floor), witnessed on the wire.
+func (c *collector) handleBudgetPoke(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	ctx, cancel := contextWithTimeout(60)
+	defer cancel()
+	cmd := execCommandContext(ctx, "claude", "-p", "reply with exactly: ok", "--dangerously-skip-permissions")
+	cmd.Dir = os.ExpandEnv("$HOME/Desktop/repos")
+	cmd.Env = envWithout(os.Environ(), "BUN_INSPECT")
+	cmd.Stdin = devNull()
+	_ = cmd.Run()
+	budgetMu.Lock()
+	budgetLastAt = time.Time{} // force a re-read past the 10s cache
+	budgetMu.Unlock()
+	b := c.budgetNow()
+	age := budgetAgeSeconds(b)
+	c.publish(`{"session":"work","origin":"COLLECTOR","frame":{"method":"budget.poke","params":{}}}`)
+	_ = json.NewEncoder(w).Encode(map[string]any{"budget": b, "observed_age_s": age})
+}

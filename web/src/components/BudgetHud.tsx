@@ -15,6 +15,8 @@ const hhm = (s?: number) => s == null ? '' : s > 3600 ? `${Math.floor(s / 3600)}
 
 export function BudgetHud() {
   const [r, setR] = useState<Resp | null>(null);
+  const [poking, setPoking] = useState(false);
+  const poke = async () => { if (poking) return; setPoking(true); try { const j = await (await fetch(`${BASE}/budget/poke`, { method: 'POST' })).json(); setR((p) => ({ ...(p as Resp), ...j })); } catch { /* */ } setPoking(false); };
   useEffect(() => {
     let dead = false;
     const tick = () => fetch(`${BASE}/budget`).then((x) => x.json()).then((j) => { if (!dead) setR(j); }).catch(() => {});
@@ -37,6 +39,7 @@ export function BudgetHud() {
       </span>
       <span className="hud-num">5h {(five*100).toFixed(0)}%</span>
       <span className="hud-num dim">7d {(sevenD*100).toFixed(0)}%</span>
+      <button className="hud-refresh" title="renew the reading (fires a trivial call so fresh rate-limit headers arrive)" onClick={(e) => { e.stopPropagation(); poke(); }}>{poking ? "…" : "⟳"}</button>
       {b.gated && <span className="hud-gated">⏸ resets {hhm(Object.values(b.windows).find((w) => w.status === 'rejected')?.reset_in_s)}</span>}
       {stale && <span className="hud-stale" title="no recent API traffic — last-known">·stale {hhm(r?.observed_age_s)}</span>}
     </span>

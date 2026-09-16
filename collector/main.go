@@ -4426,6 +4426,7 @@ func main() {
 	mux.HandleFunc("/panes/usage", c.handlePaneUsage)
 	mux.HandleFunc("/panes/tap", c.handlePaneTap) // make an inspected pane a request/response sensor (budget.go)
 	mux.HandleFunc("/budget", c.handleBudget)
+	mux.HandleFunc("/budget/poke", c.handleBudgetPoke) // fire a trivial call to renew the rate-limit headers (budget.go)
 	mux.HandleFunc("/mind", c.handleMind)
 	mux.HandleFunc("/compose", c.handleCompose)
 	mux.HandleFunc("/delegate", c.handleDelegate)    // cheap work in a fresh claude -p context, with billed cost (compose.go)      // vertical-scaling knob: mint a session at a CHOSEN context (compose.go)            // identity contract: seat=address, name=identity, uuid/%N/pid=bindings (mind.go)        // the unified rate limit, read from tapped responses; gates the playlist // the session's measured token weight, turn by turn (inspect.go) // evaluate inside a pane's live process via its BUN_INSPECT socket (inspect.go)          // the mind pulls its offers and decides take|decline (inbox.go)      // %N per tmux boot -> uuid; quarantined stale rows (lineage.go)          // #277 witnessed pane roster (first_seen per pane)
