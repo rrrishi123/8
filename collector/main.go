@@ -4231,7 +4231,7 @@ func cors(allow map[string]bool, h http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Add("Vary", "Origin")
 		}
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-8-Token, Authorization")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-8-Token, X-8-Actor, Authorization")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Expose-Headers", "X-8-Witness, X-8-Ledger, X-8-Ledger-Id, X-8-DMs, X-8-Physics, X-8-Replayable, X-8-Focus-Seq, X-8-Focus-Context")
 		if r.Method == http.MethodOptions {
