@@ -4419,6 +4419,7 @@ func main() {
 	mux.HandleFunc("/work", c.handleWork)
 	mux.HandleFunc("/work/next", c.handleWorkNext)
 	mux.HandleFunc("/work/playlist", c.handlePlaylist)
+	mux.HandleFunc("/work/by-pane", c.handleWorkByPane) // distributed ledger keyed on PANE NUMBERS: per pane doing-now vs next (work_bypane.go)
 	mux.HandleFunc("/panes", c.handlePanes)
 	mux.HandleFunc("/lineage", c.handleLineage)
 	mux.HandleFunc("/inbox", c.handleInbox)
