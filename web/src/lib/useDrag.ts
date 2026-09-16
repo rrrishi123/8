@@ -9,7 +9,7 @@ export function useDrag(ref: React.RefObject<HTMLElement | null>, key: string, d
     const el = ref.current;
     if (!el) return;
     let pos = def;
-    try { const s = localStorage.getItem('drag:' + key); if (s) pos = JSON.parse(s); } catch { /* private mode */ }
+    try { const s = localStorage.getItem('drag2:' + key); if (s) pos = JSON.parse(s); } catch { /* private mode */ }
     const clamp = (p: { x: number; y: number }) => ({
       x: Math.max(0, Math.min(p.x, window.innerWidth - 80)),
       y: Math.max(0, Math.min(p.y, window.innerHeight - 40)),
@@ -44,7 +44,7 @@ export function useDrag(ref: React.RefObject<HTMLElement | null>, key: string, d
       handle.style.cursor = 'grab';
       document.body.style.userSelect = '';
       try { handle.releasePointerCapture(e.pointerId); } catch { /* */ }
-      try { localStorage.setItem('drag:' + key, JSON.stringify(clamp(pos))); } catch { /* */ }
+      try { localStorage.setItem('drag2:' + key, JSON.stringify(clamp(pos))); } catch { /* */ }
     };
     handle.addEventListener('pointerdown', down);
     handle.addEventListener('pointermove', move);
@@ -56,3 +56,7 @@ export function useDrag(ref: React.RefObject<HTMLElement | null>, key: string, d
     };
   }, [ref, key, def.x, def.y]);
 }
+
+
+// resetDrag — forget every saved panel position (the ⌂ layout reset).
+export function resetDrag() { try { Object.keys(localStorage).filter(k => k.startsWith('drag2:')).forEach(k => localStorage.removeItem(k)); } catch { /* */ } }

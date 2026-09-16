@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { PaneCockpit } from './PaneCockpit';
 import { PaneLive } from './PaneLive';
 import { BudgetHud } from './BudgetHud';
-import { useDrag } from '../lib/useDrag';
+import { useDrag, resetDrag } from '../lib/useDrag';
 import { Viewport } from './Viewport';
 import { Instruments } from './Instruments';
 import { Resources } from './Resources';
@@ -460,7 +460,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
         <button className={theater ? 'on' : ''} onClick={() => setTheater((v) => !v)} title="watch the pinned card at the real tab's full size (1:1) — stay on 8, see the action live">⛶ watch</button>
         <button className={sendOpen ? 'on' : ''} onClick={() => setSendOpen((v) => !v)} title="broadcast one prompt to selected/all live claude panes (POST /panes/send)">📣 send</button>
         <button className={liveOpen ? 'on' : ''} onClick={() => setLiveOpen((v) => !v)} title="one pane as a pod: measured context per turn (usage), process, inspector">🫀 live</button>
-        <button onClick={() => setPosBy({})} title="forget operator positions — return to the deterministic layout">⌂ layout</button>
+        <button onClick={() => { setPosBy({}); resetDrag(); location.reload(); }} title="forget operator positions — return to the deterministic layout">⌂ layout</button>
         <span className="persp-z">{stacks.length} decks · {cells.length} cards · {Math.round(cam.z * 100)}%</span>
         <BudgetHud />
       </div>
