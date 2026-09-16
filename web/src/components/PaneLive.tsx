@@ -14,10 +14,12 @@ type Usage = { pane: string; session: string; jsonl: string; jsonl_bytes: number
 
 const k = (n?: number) => n == null ? '·' : n >= 1000 ? `${(n / 1000).toFixed(n >= 100000 ? 0 : 1)}k` : String(n);
 const hhmm = (ts?: string) => ts ? ts.slice(11, 19) : '·';
+const ago = (ts?: string) => { if (!ts) return ''; const s = (Date.now() - Date.parse(ts)) / 1000; return s < 90 ? 'now' : s < 5400 ? `${Math.round(s/60)}m ago` : s < 172800 ? `${Math.round(s/3600)}h ago` : `${Math.round(s/86400)}d ago`; };
 
-export function PaneLive({ initial = '%24' }: { initial?: string }) {
+export function PaneLive({ initial = '' }: { initial?: string }) {
   const [panes, setPanes] = useState<PaneRow[]>([]);
   const [pane, setPane] = useState(initial);
+  // pick a live inspected pane on first load if none chosen (fixes: default %24 is gone after rebirth → looked empty)
   const [usage, setUsage] = useState<Usage | null>(null);
   const [insp, setInsp] = useState<Record<string, unknown> | null>(null);
   const [inspErr, setInspErr] = useState('');
@@ -89,7 +91,7 @@ export function PaneLive({ initial = '%24' }: { initial?: string }) {
         <span>{row?.claude_uuid && usage?.session && row.claude_uuid !== usage.session ? '⚠ argv≠session' : ''}</span>
       </div>
       <div className="pl-block">
-        <div className="pl-title">measured context · last turn {hhmm(last?.ts)}</div>
+        <div className="pl-title">measured context · last turn {hhmm(last?.ts)} <span className="pl-ago">{ago(last?.ts)}</span></div>
         {last ? (
           <div className="pl-usage">
             <b title="input + cache_read + cache_creation, as billed">{k(last.context_tokens)}</b>
