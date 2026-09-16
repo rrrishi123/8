@@ -4,8 +4,9 @@ import { useEffect } from 'react';
 // persisting its position per key in localStorage. Pointer-based, viewport-
 // clamped, so a panel can't be dragged off-screen. The fix for #panels-overlap:
 // floating panels were position:fixed and stacked; now the operator moves them.
-export function useDrag(ref: React.RefObject<HTMLElement | null>, key: string, def: { x: number; y: number }) {
+export function useDrag(ref: React.RefObject<HTMLElement | null>, key: string, def: { x: number; y: number }, enabled = true) {
   useEffect(() => {
+    if (!enabled) return;
     const el = ref.current;
     if (!el) return;
     let pos = def;
@@ -54,7 +55,7 @@ export function useDrag(ref: React.RefObject<HTMLElement | null>, key: string, d
       handle.removeEventListener('pointermove', move);
       handle.removeEventListener('pointerup', up);
     };
-  }, [ref, key, def.x, def.y]);
+  }, [ref, key, def.x, def.y, enabled]);
 }
 
 
