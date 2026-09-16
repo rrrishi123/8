@@ -36,8 +36,6 @@ type mindView struct {
 	Pid     int      `json:"pid,omitempty"` // current process — dies on exit
 	Ctx     int64    `json:"context_tokens,omitempty"`
 	State   string   `json:"state,omitempty"`
-	Words   []string `json:"words_seen,omitempty"`     // gerunds witnessed while it worked — the naming palette
-	Suggest string   `json:"suggested_name,omitempty"` // top unused word, when unnamed
 	Issues  []string `json:"issues,omitempty"`
 }
 
@@ -147,28 +145,17 @@ func (c *collector) resolveMinds(heal bool) []mindView {
 		} else if sn := seatName[p.Loc]; sn != "" && sn != name {
 			issues = append(issues, "seat-moved: "+name+" is in "+sn+"'s seat "+p.Loc)
 		}
-		addr := name
-		if addr == "" {
-			addr = "seat:" + p.Loc
-			issues = append(issues, "unnamed: addressable only by seat/uuid — a human must name it")
-		}
+		// IDENTITY IS THE PANE NUMBER (2026-09-16, operator's call): a pane is
+		// addressed by its %N, full stop. A user-set name is only a friendly
+		// LABEL; we never derive a name from working-words ("what was seen").
+		addr := p.ID
 		if uuid != "" {
 			uuidCount[uuid]++
-		}
-		words := wordsOf(p.ID)
-		suggest := ""
-		if name == "" {
-			for _, wd := range words { // first witnessed word not already a live name
-				if roleUUID(strings.ToLower(wd)) == "" {
-					suggest = strings.ToLower(wd)
-					break
-				}
-			}
 		}
 		mins = append(mins, mindView{
 			Name: name, Address: addr, Seat: p.Loc, Pane: p.ID, UUID: uuid,
 			Pid: pf.Pid, Ctx: pf.CtxTokens, State: tuiOf(p.ID).State,
-			Words: words, Suggest: suggest, Issues: issues,
+			Issues: issues,
 		})
 	}
 	// second pass: forks (two live panes on one uuid)
