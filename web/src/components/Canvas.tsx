@@ -63,8 +63,8 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   const [theater, setTheater] = useState(false);
   const liveRef = useRef<HTMLDivElement>(null);
   const sendRef = useRef<HTMLDivElement>(null);
-  useDrag(liveRef, 'canvas-live', { x: Math.max(20, window.innerWidth - 400), y: 70 });
-  useDrag(sendRef, 'canvas-send', { x: 20, y: 90 });
+  useDrag(liveRef, 'canvas-live', { x: 20, y: 80 });
+  useDrag(sendRef, 'canvas-send', { x: 20, y: 470 });
   const [liveOpen, setLiveOpen] = useState(false); // pane · live: one pane as a pod — measured tokens, process, inspector
   const [sendOpen, setSendOpen] = useState(false); // #814: the fan-out nerve, reachable from canvas mode too // watch the pinned card at the real tab's full size (1:1)
   useEffect(() => { if (!theater) return; const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setTheater(false); }; window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey); }, [theater]);

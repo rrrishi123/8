@@ -1,3 +1,4 @@
+import { useDrag } from '../lib/useDrag';
 import { useEffect, useRef, useState } from 'react';
 import { innerHost, type InnerHost, peers, type Peer } from '../lib/api';
 import { Matrix } from './Matrix';
@@ -81,9 +82,11 @@ export function Instruments() {
   }, [open]);
   const tog = (k: string) => setOpen((cur) => (cur === k ? '' : k));
 
+  const instRef = useRef<HTMLDivElement>(null);
+  useDrag(instRef, 'instruments', { x: window.innerWidth - 320, y: 10 });
   return (
-    <div className="instruments">
-      <div className="inst-chips">
+    <div ref={instRef} className="instruments">
+      <div className="inst-chips drag-handle" title="drag to move this panel">
         <button className={`inst-chip${open === 'clock' ? ' on' : ''}`} onClick={() => tog('clock')} title="experiri — the witness's staleness, on display">⏱ {now}</button>
         <button className={`inst-chip${open === 'work' ? ' on' : ''}`} onClick={() => tog('work')} title="shared work surface">✓ {openCount}</button>
         <button className={`inst-chip${open === 'matrix' ? ' on' : ''}`} onClick={() => tog('matrix')} title="surfaces × senses — the map of the unfound">▦</button>

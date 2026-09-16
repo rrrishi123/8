@@ -30,6 +30,7 @@ export function useDrag(ref: React.RefObject<HTMLElement | null>, key: string, d
       start = { x: pos.x, y: pos.y, px: e.clientX, py: e.clientY };
       handle.style.cursor = 'grabbing';
       handle.setPointerCapture(e.pointerId);
+      document.body.style.userSelect = 'none';
       e.preventDefault();
     };
     const move = (e: PointerEvent) => {
@@ -41,6 +42,7 @@ export function useDrag(ref: React.RefObject<HTMLElement | null>, key: string, d
       if (!start) return;
       start = null;
       handle.style.cursor = 'grab';
+      document.body.style.userSelect = '';
       try { handle.releasePointerCapture(e.pointerId); } catch { /* */ }
       try { localStorage.setItem('drag:' + key, JSON.stringify(clamp(pos))); } catch { /* */ }
     };
