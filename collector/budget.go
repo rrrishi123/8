@@ -41,6 +41,14 @@ type budget struct {
 	Gated      bool                    `json:"gated"`
 	Reason     string                  `json:"reason,omitempty"`
 	Cap        float64                 `json:"cap"`
+	// the FLIP SWITCH (2026-09-16): heavy experiments/research run while the 5h
+	// window is below ResearchCeil (default 0.50); above it the fleet conserves.
+	// Distinct from Cap (0.95) which HARD-stops all dispatch. Phase flows to the
+	// minds as a work.phase wire frame on every flip.
+	Phase        string  `json:"phase"`       // "research" (go) | "conserve" (hold heavy work)
+	ResearchOK   bool    `json:"research_ok"` // 5h below the ceiling
+	ResearchCeil float64 `json:"research_ceil"`
+	FiveH        float64 `json:"five_h_util"`
 }
 
 var (
@@ -49,6 +57,17 @@ var (
 	budgetLastAt  time.Time
 	budgetGateLog time.Time
 )
+
+func researchCeil() float64 {
+	if v := os.Getenv("EIGHT_RESEARCH_CEIL"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && f <= 1 {
+			return f
+		}
+	}
+	return 0.50
+}
+
+var lastPhase string
 
 func budgetCap() float64 {
 	if v := os.Getenv("EIGHT_BUDGET_CAP"); v != "" {
@@ -106,7 +125,7 @@ func parseBudgetHeaders(h map[string]string, now time.Time) (map[string]budgetWi
 
 // budgetNow — newest tapped response with unified headers across all req logs
 // (cached 10s). nil when no pane is tapped yet.
-func budgetNow() *budget {
+func (c *collector) budgetNow() *budget {
 	budgetMu.Lock()
 	defer budgetMu.Unlock()
 	if budgetLast != nil && time.Since(budgetLastAt) < 10*time.Second {
@@ -157,6 +176,18 @@ func budgetNow() *budget {
 				best.Reason = fmt.Sprintf("%s window %s at %.0f%% (resets in %ds)", name, w.Status, w.Utilization*100, w.ResetInS)
 			}
 		}
+		best.ResearchCeil = researchCeil()
+		best.FiveH = best.Windows["5h"].Utilization
+		best.ResearchOK = best.FiveH < best.ResearchCeil
+		if best.ResearchOK {
+			best.Phase = "research"
+		} else {
+			best.Phase = "conserve"
+		}
+		if best.Phase != lastPhase && lastPhase != "" { // the flip flows to the minds
+			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.phase","params":{"phase":%q,"five_h_util":%.3f,"ceil":%.2f}}}`, best.Phase, best.FiveH, best.ResearchCeil))
+		}
+		lastPhase = best.Phase
 	}
 	budgetLast, budgetLastAt = best, time.Now()
 	return best
@@ -166,7 +197,7 @@ func budgetNow() *budget {
 // absence of evidence) or when every window is under the cap. Logs the gate
 // state change at most every 10min.
 func (c *collector) budgetAllows() bool {
-	b := budgetNow()
+	b := c.budgetNow()
 	if b == nil || !b.Gated {
 		return true
 	}
@@ -179,7 +210,7 @@ func (c *collector) budgetAllows() bool {
 
 func (c *collector) handleBudget(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	b := budgetNow()
+	b := c.budgetNow()
 	if b == nil {
 		_ = json.NewEncoder(w).Encode(map[string]any{"budget": nil, "note": "no sensor: tap an inspected pane (GET /panes/tap?pane=%N) so its API responses' anthropic-ratelimit-unified-* headers are logged"})
 		return

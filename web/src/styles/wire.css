@@ -629,3 +629,22 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .pl-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 .pl-table th, .pl-table td { text-align: right; padding: 1px 4px; border-bottom: 1px solid var(--line, #222); }
 .pl-table th:first-child, .pl-table td:first-child { text-align: left; }
+
+/* ── BUDGET HUD (statusline) — the flip switch, always visible ── */
+.hud { display: inline-flex; align-items: center; gap: 6px; padding: 1px 8px; border-radius: 10px; font-size: 11px; border: 1px solid var(--line, #333); }
+.hud-research { color: #7fd18b; } .hud-conserve { color: #e9c46a; } .hud-none { opacity: .6; }
+.hud-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.hud-dot-research { background: #4caf50; box-shadow: 0 0 6px #4caf50aa; } .hud-dot-conserve { background: #e9c46a; box-shadow: 0 0 6px #e9c46aaa; }
+.hud b { letter-spacing: .05em; }
+.hud-bar { position: relative; width: 120px; height: 8px; background: #ffffff18; border-radius: 4px; overflow: hidden; display: inline-block; }
+.hud-fill { position: absolute; left: 0; top: 0; bottom: 0; background: currentColor; opacity: .7; }
+.hud-mark { position: absolute; top: -1px; bottom: -1px; width: 2px; }
+.hud-ceil { background: #e9c46a; } .hud-cap { background: #e76f51; }
+.hud-num { font-variant-numeric: tabular-nums; } .hud-num.dim { opacity: .6; }
+.hud-gated { color: #e76f51; } .hud-stale { opacity: .6; }
+
+/* ── draggable floating panels — no overlap, simple scroll ── */
+.drag-handle { user-select: none; touch-action: none; }
+.canvas-send { position: fixed; z-index: 40; max-height: 78vh; overflow: auto; box-shadow: 0 6px 24px #0006; }
+.canvas-send .cs-head { position: sticky; top: 0; z-index: 1; background: var(--panel, #1b1b1f); }
+.canvas-live { max-height: 82vh; }

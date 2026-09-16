@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { PaneCockpit } from './PaneCockpit';
 import { PaneLive } from './PaneLive';
+import { useDrag } from '../lib/useDrag';
 import { Viewport } from './Viewport';
 import { Instruments } from './Instruments';
 import { Resources } from './Resources';
@@ -59,6 +60,10 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   const dragDeck = useRef<{ key: string; px: number; py: number; bx: number; by: number } | null>(null);
   const [showSelf, setShowSelf] = useLocal<boolean>('showSelf', false); // reflexive breakpoint: let this 8 SEE its own tab (1 tab → 2 panes → controls itself)
   const [theater, setTheater] = useState(false);
+  const liveRef = useRef<HTMLDivElement>(null);
+  const sendRef = useRef<HTMLDivElement>(null);
+  useDrag(liveRef, 'canvas-live', { x: 60, y: 80 });
+  useDrag(sendRef, 'canvas-send', { x: 420, y: 120 });
   const [liveOpen, setLiveOpen] = useState(false); // pane · live: one pane as a pod — measured tokens, process, inspector
   const [sendOpen, setSendOpen] = useState(false); // #814: the fan-out nerve, reachable from canvas mode too // watch the pinned card at the real tab's full size (1:1)
   useEffect(() => { if (!theater) return; const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setTheater(false); }; window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey); }, [theater]);
@@ -458,14 +463,14 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
         <span className="persp-z">{stacks.length} decks · {cells.length} cards · {Math.round(cam.z * 100)}%</span>
       </div>
       {liveOpen && (
-        <div className="canvas-send canvas-live" onPointerDown={(e) => e.stopPropagation()}>
-          <div className="cs-head">pane · live<button className="cs-x" onClick={() => setLiveOpen(false)}>✕</button></div>
+        <div ref={liveRef} className="canvas-send canvas-live" onPointerDown={(e) => e.stopPropagation()}>
+          <div className="cs-head drag-handle">pane · live<button className="cs-x" onClick={() => setLiveOpen(false)}>✕</button></div>
           <PaneLive />
         </div>
       )}
       {sendOpen && (
-        <div className="canvas-send" onPointerDown={(e) => e.stopPropagation()}>
-          <div className="cs-head">panes · send<button className="cs-x" onClick={() => setSendOpen(false)}>✕</button></div>
+        <div ref={sendRef} className="canvas-send" onPointerDown={(e) => e.stopPropagation()}>
+          <div className="cs-head drag-handle">panes · send<button className="cs-x" onClick={() => setSendOpen(false)}>✕</button></div>
           <PaneCockpit />
         </div>
       )}
