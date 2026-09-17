@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { PaneCockpit } from './PaneCockpit';
 import { PaneLive } from './PaneLive';
-import { BudgetHud } from './BudgetHud';
 import { useDrag, resetDrag } from '../lib/useDrag';
 import { Viewport } from './Viewport';
 import { Instruments } from './Instruments';
@@ -465,7 +464,6 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
         <button className={liveOpen ? 'on' : ''} onClick={() => setLiveOpen((v) => !v)} title="one pane as a pod: measured context per turn (usage), process, inspector">🫀 live</button>
         <button onClick={() => { setPosBy({}); resetDrag(); location.reload(); }} title="forget operator positions — return to the deterministic layout">⌂ layout</button>
         <span className="persp-z">{stacks.length} decks · {cells.length} cards · {Math.round(cam.z * 100)}%</span>
-        <BudgetHud />
       </div>
       {liveOpen && (
         <div ref={liveRef} className="canvas-send canvas-live" onPointerDown={(e) => e.stopPropagation()}>
