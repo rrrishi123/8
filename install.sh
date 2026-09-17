@@ -1,6 +1,6 @@
 #!/bin/sh
 # 4-system v0.0.2 installer (go-install flavor) — the obtainable release, bus #310.
-#   curl -sL https://raw.githubusercontent.com/rrrishi123/8/refs/tags/v0.0.2/install.sh | sh
+#   curl -sL https://raw.githubusercontent.com/rrrishi123/8/refs/heads/release/v0.0.2/install.sh | sh
 # Builds from the signed v0.0.2 tags via the public Go module proxy — no
 # credentials, no prebuilt trust. Needs Go >= 1.22 on the host; prebuilt
 # darwin-arm64/linux-amd64 binaries land on the GitHub releases when minted.
