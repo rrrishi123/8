@@ -2797,6 +2797,16 @@ func lookupSession(id string) *sessionRec {
 // repo's `loopback` command. The result is WITNESSED into the feed like any op,
 // so the WIRE pane's adapter rows are genuinely fireable — no faking a
 // transport the browser cannot originate; the adapter originates it and 8 sees.
+// adaptersRoot is the adapters checkout/install root: EIGHT_ADAPTERS when
+// set, else the dev-checkout default beside this repo (release-readiness
+// #1111a / 8-review NEEDS-FALLBACK #8-#9 — no path is bound to one machine).
+func adaptersRoot() string {
+	if v := os.Getenv("EIGHT_ADAPTERS"); v != "" {
+		return v
+	}
+	return os.ExpandEnv("$HOME/Desktop/repos/adapters")
+}
+
 func (c *collector) handleAdapterFire(w http.ResponseWriter, r *http.Request) {
 	t := r.URL.Query().Get("t")
 	switch t {
@@ -2805,7 +2815,7 @@ func (c *collector) handleAdapterFire(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `t must be grpc|mqtt|webrtc|unix`, http.StatusBadRequest)
 		return
 	}
-	bin := os.ExpandEnv("$HOME/Desktop/repos/adapters/loopback")
+	bin := filepath.Join(adaptersRoot(), "loopback")
 	if _, err := os.Stat(bin); err != nil {
 		http.Error(w, "adapters loopback binary not found at "+bin+" — build with: (cd adapters && go build -o loopback ./cmd/loopback)", http.StatusServiceUnavailable)
 		return
@@ -4256,8 +4266,8 @@ func main() {
 	listen := flag.String("listen", ":7070", "HTTP address the cockpit reaches the collector on")
 	spec := flag.String("brokers", "", "comma list of session=brokerURL (e.g. fox=http://127.0.0.1:4445)")
 	gecko := flag.String("gecko", "", "geckodriver session base (http://127.0.0.1:4444/session/<id>) — enables /procinfo per-tab mem/CPU")
-	fxdriver := flag.String("fxdriver", os.ExpandEnv("$HOME/Desktop/repos/adapters/browser/firefox-stream.js"), "path to the Firefox capture driver (adapters/browser/firefox-stream.js)")
-	fxshot := flag.String("fxshot", os.ExpandEnv("$HOME/Desktop/repos/adapters/browser/firefox-drawshot.js"), "path to the Firefox leak-free still driver (adapters/browser/firefox-drawshot.js)")
+	fxdriver := flag.String("fxdriver", filepath.Join(adaptersRoot(), "browser", "firefox-stream.js"), "path to the Firefox capture driver (EIGHT_ADAPTERS overrides the root)")
+	fxshot := flag.String("fxshot", filepath.Join(adaptersRoot(), "browser", "firefox-drawshot.js"), "path to the Firefox leak-free still driver (EIGHT_ADAPTERS overrides the root)")
 	sessionFile := flag.String("session-file", os.ExpandEnv("$HOME/.8/gecko.json"), "file where up.sh publishes the current geckodriver SID; the collector re-reads it to auto-recover the session after a Firefox recycle")
 	apertureMB := flag.Int("aperture-mb", 3000, "soft parent+children memory threshold (MB): above this the FAIR aperture parks the heaviest non-focused tab (gBrowser.discardBrowser — memory freed, tab identity preserved, reloads on focus). INVARIANT: no tab is ever closed. 0 disables. Watchdog 4500 full-recycle stays as the backstop.")
 	token := flag.String("token", os.Getenv("EIGHT_TOKEN"), "shared secret required on every endpoint via X-8-Token/Bearer (empty = auth off, local-dev default)")
