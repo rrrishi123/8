@@ -1,16 +1,16 @@
 #!/bin/sh
-# 4-system v0.0.2 installer (go-install flavor) — the obtainable release, bus #310.
+# 4-system v0.0.3 installer (go-install flavor) — the obtainable release, bus #310.
 #   curl -sL https://raw.githubusercontent.com/rrrishi123/8/refs/heads/release/v0.0.2/install.sh | sh
-# Builds from the signed v0.0.2 tags via the public Go module proxy — no
-# credentials, no prebuilt trust. Needs Go >= 1.22 on the host; prebuilt
+# Builds from the v0.0.3 tags (unsigned) via the public Go module proxy — no
+# credentials, no prebuilt trust. Needs Go >= 1.25 on the host; prebuilt
 # darwin-arm64/linux-amd64 binaries land on the GitHub releases when minted.
 set -eu
 
-VER="v0.0.2"
+VER="v0.0.3"
 BIN="${EIGHT_BIN:-$HOME/.8/bin}"
 
 command -v go >/dev/null 2>&1 || {
-  echo "go not found — install Go >=1.22 (https://go.dev/dl) or wait for the prebuilt release binaries" >&2
+  echo "go not found — install Go >=1.25 (https://go.dev/dl) or wait for the prebuilt release binaries" >&2
   exit 1
 }
 

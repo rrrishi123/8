@@ -31,3 +31,9 @@ web/.env
 # stale path references keep resolving. No trailing slash: the dir-only pattern
 # would miss the symlink. See higgsfield-relocated.md
 /higgsfield
+
+# built binary — build from source (go build ./collector); never track a host binary
+/collector/.bin-collector
+
+# private design-system reference (kosaten) — never public
+/web/design-reference/_ds/

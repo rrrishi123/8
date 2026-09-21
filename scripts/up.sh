@@ -46,7 +46,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${EIGHT_REPO:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 PROFILE="${EIGHT_FF_PROFILE:-$HOME/.8/firefox-profile}"
 PROFILE_MARK="$(basename "$PROFILE")"
-BROWSERPACK="$REPO/adapters/browser/browser"
+# adapters root mirrors the collector's adaptersRoot(): EIGHT_ADAPTERS when set,
+# else the sibling checkout. The browser pack is built by adapters/build.sh
+# into .bin/ (the in-tree browser/browser binary is untracked and gone on a
+# fresh clone).
+ADAPTERS="${EIGHT_ADAPTERS:-$REPO/adapters}"
+BROWSERPACK="$ADAPTERS/.bin/browser"
 CHANNEL="$REPO/http-mcp/.bin/channel"
 COLLECTOR="$REPO/8/collector/collector"
 WEB="$REPO/8/web"
