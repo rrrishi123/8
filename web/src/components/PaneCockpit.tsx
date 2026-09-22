@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { identity, panesSend, type PaneIdentity, type PaneSendResult } from '../lib/api';
+import { useCardText } from '../lib/cardText';
 
 declare const __BUILD_TS__: number;
 const bundleAge = () => { const h = (Date.now() - __BUILD_TS__) / 36e5; return h < 1 ? `${Math.round(h*60)}m` : h < 48 ? `${Math.round(h)}h` : `${Math.round(h/24)}d`; };
@@ -8,7 +9,7 @@ const bundleAge = () => { const h = (Date.now() - __BUILD_TS__) / 36e5; return h
 // live claude panes (from live /identity: pane + self-declared name + title),
 // pick all or any subset, one prompt, Send. The backend fans it through the
 // guarded sendToPane throat and answers per-pane {pane,sent}.
-export function PaneCockpit() {
+export function PaneCockpit({ cardKey }: { cardKey?: string } = {}) {
   const [panes, setPanes] = useState<PaneIdentity[]>([]);
   const [sel, setSel] = useState<Record<string, boolean>>({});
   const [text, setText] = useState('');
@@ -30,6 +31,7 @@ export function PaneCockpit() {
     return () => { dead = true; clearInterval(t); };
   }, []);
 
+  useCardText(cardKey, [`all live claude panes (${panes.length})`, ...panes.map((p) => `${p.pane} ${p.name || '·'} ${(p.title || '').slice(0, 42)}`), panes.length ? '' : 'no live claude panes seen yet', '\n\n', 'send → ALL', res ? 'landed' : '', err || '']);
   const chosen = panes.filter((p) => sel[p.pane!]).map((p) => p.pane!);
   const allSelected = panes.length > 0 && chosen.length === panes.length;
   const toggleAll = () => {
@@ -47,8 +49,12 @@ export function PaneCockpit() {
       // #814 root-cause guard: a NetworkError from a long-open tab is almost
       // always a STALE BUNDLE (vite HMR did not fully apply a new module) —
       // name it instead of failing mutely.
+      // a NetworkError here is almost always the collector being down or a CORS
+      // header it doesn't allow — NOT a stale bundle (that guess was based on
+      // __BUILD_TS__ = vite's start time, which is always "old" in dev). Name the
+      // real causes.
       setErr(/NetworkError|Failed to fetch/i.test(msg)
-        ? `${msg} — likely a STALE BUNDLE (this tab's bundle is ${bundleAge()} old): hard-reload (Cmd+Shift+R)`
+        ? `${msg} — collector unreachable at :7070, or a header it does not allow (CORS). Check the collector is up.`
         : msg);
     }
     setBusy(false);

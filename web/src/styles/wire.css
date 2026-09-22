@@ -658,6 +658,21 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 
 .hud-refresh { background: none; border: 1px solid var(--line,#333); border-radius: 8px; color: inherit; cursor: pointer; font-size: 11px; padding: 0 5px; line-height: 1.4; }
 .hud-refresh:hover { background: #ffffff18; }
+.hud-refresh:disabled { cursor: progress; opacity: .7; }
+
+/* ── DUAL BUDGET HUD (2026-09-19): CLAUDE | CODEX, two families, unmistakably apart ── */
+.hud-dual { gap: 8px; color: var(--sl-fg, #ddd); }
+.hud-seg { display: inline-flex; align-items: center; gap: 5px; }
+.hud-seg-research { color: #7fd18b; } .hud-seg-conserve { color: #e9c46a; } .hud-seg-gated { color: #e76f51; } .hud-seg-none { opacity: .65; }
+.hud-tag { font-size: 9.5px; font-weight: 800; letter-spacing: .14em; padding: 1px 5px; border-radius: 3px; background: #ffffff1c; color: var(--sl-fg, #eee); }
+.hud-pill { font-size: 9px; font-weight: 700; letter-spacing: .08em; padding: 0 5px; border-radius: 8px; border: 1px solid currentColor; line-height: 1.5; }
+.hud-pill-research { color: #7fd18b; background: #4caf5022; } .hud-pill-conserve { color: #e9c46a; background: #e9c46a22; } .hud-pill-gated { color: #e76f51; background: #e76f5122; }
+.hud-div { width: 1px; align-self: stretch; background: var(--line, #666); margin: 0 3px; opacity: .9; }
+.hud-dual .hud-bar { width: 80px; }
+.hud-obs { opacity: .6; font-size: 10px; }
+.hud-why { color: #e9c46a; font-size: 10px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
+.hud-spin { display: inline-block; animation: hud-spin .9s linear infinite; }
+@keyframes hud-spin { to { transform: rotate(360deg); } }
 
 /* VISIBLE, DISTINCT scroll per card/panel (fix: a card's scroll is its own, not the map's) */
 .vp-text, .vp-tmux, .canvas-live, .canvas-send, .pane-live, .pl-table {
@@ -673,3 +688,57 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .vp-text::-webkit-scrollbar-track, .vp-tmux::-webkit-scrollbar-track { background: #0b0f1466; }
 /* the whole tmux pane body scrolls (was clipped at height:100%) */
 .vp-tmux { overflow: auto; }
+
+/* ── PRETEXT CARD GRAMMAR (#1132) ────────────────────────────────────────────
+   ONE card chrome for every kind. --card-font/--card-lh are the SINGLE source of
+   truth for text-card bodies: the layout engine (src/lib/cards.ts) measures with
+   the same font + line-height via pretext, so the rendered text lands exactly in
+   the measured height — no DOM measurement, no reflow. */
+:root { --card-font: 12px "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace; --card-lh: 17px; }
+.card { position: absolute; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; box-shadow: 0 6px 30px #000b; }
+.card.hero { border-color: color-mix(in srgb, var(--purple) 50%, var(--border)); box-shadow: 0 10px 44px #000d, 0 0 0 1px color-mix(in srgb,var(--purple) 28%,transparent); }
+.card-h { height: 34px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 10px; border-bottom: 1px solid var(--border); font-size: 11px; color: var(--fg-faint); text-transform: uppercase; letter-spacing: .08em; }
+.card-kind { font-size: 9px; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--border); color: var(--fg-dim); letter-spacing: .06em; flex: none; }
+.card-title { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-meta { color: var(--fg-faint); text-transform: none; letter-spacing: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-size: 10px; }
+.card-acts { margin-left: auto; display: flex; gap: 4px; flex: none; }
+.card-acts button { background: none; border: 1px solid transparent; color: var(--fg-faint); font: inherit; font-size: 11px; cursor: pointer; border-radius: 4px; padding: 0 5px; line-height: 20px; }
+.card-acts button:hover { color: var(--fg); border-color: var(--border); }
+.card-b { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; font: var(--card-font); line-height: var(--card-lh); }
+.card-b > .panel, .card-b > .rec-deck { height: 100%; border: 0; border-radius: 0; box-shadow: none; }
+.card.bare .card-b { overflow: hidden; display: flex; }
+.card.bare .card-b > .panel { flex: 1; }
+.card-badge { position: absolute; top: 6px; right: 40px; z-index: 4; font-size: 9px; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--border); background: #000a; color: var(--fg-dim); pointer-events: none; letter-spacing: .06em; }
+.card-text { padding: 10px 12px; white-space: pre-wrap; word-break: break-word; color: var(--fg-dim); }
+.card-text b { color: var(--fg); }
+.card-lod { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: var(--fg-dim); text-align: center; padding: 12px; }
+.card-lod .lod-title { font-size: 40px; font-weight: 700; color: var(--fg); letter-spacing: .02em; line-height: 1.1; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.card-lod .lod-meta { font-size: 20px; }
+.card-ghost { position: absolute; border: 1px dashed color-mix(in srgb, var(--border) 60%, transparent); border-radius: 10px; }
+/* card bodies that reuse the instrument panels: drop their floating chrome */
+.card-b .inst-work, .card-b .inst-clock, .card-b .inst-portal, .card-b .inst-inner, .card-b .inst-matrix { border: 0; border-radius: 0; box-shadow: none; max-height: none; margin: 0; }
+.card-b .pane-cockpit, .card-b .pane-live { font: inherit; }
+.card-b .pc-list { max-height: none; }
+/* host / profile cards (semantic zoom levels) */
+/* host/profile bodies are laid out ON the measured grammar: every row is one
+   --card-lh line (the big title = two), no gaps, tab hosts as plain wrapped text
+   — so the pretext height of hostLines()/profileLines() IS the rendered height. */
+.card-host { padding: 10px 12px 8px; display: flex; flex-direction: column; gap: 0; cursor: zoom-in; line-height: var(--card-lh); } /* 22px title glyph box overshoots the 2×lh row by ~2px: absorb it here */
+.card-host .h-line { display: flex; gap: 0; align-items: baseline; white-space: pre-wrap; word-break: break-all; line-height: var(--card-lh); }
+.card-host .h-k { color: var(--fg-faint); width: 9ch; flex: none; }
+.card-host .h-v { color: var(--fg); min-width: 0; }
+.card-host .h-v.dim { color: var(--fg-dim); }
+.card-host .h-big { font-size: 22px; font-weight: 700; color: var(--fg); line-height: calc(var(--card-lh) * 2); height: calc(var(--card-lh) * 2); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.card-host .h-big.chrome { color: #6cb6ff; } .card-host .h-big.firefox { color: #ff9a52; } .card-host .h-big.seat { color: var(--fg-dim); }
+.card-host .h-tabs { white-space: pre-wrap; word-break: break-word; color: var(--fg-dim); line-height: var(--card-lh); }
+/* budget card body reuses the statusline HUD, laid out as lines */
+.card-budget { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.card-budget .hud { display: flex; flex-wrap: wrap; gap: 8px; }
+/* lane heads: the deck head, now for any lane */
+.deck-name.type { color: var(--fg-dim); }
+/* the cards menu (persp-bar popover): show/hide/goto every card kind */
+.cards-menu { position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%); z-index: 21; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 8px; display: flex; flex-wrap: wrap; gap: 6px; max-width: 70vw; box-shadow: 0 6px 20px #000c; }
+.cards-menu button { background: var(--bg2); color: var(--fg-dim); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; font: inherit; font-size: 11px; cursor: pointer; }
+.cards-menu button.on { color: var(--fg); border-color: var(--purple); }
+.cards-menu button:hover { color: var(--fg); }
+.persp-bar button.lvl { border-color: color-mix(in srgb, var(--blue) 50%, var(--border)); }

@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 
+import { useCardText } from '../lib/cardText';
+
 const BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
 
 interface Cell { s: string; detail: string }
@@ -11,7 +13,7 @@ interface MatrixData { cols: string[]; rows: Row[]; unfound: number; legend: str
 // a sense a surface COULD expose and doesn't, where something stands seen-able
 // but unseen. Not N/A (grey, inapplicable) — unfound (amber, a candidate).
 const CH: Record<string, string> = { live: '●', yes: '✓', na: '·', unfound: '◍' };
-export function Matrix() {
+export function Matrix({ cardKey }: { cardKey?: string } = {}) {
   const [m, setM] = useState<MatrixData | null>(null);
   const [hover, setHover] = useState('');
   useEffect(() => {
@@ -21,6 +23,7 @@ export function Matrix() {
     const iv = setInterval(pull, 15000);
     return () => { alive = false; clearInterval(iv); };
   }, []);
+  useCardText(cardKey, m ? [`surfaces × senses · ${m.unfound} unfound — the map`, 'cols', ...m.rows.map((r) => r.kind), 'legend'] : ['loading matrix…']);
   if (!m) return null;
   const short = (c: string) => c.replace('frame·', '').replace('·eval', '').replace('·push', '').replace('·ledger', '');
   return (

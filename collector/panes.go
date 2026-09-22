@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -83,6 +84,7 @@ func (c *collector) handlePanes(w http.ResponseWriter, r *http.Request) {
 		CtxTokens int64  `json:"context_tokens,omitempty"`
 		CtxAt     string `json:"context_at,omitempty"`
 		Inspector string `json:"inspector,omitempty"`
+		Harness   string `json:"harness,omitempty"`
 	}
 	c.pmu.Lock()
 	seen := make(map[string]string, len(c.panesSeen))
@@ -103,14 +105,40 @@ func (c *collector) handlePanes(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	uu := paneUUIDs()
+	type codexMind struct{ SessionID, Jsonl string }
+	codexByPane := map[string]codexMind{}
+	if b, err := os.ReadFile(os.ExpandEnv("$HOME/.8/codex-minds.json")); err == nil {
+		var raw map[string]struct {
+			SessionID string `json:"session_id"`
+			Jsonl     string `json:"jsonl"`
+		}
+		if json.Unmarshal(b, &raw) == nil {
+			for k, v := range raw {
+				codexByPane[k] = codexMind{v.SessionID, v.Jsonl}
+			}
+		}
+	}
 	out := []paneView{}
 	for _, p := range tmuxPanes() {
 		uuid := uu[pidOf[p.ID]]
 		name, _ := nameForUUID(uuid)
+		jsonl := jsonlForUUID(uuid)
+		harness := ""
+		if uuid != "" {
+			harness = "claude-code"
+		}
+		if cm, ok := codexByPane[p.ID]; ok && uuid == "" {
+			harness = "codex"
+			uuid = cm.SessionID
+			jsonl = cm.Jsonl
+			if name == "" {
+				name = "codex"
+			}
+		}
 		t := tuiOf(p.ID)
 		pf := procOf(p.ID)
-		out = append(out, paneView{p.ID, p.Loc, p.Cmd, p.Title, seen[p.ID], name, uuid, jsonlForUUID(uuid), t.State, t.SameForS, t.Resets, t.ProbedAt,
-			pf.Pid, pf.RSSMB, pf.CtxTokens, pf.CtxAt, pf.Inspector})
+		out = append(out, paneView{p.ID, p.Loc, p.Cmd, p.Title, seen[p.ID], name, uuid, jsonl, t.State, t.SameForS, t.Resets, t.ProbedAt,
+			pf.Pid, pf.RSSMB, pf.CtxTokens, pf.CtxAt, pf.Inspector, harness})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"panes": out, "n": len(out), "boot": currentBoot()})

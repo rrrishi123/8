@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -223,9 +226,16 @@ func (c *collector) handleBudget(w http.ResponseWriter, r *http.Request) {
 	age := budgetAgeSeconds(b)
 	tapped := 0
 	tappedPids.Range(func(_, _ any) bool { tapped++; return true })
+	var codexProv any
+	cx, codexAge := codexReading()
+	if cx != nil {
+		codexProv = cx
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"budget": b, "windows": names, "playlist_allowed": !b.Gated,
 		"observed_age_s": age, "sensors_armed": tapped,
-		"freshness": "budget refreshes only on a live /v1/messages call from a tapped pane; an all-idle fleet shows last-known (no consumption either)"})
+		"providers":            map[string]any{"claude": b, "codex": codexProv},
+		"codex_observed_age_s": codexAge,
+		"freshness":            "budget refreshes only on a live /v1/messages call from a tapped pane; an all-idle fleet shows last-known (no consumption either)"})
 }
 
 // tapJS — installed inside an inspected pane: logs every API request (headers
@@ -334,24 +344,260 @@ func budgetAgeSeconds(b *budget) int64 {
 	return int64(time.Since(t).Seconds())
 }
 
-// handleBudgetPoke — POST /budget/poke: fire ONE trivial claude -p call so a
-// fresh anthropic-ratelimit-unified-* header arrives, then return the renewed
-// budget. The refresh button the operator asked for: "renewed even by a simple
-// command like Reply with exactly ok". Cheap (~31k floor), witnessed on the wire.
+// ── RENEW (2026-09-19) — POST /budget/poke?provider=claude|codex|both ────────
+// The old poke ran `claude -p` UNTAPPED (BUN_INSPECT stripped), so its response
+// headers were never logged and the reading never moved. Now every refresh is an
+// OBSERVED response, per provider:
+//   claude — implementation (a), self-contained: spawn `claude -p hi` with a
+//            FRESH loopback inspector (BUN_INSPECT=ws://127.0.0.1:<free>/dbg?wait=1).
+//            `?wait=1` makes the Bun runtime hold the main script until a frontend
+//            has sent Inspector.initialized and disconnected (wsEvalInit), so
+//            tapJS is installed BEFORE any JS runs — no race with the first
+//            /v1/messages call. The response's unified headers land in
+//            ~/.8/stream/<pid>.req.jsonl and we poll that file for the record.
+//   codex  — ~/.8/codex-budget.sh --poke (a trivial `codex exec`, then the newest
+//            rollout rate_limits), its JSON written to ~/.8/codex-budget.json.
+// A provider that could not be refreshed is reported refreshed:false + reason
+// with its last-known reading and age — never a silent stale.
+
+const (
+	pokeTapWindow  = 3 * time.Second  // how long to retry the inspector connect
+	pokeObserveFor = 15 * time.Second // how long to wait for the fresh record
+	pokeKillAfter  = 45 * time.Second // the spawned claude is killed past this
+	pokeCodexAfter = 30 * time.Second
+)
+
+// freeLoopbackPort — a port the kernel says is unused right now.
+func freeLoopbackPort() (int, error) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
+// launchTapped — spawn claude with its own held inspector and inject tapJS over
+// it; returns once the tap is installed (the script then starts) or kills the
+// held process when the inject failed, so nothing ever runs untapped.
+func launchTapped(ctx context.Context, args ...string) (*exec.Cmd, string, error) {
+	port, err := freeLoopbackPort()
+	if err != nil {
+		return nil, "", err
+	}
+	wsurl := fmt.Sprintf("ws://127.0.0.1:%d/dbg", port)
+	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd.Dir = os.ExpandEnv("$HOME/Desktop/repos")
+	cmd.Env = append(envWithout(os.Environ(), "BUN_INSPECT"), "BUN_INSPECT="+wsurl+"?wait=1")
+	cmd.Stdin = devNull()
+	os.MkdirAll(os.ExpandEnv("$HOME/.8/stream"), 0o755)
+	if err := cmd.Start(); err != nil {
+		return nil, wsurl, err
+	}
+	deadline := time.Now().Add(pokeTapWindow)
+	for {
+		if _, err = wsEvalInit(wsurl, tapJS, true); err == nil { // tap, then release the held script
+			return cmd, wsurl, nil
+		}
+		if ctx.Err() != nil || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	_ = cmd.Process.Kill()
+	go cmd.Wait()
+	return nil, wsurl, fmt.Errorf("tap inject failed on %s: %v", wsurl, err)
+}
+
+// freshUnifiedRecord — true when ~/.8/stream/<pid>.req.jsonl holds a response
+// with unified headers (the tap writes the record the moment headers arrive).
+func freshUnifiedRecord(pid int) bool {
+	b, err := os.ReadFile(os.ExpandEnv("$HOME/.8/stream/") + strconv.Itoa(pid) + ".req.jsonl")
+	if err != nil {
+		return false
+	}
+	for _, ln := range bytes.Split(b, []byte("\n")) {
+		var rec struct {
+			Res map[string]string `json:"res_headers"`
+		}
+		if json.Unmarshal(ln, &rec) == nil && hasUnified(rec.Res) {
+			return true
+		}
+	}
+	return false
+}
+
+// pokeClaude — one tapped `claude -p hi`; true when a fresh observed response
+// was logged within pokeObserveFor. The process finishes (or is killed at
+// pokeKillAfter) in the background — the reading is on disk before it exits.
+func (c *collector) pokeClaude() (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), pokeKillAfter)
+	cmd, wsurl, err := launchTapped(ctx, "-p", "hi", "--dangerously-skip-permissions")
+	if err != nil {
+		cancel()
+		return false, err.Error()
+	}
+	pid := cmd.Process.Pid
+	tappedPids.Store(pid, true)
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait(); cancel() }()
+	deadline := time.Now().Add(pokeObserveFor)
+	for {
+		if freshUnifiedRecord(pid) {
+			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"budget.poke","params":{"provider":"claude","pid":%d,"inspector":%q}}}`, pid, wsurl))
+			return true, ""
+		}
+		select {
+		case err := <-done:
+			if freshUnifiedRecord(pid) {
+				return true, ""
+			}
+			return false, fmt.Sprintf("claude -p exited (%v) without an observed /v1/messages response — pid %d", err, pid)
+		case <-time.After(300 * time.Millisecond):
+		}
+		if time.Now().After(deadline) {
+			return false, fmt.Sprintf("no observed response within %s (pid %d still running; killed at %s)", pokeObserveFor, pid, pokeKillAfter)
+		}
+	}
+}
+
+// codexReading — ~/.8/codex-budget.json as written by codex-budget.sh (nil
+// when absent or without windows) and its observed age in seconds (nil when unknown).
+func codexReading() (map[string]any, any) {
+	b, err := os.ReadFile(os.ExpandEnv("$HOME/.8/codex-budget.json"))
+	if err != nil {
+		return nil, nil
+	}
+	var cx map[string]any
+	if json.Unmarshal(b, &cx) != nil {
+		return nil, nil
+	}
+	return cx, codexAge(cx)
+}
+
+func codexAge(cx map[string]any) any {
+	if cx == nil {
+		return nil
+	}
+	if oa, ok := cx["observed_at"].(string); ok {
+		if t, e := time.Parse(time.RFC3339, oa); e == nil {
+			return int(time.Since(t).Seconds())
+		}
+	}
+	return nil
+}
+
+// pokeCodex — codex-budget.sh --poke, its output persisted to codex-budget.json;
+// refreshed only when the newest rollout rate_limits moved past the prior reading.
+func (c *collector) pokeCodex() (bool, string) {
+	before, _ := codexReading()
+	beforeTS, _ := before["observed_at"].(string)
+	script := os.ExpandEnv("$HOME/.8/codex-budget.sh")
+	if _, err := os.Stat(script); err != nil {
+		return false, "codex-budget.sh not found: " + err.Error()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), pokeCodexAfter)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", script, "--poke")
+	cmd.Stdin = devNull()
+	out, err := cmd.Output()
+	if err != nil && len(bytes.TrimSpace(out)) == 0 {
+		return false, "codex-budget.sh --poke failed: " + err.Error()
+	}
+	var cx map[string]any
+	if json.Unmarshal(out, &cx) != nil {
+		return false, "codex-budget.sh output is not JSON: " + firstN(string(out), 120)
+	}
+	if cx["windows"] == nil {
+		note, _ := cx["note"].(string)
+		return false, "no codex rate_limits after poke: " + note
+	}
+	dst := os.ExpandEnv("$HOME/.8/codex-budget.json")
+	if b, e := json.MarshalIndent(cx, "", "  "); e == nil {
+		if e = os.WriteFile(dst+".tmp", b, 0o644); e == nil {
+			_ = os.Rename(dst+".tmp", dst)
+		}
+	}
+	afterTS, _ := cx["observed_at"].(string)
+	if afterTS <= beforeTS {
+		return false, fmt.Sprintf("newest codex rollout rate_limits unchanged (observed_at %s) — codex exec may have failed", afterTS)
+	}
+	c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"budget.poke","params":{"provider":"codex","observed_at":%q}}}`, afterTS))
+	return true, ""
+}
+
+// handleBudgetPoke — POST /budget/poke?provider=claude|codex|both (default both).
+// Each provider refreshes concurrently under its own timeout; the response
+// carries both readings, which of them actually moved, and why when not.
 func (c *collector) handleBudgetPoke(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	ctx, cancel := contextWithTimeout(60)
-	defer cancel()
-	cmd := execCommandContext(ctx, "claude", "-p", "reply with exactly: ok", "--dangerously-skip-permissions")
-	cmd.Dir = os.ExpandEnv("$HOME/Desktop/repos")
-	cmd.Env = envWithout(os.Environ(), "BUN_INSPECT")
-	cmd.Stdin = devNull()
-	_ = cmd.Run()
+	prov := r.URL.Query().Get("provider")
+	if prov == "" {
+		prov = "both"
+	}
+	doClaude, doCodex := prov == "both" || prov == "claude", prov == "both" || prov == "codex"
+	if !doClaude && !doCodex {
+		http.Error(w, `{"error":"provider must be claude, codex or both"}`, 400)
+		return
+	}
+	refreshed := map[string]bool{"claude": false, "codex": false}
+	reasons := map[string]string{}
+	if !doClaude {
+		reasons["claude"] = "not requested"
+	}
+	if !doCodex {
+		reasons["codex"] = "not requested"
+	}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	if doClaude {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, why := c.pokeClaude()
+			mu.Lock()
+			refreshed["claude"] = ok
+			if why != "" {
+				reasons["claude"] = why
+			}
+			mu.Unlock()
+		}()
+	}
+	if doCodex {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, why := c.pokeCodex()
+			mu.Lock()
+			refreshed["codex"] = ok
+			if why != "" {
+				reasons["codex"] = why
+			}
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
 	budgetMu.Lock()
 	budgetLastAt = time.Time{} // force a re-read past the 10s cache
 	budgetMu.Unlock()
 	b := c.budgetNow()
 	age := budgetAgeSeconds(b)
-	c.publish(`{"session":"work","origin":"COLLECTOR","frame":{"method":"budget.poke","params":{}}}`)
-	_ = json.NewEncoder(w).Encode(map[string]any{"budget": b, "observed_age_s": age})
+	cx, cxAge := codexReading()
+	var codexProv any
+	if cx != nil {
+		codexProv = cx
+	}
+	note := "each reading is an observed response; refreshed=false carries the last-known reading and its age"
+	if b == nil {
+		note = "claude: no observed response on record yet — " + reasons["claude"]
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"budget":               b, // legacy key
+		"providers":            map[string]any{"claude": b, "codex": codexProv},
+		"refreshed":            refreshed,
+		"reasons":              reasons,
+		"observed_age_s":       age,
+		"codex_observed_age_s": cxAge,
+		"note":                 note,
+	})
 }

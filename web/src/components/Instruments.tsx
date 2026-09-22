@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { innerHost, type InnerHost, peers, type Peer } from '../lib/api';
 import { Matrix } from './Matrix';
 import { useLocal } from './Dock';
+import { useCardText } from '../lib/cardText';
 
 const BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
 
@@ -14,7 +15,8 @@ const NEXT: Record<string, string> = { todo: 'doing', doing: 'done', done: 'todo
 // each expanding on click — the real view stays the surfaces, not my dials.
 // (2026-08-10: the stacked-always-open panels ate 79% of viewport height —
 // clutter. A chip row + on-demand expand reclaims the column.)
-export function Instruments() {
+// useInstruments — the gauges' DATA, shared by the chip panel and the canvas cards.
+export function useInstruments(always = false) {
   const [work, setWork] = useState<WorkItem[]>([]);
   const [add, setAdd] = useState('');
   const [now, setNow] = useState('');
@@ -67,19 +69,132 @@ export function Instruments() {
   const [inner, setInner] = useState<InnerHost | null>(null);
   const [peerList, setPeerList] = useState<Peer[] | null>(null);
   useEffect(() => {
-    if (open !== 'portal') return;
+    if (!always && open !== 'portal') return;
     let dead = false;
     const pull = () => peers().then((d) => { if (!dead) setPeerList(d.peers || []); }).catch(() => {});
     pull(); const t = setInterval(pull, 5000);
     return () => { dead = true; clearInterval(t); };
-  }, [open]);
+  }, [open, always]);
   useEffect(() => {
-    if (open !== 'inner') return;
+    if (!always && open !== 'inner') return;
     let dead = false;
     const pull = () => innerHost().then((d) => { if (!dead) setInner(d); }).catch(() => {});
     pull(); const t = setInterval(pull, 5000);
     return () => { dead = true; clearInterval(t); };
-  }, [open]);
+  }, [open, always]);
+  return { work, add, setAdd, now, swTick, open, setOpen, refresh, submit, cycle, reprio, dragId, dropOn, playlist, togglePlaylist, ordered, openCount, inner, peerList };
+}
+type Inst = ReturnType<typeof useInstruments>;
+
+// ── CARD BODIES (uniform grammar: each reports its lines; the engine sizes the card) ──
+export function ClockBody({ cardKey, i }: { cardKey?: string; i: Inst }) {
+  useCardText(cardKey, ['stopwatch', 'stopwatch', 'stopwatch', 'stopwatch', 'pipeline clock vs true — the gap is staleness · gaze ≈1.2s']);
+  return (
+    <div className="inst-clock" title="top digits came THROUGH the capture pipeline; the gap to true time is the witness's staleness">
+      <img className="inst-sw" src={`${BASE}/drawshot?needle=stopwatch&t=${i.swTick}`} alt="experiri · pipeline clock" />
+      <div className="inst-note">pipeline clock vs true — the gap is staleness · gaze ≈1.2s</div>
+    </div>
+  );
+}
+export function WorkBody({ cardKey, i }: { cardKey?: string; i: Inst }) {
+  useCardText(cardKey, [`work · ${i.openCount} open · drag to reorder`, ...i.ordered.map((it) => `${it.status === 'todo' ? '•' : it.status === 'doing' ? '◐' : '✓'} ${it.by || '·'} → ${it.assignee || 'pool'}  ${it.text}`), '+ add work (Enter)']);
+  return (
+    <div className="inst-work">
+      <div className="inst-h">
+        work · {i.openCount} open · drag to reorder
+        <button className={`work-play${i.playlist ? ' on' : ''}`} title={i.playlist ? 'playlist ON — the queue runs itself, one by one' : '▶ run all: pick→do→done→pick, hands-free'}
+          onClick={i.togglePlaylist}>{i.playlist ? '⏸ playing' : '▶ run all'}</button>
+      </div>
+      {i.ordered.map((it) => (
+        <div key={it.id} className={`work-row ${it.status}`}
+          draggable={it.status === 'todo'}
+          onDragStart={() => { i.dragId.current = it.id; }}
+          onDragOver={(e) => { if (it.status === 'todo') e.preventDefault(); }}
+          onDrop={() => i.dropOn(it)}>
+          <button className="work-dot" title={`${it.status} → ${NEXT[it.status]}`} onClick={() => i.cycle(it)}>{it.status === 'todo' ? '•' : it.status === 'doing' ? '◐' : '✓'}</button>
+          <span className="work-edge" title="who incepted → which pane it's routed to (#849)">
+            <span className="we-from">{it.by || '·'}</span>
+            <span className="we-arrow">→</span>
+            <span className={`we-to${it.assignee ? '' : ' none'}`}>{it.assignee || 'pool'}</span>
+          </span>
+          <span className="work-text" title={`#${it.id} · ${it.by}${it.assignee ? ' → ' + it.assignee : ''} · ${it.ts}${it.prio ? ' · prio ' + it.prio : ''}`}>{it.text}</span>
+          {it.status === 'todo' && (
+            <span className="work-prio">
+              <button title="raise priority" onClick={() => i.reprio(it, 1)}>▲</button>
+              <button title="lower priority" onClick={() => i.reprio(it, -1)}>▼</button>
+            </span>
+          )}
+        </div>
+      ))}
+      <input className="work-add" value={i.add} onChange={(e) => i.setAdd(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') i.submit(); }} placeholder="+ add work (Enter)" />
+    </div>
+  );
+}
+export function PortalBody({ cardKey, i }: { cardKey?: string; i: Inst }) {
+  const peerList = i.peerList;
+  useCardText(cardKey, [`portal · ${peerList ? peerList.length + ' peers' : '…'}`,
+    ...(peerList && peerList.length === 0 ? ['no peers registered — nodes join by POSTing /peers (push)'] : []),
+    ...(peerList || []).flatMap((p) => [`${p.host}  ${p.stale ? 'stale' : 'live'} ${p.age_s}s`, p.thumbnail ? '\n\n\n\n\n\n' : '', p.hostres != null ? JSON.stringify(p.hostres) : ''])]);
+  return (
+    <div className="inst-portal">
+      <div className="inst-h">portal · {peerList ? `${peerList.length} peer${peerList.length === 1 ? '' : 's'}` : '…'}</div>
+      {peerList && peerList.length === 0 && <div className="ih-none">no peers registered — nodes join by POSTing /peers (push)</div>}
+      {peerList?.map((p) => (
+        <div key={p.host} className={`portal-slice${p.stale ? ' stale' : ''}`} title={`last beat ${p.at} · ${p.age_s}s ago · ${p.actor || ''}`}>
+          <div className="ps-head">
+            <span className="ps-host">{p.host}</span>
+            <span className={`ps-live ${p.stale ? 'down' : 'up'}`}>{p.stale ? `stale ${p.age_s}s` : `live ${p.age_s}s`}</span>
+          </div>
+          {p.thumbnail && <img className="ps-thumb" src={p.thumbnail} alt={`${p.host} firefox`} />}
+          {p.hostres != null && <pre className="ps-res">{JSON.stringify(p.hostres)}</pre>}
+        </div>
+      ))}
+    </div>
+  );
+}
+export function InnerBody({ cardKey, i }: { cardKey?: string; i: Inst }) {
+  const inner = i.inner;
+  useCardText(cardKey, [`inner host · ${inner?.at ? new Date(inner.at).toLocaleTimeString() : '…'}`,
+    ...(inner?.vms || []).map((v) => `${v.name} ${v.status} ${v.cpus}cpu · ${v.memory} · ${v.disk} · ${v.runtime}`),
+    'container  cpu  mem  pids',
+    ...(inner?.containers || []).map((c) => `${c.name} ${c.cpu} ${c.mem.split(' / ')[0]} ${c.pids}`),
+    inner && !inner.docker_ok ? 'docker not reachable' : '',
+    inner && inner.docker_ok && !(inner.containers && inner.containers.length) ? 'no containers running' : '']);
+  return (
+    <div className="inst-inner">
+      <div className="inst-h">inner host{inner ? ` · ${inner.at ? new Date(inner.at).toLocaleTimeString() : '…'}` : ' · …'}</div>
+      {inner?.vms && inner.vms.length > 0 && (
+        <div className="ih-vms">
+          {inner.vms.map((v) => (
+            <div key={v.name} className="ih-vm" title="colima VM">
+              <span className="ih-name">{v.name}</span>
+              <span className={`ih-status ${v.status === 'Running' ? 'up' : 'down'}`}>{v.status}</span>
+              <span className="ih-spec">{v.cpus}cpu · {v.memory} · {v.disk} · {v.runtime}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="ih-ctable">
+        <div className="ih-crow ih-chead"><span>container</span><span>cpu</span><span>mem</span><span>pids</span></div>
+        {inner?.containers?.map((c) => (
+          <div key={c.name} className="ih-crow" title={`${c.name} · net ${c.net_io} · blk ${c.blk_io} · mem ${c.mem_pc}`}>
+            <span className="ih-cname">{c.name}</span>
+            <span>{c.cpu}</span>
+            <span>{c.mem.split(' / ')[0]}</span>
+            <span>{c.pids}</span>
+          </div>
+        ))}
+        {inner && !inner.docker_ok && <div className="ih-none">docker not reachable</div>}
+        {inner && inner.docker_ok && (!inner.containers || inner.containers.length === 0) && <div className="ih-none">no containers running</div>}
+      </div>
+    </div>
+  );
+}
+
+// the ORIGINAL chip panel (kept: a compact, draggable gauge row for any view that wants it)
+export function Instruments() {
+  const i = useInstruments();
+  const { open, setOpen, now, openCount } = i;
   const tog = (k: string) => setOpen((cur) => (cur === k ? '' : k));
 
   const instRef = useRef<HTMLDivElement>(null);
@@ -93,88 +208,10 @@ export function Instruments() {
         <button className={`inst-chip${open === 'inner' ? ' on' : ''}`} onClick={() => tog('inner')} title="inner host — this machine's containers + colima VM (the 4-system observing its own containerized incarnation)">▣ host</button>
         <button className={`inst-chip${open === 'portal' ? ' on' : ''}`} onClick={() => tog('portal')} title="portal — the federated 8 nodes (mac, omarchy, colima, claude-web) as co-present slices, from /peers">◈ portal</button>
       </div>
-      {open === 'clock' && (
-        <div className="inst-clock" title="top digits came THROUGH the capture pipeline; the gap to true time is the witness's staleness">
-          <img className="inst-sw" src={`${BASE}/drawshot?needle=stopwatch&t=${swTick}`} alt="experiri · pipeline clock" />
-          <div className="inst-note">pipeline clock vs true — the gap is staleness · gaze ≈1.2s</div>
-        </div>
-      )}
-      {open === 'work' && (
-        <div className="inst-work">
-          <div className="inst-h">
-            work · {openCount} open · drag to reorder
-            <button className={`work-play${playlist ? ' on' : ''}`} title={playlist ? 'playlist ON — the queue runs itself, one by one' : '▶ run all: pick→do→done→pick, hands-free'}
-              onClick={togglePlaylist}>{playlist ? '⏸ playing' : '▶ run all'}</button>
-          </div>
-          {ordered.map((it) => (
-            <div key={it.id} className={`work-row ${it.status}`}
-              draggable={it.status === 'todo'}
-              onDragStart={() => { dragId.current = it.id; }}
-              onDragOver={(e) => { if (it.status === 'todo') e.preventDefault(); }}
-              onDrop={() => dropOn(it)}>
-              <button className="work-dot" title={`${it.status} → ${NEXT[it.status]}`} onClick={() => cycle(it)}>{it.status === 'todo' ? '•' : it.status === 'doing' ? '◐' : '✓'}</button>
-              <span className="work-edge" title="who incepted → which pane it's routed to (#849)">
-                <span className="we-from">{it.by || '·'}</span>
-                <span className="we-arrow">→</span>
-                <span className={`we-to${it.assignee ? '' : ' none'}`}>{it.assignee || 'pool'}</span>
-              </span>
-              <span className="work-text" title={`#${it.id} · ${it.by}${it.assignee ? ' → ' + it.assignee : ''} · ${it.ts}${it.prio ? ' · prio ' + it.prio : ''}`}>{it.text}</span>
-              {it.status === 'todo' && (
-                <span className="work-prio">
-                  <button title="raise priority" onClick={() => reprio(it, 1)}>▲</button>
-                  <button title="lower priority" onClick={() => reprio(it, -1)}>▼</button>
-                </span>
-              )}
-            </div>
-          ))}
-          <input className="work-add" value={add} onChange={(e) => setAdd(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} placeholder="+ add work (Enter)" />
-        </div>
-      )}
-      {open === 'portal' && (
-        <div className="inst-portal">
-          <div className="inst-h">portal · {peerList ? `${peerList.length} peer${peerList.length === 1 ? '' : 's'}` : '…'}</div>
-          {peerList && peerList.length === 0 && <div className="ih-none">no peers registered — nodes join by POSTing /peers (push)</div>}
-          {peerList?.map((p) => (
-            <div key={p.host} className={`portal-slice${p.stale ? ' stale' : ''}`} title={`last beat ${p.at} · ${p.age_s}s ago · ${p.actor || ''}`}>
-              <div className="ps-head">
-                <span className="ps-host">{p.host}</span>
-                <span className={`ps-live ${p.stale ? 'down' : 'up'}`}>{p.stale ? `stale ${p.age_s}s` : `live ${p.age_s}s`}</span>
-              </div>
-              {p.thumbnail && <img className="ps-thumb" src={p.thumbnail} alt={`${p.host} firefox`} />}
-              {p.hostres != null && <pre className="ps-res">{JSON.stringify(p.hostres)}</pre>}
-            </div>
-          ))}
-        </div>
-      )}
-      {open === 'inner' && (
-        <div className="inst-inner">
-          <div className="inst-h">inner host{inner ? ` · ${inner.at ? new Date(inner.at).toLocaleTimeString() : '…'}` : ' · …'}</div>
-          {inner?.vms && inner.vms.length > 0 && (
-            <div className="ih-vms">
-              {inner.vms.map((v) => (
-                <div key={v.name} className="ih-vm" title="colima VM">
-                  <span className="ih-name">{v.name}</span>
-                  <span className={`ih-status ${v.status === 'Running' ? 'up' : 'down'}`}>{v.status}</span>
-                  <span className="ih-spec">{v.cpus}cpu · {v.memory} · {v.disk} · {v.runtime}</span>
-                </div>
-              ))}
-            </div>
-          )}
-          <div className="ih-ctable">
-            <div className="ih-crow ih-chead"><span>container</span><span>cpu</span><span>mem</span><span>pids</span></div>
-            {inner?.containers?.map((c) => (
-              <div key={c.name} className="ih-crow" title={`${c.name} · net ${c.net_io} · blk ${c.blk_io} · mem ${c.mem_pc}`}>
-                <span className="ih-cname">{c.name}</span>
-                <span>{c.cpu}</span>
-                <span>{c.mem.split(' / ')[0]}</span>
-                <span>{c.pids}</span>
-              </div>
-            ))}
-            {inner && !inner.docker_ok && <div className="ih-none">docker not reachable</div>}
-            {inner && inner.docker_ok && (!inner.containers || inner.containers.length === 0) && <div className="ih-none">no containers running</div>}
-          </div>
-        </div>
-      )}
+      {open === 'clock' && <ClockBody i={i} />}
+      {open === 'work' && <WorkBody i={i} />}
+      {open === 'portal' && <PortalBody i={i} />}
+      {open === 'inner' && <InnerBody i={i} />}
       {open === 'matrix' && <Matrix />}
     </div>
   );

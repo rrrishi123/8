@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 
+import { useCardText } from '../lib/cardText';
+
 const BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
 
 // PANE · LIVE — one pane as a pod, measured not estimated: the process (pid, rss,
@@ -16,7 +18,7 @@ const k = (n?: number) => n == null ? '·' : n >= 1000 ? `${(n / 1000).toFixed(n
 const hhmm = (ts?: string) => ts ? ts.slice(11, 19) : '·';
 const ago = (ts?: string) => { if (!ts) return ''; const s = (Date.now() - Date.parse(ts)) / 1000; return s < 90 ? 'now' : s < 5400 ? `${Math.round(s/60)}m ago` : s < 172800 ? `${Math.round(s/3600)}h ago` : `${Math.round(s/86400)}d ago`; };
 
-export function PaneLive({ initial = '' }: { initial?: string }) {
+export function PaneLive({ initial = '', cardKey }: { initial?: string; cardKey?: string }) {
   const [panes, setPanes] = useState<PaneRow[]>([]);
   const [pane, setPane] = useState(initial);
   // pick a live inspected pane on first load if none chosen (fixes: default %24 is gone after rebirth → looked empty)
@@ -73,6 +75,7 @@ export function PaneLive({ initial = '' }: { initial?: string }) {
   const turns = usage?.turns || [];
   const last = turns[turns.length - 1];
   const max = Math.max(1, ...turns.map((t) => t.context_tokens));
+  useCardText(cardKey, [`${pane} ${row?.state || '·'} same ${row?.screen_same_for_s ?? '·'}s pid ${row?.pid ?? '·'}`, `session · jsonl`, 'measured context', last ? `${k(last.context_tokens)} input cache_read cache_creation output` : 'no assistant turn recorded yet in this session file', '\n\n', 'inside the process', insp ? JSON.stringify(insp, null, 1) : '', inspErr, row?.inspector ? 'expr' : '', 't ctx in read new out think', ...turns.slice(-12).map((t) => `${hhmm(t.ts)} ${k(t.context_tokens)}`)]);
 
   return (
     <div className="pane-live">

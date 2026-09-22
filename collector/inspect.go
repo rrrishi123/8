@@ -285,7 +285,13 @@ func (w *wsConn) readText() (string, error) {
 }
 
 // wsEval — Runtime.enable + Runtime.evaluate(returnByValue) over the inspector.
-func wsEval(wsurl, expr string) (json.RawMessage, error) {
+func wsEval(wsurl, expr string) (json.RawMessage, error) { return wsEvalInit(wsurl, expr, false) }
+
+// wsEvalInit — wsEval, optionally followed by Inspector.initialized. A process
+// started with BUN_INSPECT=…?wait=1 holds its main script until a frontend has
+// sent Inspector.initialized AND disconnected (measured 2026-09-19: neither
+// alone releases it); that lets budget.go install the tap before any JS runs.
+func wsEvalInit(wsurl, expr string, initialized bool) (json.RawMessage, error) {
 	w, err := wsDial(wsurl, 5*time.Second)
 	if err != nil {
 		return nil, err
@@ -319,6 +325,11 @@ func wsEval(wsurl, expr string) (json.RawMessage, error) {
 	if e, ok := m["error"]; ok {
 		b, _ := json.Marshal(e)
 		return nil, errors.New(string(b))
+	}
+	if initialized {
+		if _, err := call(3, "Inspector.initialized", map[string]any{}); err != nil {
+			return nil, err
+		}
 	}
 	b, _ := json.Marshal(m["result"])
 	return b, nil

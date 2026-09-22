@@ -129,5 +129,9 @@ while true; do
       sleep 30
     fi
   fi
+  # NAME HEAL: re-stamp @mind (durable uuid->name) onto whatever %N each family
+  # session now holds. %N re-mints on a tmux SERVER restart and blanks @mind; this
+  # restores visible identity within a tick, independent of the collector's sync.
+  [ -x "$HOME/.8/heal-names.sh" ] && bash "$HOME/.8/heal-names.sh" >/dev/null 2>&1
   sleep 15
 done

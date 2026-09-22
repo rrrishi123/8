@@ -70,6 +70,8 @@ for p in $PANES; do
     src="nudge"
   fi
   [ -z "${next// /}" ] && continue
+  epoch=$(date +%s)
+  tagged="[8-loop #$epoch · $src] $next"
   echo "$(date +%H:%M) $p [$src] <- ${next:0:110}"
-  tmux send-keys -t "$p" "$next"; sleep 0.3; tmux send-keys -t "$p" Enter
+  tmux send-keys -t "$p" "$tagged"; sleep 0.3; tmux send-keys -t "$p" Enter
 done

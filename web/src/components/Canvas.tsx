@@ -1,14 +1,19 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { PaneCockpit } from './PaneCockpit';
 import { PaneLive } from './PaneLive';
-import { useDrag, resetDrag } from '../lib/useDrag';
+import { resetDrag } from '../lib/useDrag';
 import { Viewport } from './Viewport';
-import { Instruments } from './Instruments';
 import { Resources } from './Resources';
 import { PasteCurl } from './PasteCurl';
-import { WireLog } from './WireLog';
+import { Matrix } from './Matrix';
+import { useInstruments, WorkBody, ClockBody, InnerBody, PortalBody } from './Instruments';
+import { useWireRows, WireRows } from './WireLog';
+import { CardFrame, HostBody, ProfileBody, BudgetBody, hostLines, profileLines, BUDGET_LINES } from './Card';
 import { useLocal } from './Dock';
 import { procinfo, recordCtl, listSeries, replaySeries, addTab, getFocus, type SeriesInfo, type CapFrame } from '../lib/api';
+import { GRID, SeqLedger, packWorld, onScreen, syncFontFromCSS, levelForZoom, LEVELS, type Card, type Lane, type Level, type CardKind } from '../lib/cards';
+import { fetchNodes, buildTree, type BrowserNode, type Seat, type Tab, type HostNode } from '../lib/nodes';
+import { useReportedTexts, textOf } from '../lib/cardText';
 
 const BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
 
@@ -24,22 +29,33 @@ const SELF_ID = (() => {
   } catch { return 'self'; }
 })();
 
-// pretext spatial cockpit: every live target is a card SIZED TO ITS SOURCE, laid
-// out in a world you pan/zoom like a map. A browser's tabs are a SOLITAIRE DECK —
-// stacked cards you fan out to see together; a device/request seat is a lone card.
-// Everything you do — driving a tab, ADDING a tab, RECORDING a case — happens IN
-// this canvas (pretext's whole point: it doesn't escape to another page).
-interface Seat { id: string; physics: string; hub: string; status: string; stream?: string }
-interface Tab { context: string; url: string; title?: string; parked?: string }
-interface Cell { key: string; session: string; context?: string; url?: string; title: string; device?: boolean; parked?: boolean }
-interface Stack { key: string; session: string; isBrowser: boolean; isCDP: boolean; label: string; cells: Cell[] }
-interface PaneRect { id: string; x: number; y: number; w: number; h: number; z?: number; node: ReactNode; gravity?: boolean }
+// PRETEXT COCKPIT (#1132). Every live target — and every gauge — is a CARD in one
+// grammar (src/lib/cards.ts), sized by pretext from its text (or its aspect),
+// never by the DOM. Cards are packed masonry-style into LANES (one per host /
+// profile / seat / type), lanes stand side by side, and the camera pans/zooms
+// the world like a map. SEMANTIC ZOOM: far out you see hosts (browser-nodes.json),
+// closer you see profiles, close you see tabs (BiDi getTree). Cards you can't see
+// aren't mounted (occlusion); cards too small to read collapse to a label (LOD).
+// Arrival order is layout order — a newcomer lands AFTER everything placed, never
+// on top of the bottom card's spot.
+const TYPE_LANES: { key: string; label: string; kinds: CardKind[] }[] = [
+  { key: 'type:minds', label: 'minds · panes', kinds: ['panes', 'heart'] },
+  { key: 'type:work', label: 'work · record', kinds: ['tasks', 'record', 'compose'] },
+  { key: 'type:gauges', label: 'gauges', kinds: ['budget', 'wire', 'resources', 'clock', 'matrix', 'inner', 'portal'] },
+];
+const KIND_TITLE: Record<string, string> = {
+  panes: 'panes · send', heart: 'pane · live', tasks: 'work', record: 'recording', compose: 'compose', budget: 'budget',
+  wire: 'wire · efferent', resources: 'resources', clock: 'clock · experiri', matrix: 'surfaces × senses', inner: 'inner host', portal: 'portal',
+};
+
+const hostOf = (u: string) => { try { return new URL(u).host.replace(/^www\./, ''); } catch { return u || 'tab'; } };
 
 export function Canvas({ session, focusKey }: { session: string | null; focusKey?: string }) {
   const wrap = useRef<HTMLDivElement>(null);
   const [cam, setCam] = useLocal<{ x: number; y: number; z: number }>('cam', { x: 60, y: 30, z: 0.42 });
   const [seats, setSeats] = useState<Seat[]>([]);
   const [tabsBy, setTabsBy] = useState<Record<string, Tab[]>>({});
+  const [nodes, setNodes] = useState<BrowserNode[]>([]);
   const [aspectBy, setAspectBy] = useLocal<Record<string, number>>('aspectBy', {});
   const [hudBy, setHudBy] = useState<Record<string, { mem?: number; cpu?: number | null }>>({});
   // ADAPTIVE APERTURE (view side): the seat's PARENT memory, polled with procinfo.
@@ -48,41 +64,41 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   // before the watchdog's 4500 recycle: hero 3fps → 1fps, ambient 0.4 → frozen.
   const [parentMem, setParentMem] = useState(0);
   const [pinnedKey, setPinnedKey] = useState(''); // the HERO card (explicit pin, not center)
-  // cross-view travel: a feed row's "◉ see" hands its tab here — pin it as hero
-  // on arrival so the jump lands ON the thing you were looking at, not a default.
   useEffect(() => { if (focusKey) setPinnedKey(focusKey); }, [focusKey]);
-  const [spreadBy, setSpreadBy] = useLocal<Record<string, boolean>>('spreadBy', {}); // fanned decks
-  // WORK #2 — DRAGGABLE DECKS. The law: LAYOUT IS THE DEFAULT, POSITION IS THE
-  // OPERATOR'S. The computed layout stays deterministic (verifiable); a drag adds
-  // a persisted per-deck OFFSET on top; "⌂ layout" forgets all offsets. Offsets
-  // don't disturb the flow — undragged decks keep their computed rows.
+  const [spreadBy, setSpreadBy] = useLocal<Record<string, boolean>>('spreadBy', {}); // false = solitaire-stacked lane
+  // LAYOUT IS THE DEFAULT, POSITION IS THE OPERATOR'S: a drag adds a persisted
+  // per-lane OFFSET on top of the computed layout; "⌂ layout" forgets all offsets.
   const [posBy, setPosBy] = useLocal<Record<string, { x: number; y: number }>>('posBy', {});
-  const dragDeck = useRef<{ key: string; px: number; py: number; bx: number; by: number } | null>(null);
-  const [showSelf, setShowSelf] = useLocal<boolean>('showSelf', false); // reflexive breakpoint: let this 8 SEE its own tab (1 tab → 2 panes → controls itself)
+  const dragLane = useRef<{ key: string; px: number; py: number; bx: number; by: number } | null>(null);
+  const [showSelf, setShowSelf] = useLocal<boolean>('showSelf', false); // reflexive: let this 8 SEE its own tab
+  const [hidden, setHidden] = useLocal<Record<string, boolean>>('cardHidden', {});
+  const [levelPick, setLevelPick] = useLocal<'auto' | Level>('level', 'auto');
+  const [menu, setMenu] = useState(false);
   const [theater, setTheater] = useState(false);
-  const liveRef = useRef<HTMLDivElement>(null);
-  const sendRef = useRef<HTMLDivElement>(null);
-  const [liveOpen, setLiveOpen] = useState(false); // pane · live: one pane as a pod — measured tokens, process, inspector
-  const [sendOpen, setSendOpen] = useState(false); // #814: the fan-out nerve, reachable from canvas mode too // watch the pinned card at the real tab's full size (1:1)
-  useDrag(liveRef, 'canvas-live', { x: 20, y: 80 }, liveOpen);
-  useDrag(sendRef, 'canvas-send', { x: 430, y: 80 }, sendOpen);
   useEffect(() => { if (!theater) return; const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setTheater(false); }; window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey); }, [theater]);
-  const [addFor, setAddFor] = useState('');       // which deck's "+ tab" input is open
+  const [addFor, setAddFor] = useState('');
   const [addUrl, setAddUrl] = useState('https://www.airbnb.com');
   const [liveKeys, setLiveKeys] = useState<string[]>([]); // recent-set: last 3 focused fox cards stay LIVE
   const [hoverKey, setHoverKey] = useState('');           // hover promotes a frozen tile to live
   const prevCpu = useRef<Record<string, { c: number; t: number }>>({});
-  const rectsRef = useRef<Record<string, { x: number; y: number; w: number }>>({}); // card key -> world rect
+  const rectsRef = useRef<Record<string, { x: number; y: number; w: number; h: number }>>({});
   const lastFocusSeq = useRef(-1);
-  // RECORD → REPLAY, shown IN the canvas: every /act you drive on a live seat is
-  // captured (seat-attributed); the captured commands appear as a live deck right
-  // here, not on the default feed page — replay re-fires the whole series.
+  const ledger = useMemo(() => new SeqLedger(), []);
+  useReportedTexts(); // re-layout when a body reports new text
+  useEffect(() => { syncFontFromCSS(); }, []);
+  // viewport size WITHOUT layout reads: ResizeObserver hands us the content box.
+  const [vp, setVp] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = wrap.current; if (!el) return;
+    const ro = new ResizeObserver((es) => { const r = es[0]?.contentRect; if (r) setVp({ w: r.width, h: r.height }); });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // RECORD → REPLAY, shown IN the canvas
   const [rec, setRec] = useState<{ recording: boolean; name?: string; frames?: number; captured?: CapFrame[] }>({ recording: false });
   const [series, setSeries] = useState<SeriesInfo[]>([]);
   const [recName, setRecName] = useState('canvas-1');
-  // idle 8 should be QUIET: poll /record fast ONLY while recording (the deck needs
-  // it live), slow otherwise; /series only every 8s (it changes only on save). This
-  // is why "idle 8 was moving" — it was hammering /record+/series every 1.2s.
   const recRef = useRef(false);
   useEffect(() => {
     let alive = true;
@@ -90,7 +106,6 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     const tick = async () => {
       if (!alive) return;
       hidTick++;
-      // hidden slows, never stops (an AGENT may be recording with no human window)
       if (!document.hidden || hidTick % 4 === 0 || recRef.current) {
         const r = await recordCtl(''); setRec(r); recRef.current = !!r.recording;
       }
@@ -107,6 +122,15 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     recordCtl('').then(setRec); listSeries().then(setSeries);
   };
 
+  // the browser-node registry (hosts/profiles) — slow poll; it changes when docker does
+  useEffect(() => {
+    let alive = true;
+    const pull = () => fetchNodes().then((n) => { if (alive) setNodes(n); });
+    pull();
+    const t = window.setInterval(pull, 15000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
   useEffect(() => {
     const load = async () => {
       try {
@@ -118,13 +142,9 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
           try {
             const t = await (await fetch(`${BASE}/tabs?session=${encodeURIComponent(s.id)}`)).json();
             // Exclude only THIS cockpit's OWN tab (by its self-id), not every
-            // localhost:8088 tab — so a SIBLING cockpit tab appears as a card and
-            // can be foveated/fanned-out when driven (2026-07-27, the two-cockpit
-            // fan-out test). The feed's self-witness recursion guard (collector
-            // dropping :8088 network events) is untouched — this only relaxes
-            // which tabs render as CARDS. A cockpit still never shows ITSELF.
+            // localhost:8088 tab — a SIBLING cockpit tab appears as a card.
             tb[s.id] = (t.tabs || []).filter((x: Tab) => {
-              if (showSelf) return true; // reflexive: show EVERY tab incl. my own — 8 sees itself
+              if (showSelf) return true;
               const u = String(x.url || '');
               const mine = u.includes(location.host) && u.includes('c=' + SELF_ID);
               const ownNoId = u.replace(/#.*$/, '') === location.href.replace(/#.*$/, '') && !u.includes('c=');
@@ -133,7 +153,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
           } catch { tb[s.id] = []; }
         }));
         setTabsBy(tb);
-        const fox = live.find((s) => s.physics === 'channel' && s.stream !== 'cdp');
+        const fox = live.find((s) => s.physics === 'channel' && s.stream !== 'cdp' && s.stream !== 'text');
         if (fox) {
           const p = await procinfo(fox.id);
           if (p) {
@@ -152,43 +172,37 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
       } catch { /* keep last */ }
     };
     load();
-    // hidden ≠ dead. The old guard (skip while document.hidden) froze tab
-    // discovery/procinfo INDEFINITELY when the window was occluded — but agents
-    // keep driving and keep LOOKING via captureScreenshot (which renders a
-    // hidden page yet never clears document.hidden). Observed 2026-07-27: an
-    // agent-opened tab never appeared on canvas because no human had the window
-    // foregrounded. The gate is not "is a human looking" but "is anyone
-    // consuming" — so hidden only SLOWS the poll (4s → 16s), never stops it.
+    // hidden ≠ dead: agents keep driving with no human window — hidden only SLOWS the poll.
     let n = 0;
     const t = window.setInterval(() => { n++; if (!document.hidden || n % 4 === 0) load(); }, 4000);
     return () => clearInterval(t);
   }, [showSelf]);
 
-  // ATTENTION FOLLOWS ACTION: poll the collector's /focus (the last seat acted on,
-  // by anyone — me via the wire, a replay, the operator). When it changes, 8
-  // AUTO-FOVEATES: pin that card as hero and zoom to it. So driving deepseek from
-  // the wire makes 8 zoom to the deepseek card by itself — you never leave 8 to be
-  // "on" the tab; the seer's gaze follows the action automatically.
+  // ── the tree: hosts → profiles → tabs ────────────────────────────────────────
+  const tree = useMemo(() => buildTree(nodes, seats, tabsBy), [nodes, seats, tabsBy]);
+  const level: Level = levelPick === 'auto' ? levelForZoom(cam.z) : levelPick;
+
+  // ATTENTION FOLLOWS ACTION: poll /focus; when it changes, pin that card as hero
+  // and zoom to it (which also drops the semantic zoom to the tabs level).
   useEffect(() => {
     let alive = true;
     let hidTick = 0;
     const poll = async () => {
       if (!alive) return;
-      // hidden slows foveation (1.5s → 6s) but never stops it — an agent's act
-      // must still move the seer's gaze even when no human has the window up.
       hidTick++;
       if (!document.hidden || hidTick % 4 === 0) {
         const f = await getFocus();
         if (f.seq > 0 && f.seq !== lastFocusSeq.current) {
           lastFocusSeq.current = f.seq;
+          // an explicit hosts/profiles pick is the operator's choice of altitude: keep it
+          if (levelPickRef.current !== 'auto' && levelPickRef.current !== 'tabs') { if (alive) window.setTimeout(poll, 1500); return; }
           const key = f.session + (f.context || '');
           setPinnedKey(key);
-          // let the pin re-render settle (the card becomes its deck's top), then
-          // zoom the camera to where it landed.
+          setCam((c) => ({ ...c, z: 0.85 })); // tabs level; the card exists after the next render
           window.setTimeout(() => {
-            const rect = rectsRef.current[key]; const el = wrap.current;
-            if (rect && el) { const r = el.getBoundingClientRect(); const z = 0.85; setCam({ z, x: r.width / 2 - (rect.x + rect.w / 2) * z, y: r.height / 2 - (rect.y + 340) * z }); }
-          }, 80);
+            const rect = rectsRef.current[key];
+            if (rect && vpRef.current.w) { const z = 0.85; setCam({ z, x: vpRef.current.w / 2 - (rect.x + rect.w / 2) * z, y: vpRef.current.h / 2 - (rect.y + rect.h / 2) * z }); }
+          }, 140);
         }
       }
       if (alive) window.setTimeout(poll, 1500);
@@ -196,181 +210,148 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     poll();
     return () => { alive = false; };
   }, [setCam]);
+  const vpRef = useRef(vp); vpRef.current = vp;
+  const levelPickRef = useRef(levelPick); levelPickRef.current = levelPick;
 
-  const host = (u: string) => { try { return new URL(u).host.replace(/^www\./, ''); } catch { return u || 'tab'; } };
+  const isHidden = (k: string) => !!hidden[k];
+  const instr = useInstruments(true);
+  const wireRows = useWireRows(24);
 
-  // ── group seats into solitaire decks ─────────────────────────────────────────
-  const stacks: Stack[] = [];
-  for (const s of seats) {
-    if (s.physics === 'channel') {
-      // a card carries its NAME: browser tabs show their host; a tmux pane shows
-      // its %id + location ("you are pane %5"); a daemon shows its name.
-      // dup-key fix (#641): getTree can transiently repeat a context during a
-      // seat recycle, and a context can be blank — dedupe repeats (first wins)
-      // and give blanks an indexed fallback, so React keys stay unique while
-      // established keys keep their old shape (pins survive).
+  // ── BUILD THE LANES for this level ───────────────────────────────────────────
+  const lanes: Lane[] = [];
+  const cellTitle = (s: Seat, t: Tab) => s.stream === 'text' ? (t.title || `${t.context} · ${t.url.replace(/^\w+:\/\//, '')}`) : hostOf(t.url);
+  const tone = (h: HostNode) => h.tone;
+  if (level === 'hosts') {
+    lanes.push({ key: 'hosts', label: 'hosts', kind: 'host', tone: 'type', badge: `${tree.length} host${tree.length === 1 ? '' : 's'}`,
+      cards: tree.map((h) => ({ key: 'host:' + h.key, lane: 'hosts', kind: 'host' as const, title: h.label, meta: `${h.engine} · ${h.mode}`, text: hostLines(h).join('\n'),
+        node: <HostBody host={h} onZoom={() => { setLevelPick('profiles'); focusLane(h.key); }} /> })) });
+  } else if (level === 'profiles') {
+    for (const h of tree) lanes.push({ key: h.key, label: h.label, kind: 'profile', tone: tone(h), badge: `${h.profiles.length} profile${h.profiles.length === 1 ? '' : 's'}`,
+      cards: h.profiles.map((p) => ({ key: 'profile:' + p.key, lane: h.key, kind: 'profile' as const, title: p.label, meta: `${h.label} · ${p.tabs.length} tabs`, text: profileLines(h, p).join('\n'),
+        node: <ProfileBody host={h} profile={p} onZoom={() => { setLevelPick('tabs'); focusLane(p.key); }} /> })) });
+  } else {
+    for (const h of tree) for (const p of h.profiles) {
+      const laneKey = p.key;
+      const label = h.profiles.length > 1 || p.label !== h.label ? (p.label === 'host' || p.label === h.label ? h.label : `${h.label} · ${p.label}`) : h.label;
+      const cards: Card[] = [];
       const seenCtx = new Set<string>();
-      const cells: Cell[] = (tabsBy[s.id] || []).filter((tab) => {
-        if (!tab.context) return true;
-        if (seenCtx.has(tab.context)) return false;
-        seenCtx.add(tab.context);
-        return true;
-      }).map((tab, ti) => ({
-        key: s.id + (tab.context || `blank-${ti}`), session: s.id, context: tab.context, url: tab.url, parked: tab.parked === 'true',
-        title: s.id === 'tmux' ? `${tab.context} · ${tab.url.replace('tmux://', '')}`
-          : s.id === 'nvim' ? (tab.title || tab.context)
-          : s.id === 'daemons' ? (tab.title || tab.context)
-          : host(tab.url),
-      }));
-      const label = s.stream === 'cdp' ? 'chrome' : s.id === 'fox' ? 'firefox' : s.id === 'tmux' ? 'agents · tmux' : s.id === 'daemons' ? 'daemons · host' : s.id === 'nvim' ? 'nvim · editor' : s.id;
-      stacks.push({ key: s.id, session: s.id, isBrowser: true, isCDP: s.stream === 'cdp', label, cells });
-    } else {
-      const device = !!s.stream;
-      const label = device ? 'device' : s.hub?.includes('4444') ? 'firefox · request' : 'seat';
-      stacks.push({ key: s.id, session: s.id, isBrowser: false, isCDP: false, label, cells: [{ key: s.id, session: s.id, device, title: `${label} · ${s.id.slice(0, 8)}` }] });
+      if (p.seat) {
+        const s = p.seat;
+        p.tabs.filter((t) => { if (!t.context) return true; if (seenCtx.has(t.context)) return false; seenCtx.add(t.context); return true; })
+          .forEach((t, ti) => {
+            const key = s.id + (t.context || `blank-${ti}`);
+            const device = false;
+            cards.push({ key, lane: laneKey, kind: 'tab', title: cellTitle(s, t), meta: t.url, bare: true, span: device ? 1 : 2,
+              aspect: aspectBy[key] || 1.6, node: null });
+          });
+        if (!cards.length && s.physics !== 'channel') {
+          const device = !!s.stream;
+          cards.push({ key: s.id, lane: laneKey, kind: 'seat', title: `${device ? 'device' : 'seat'} · ${s.id.slice(0, 8)}`, bare: true, span: device ? 1 : 2, aspect: aspectBy[s.id] || (device ? 0.46 : 1.6), node: null });
+        }
+      }
+      if (!cards.length) {
+        // a declared host with no drivable session yet — keep it visible as its profile card
+        cards.push({ key: 'profile:' + p.key, lane: laneKey, kind: 'profile', title: p.label, meta: `${h.label} · no session`, text: profileLines(h, p).join('\n'),
+          node: <ProfileBody host={h} profile={p} onZoom={() => setLevelPick('profiles')} /> });
+      }
+      // a session-less host holds one placeholder profile card: 2 columns, not the
+      // 8 a browser lane reserves (a session arriving re-lays the lane anyway)
+      lanes.push({ key: laneKey, label, kind: h.seat && h.seat.physics === 'channel' && h.seat.stream !== 'text' ? 'browser' : 'seat', tone: tone(h),
+        cols: p.seat ? undefined : 2,
+        badge: p.seat ? `${cards.filter((c) => c.kind === 'tab').length} tab${cards.length === 1 ? '' : 's'}` : 'no session', cards });
     }
   }
-  const cells: Cell[] = stacks.flatMap((st) => st.cells);
-  const heroKey = (pinnedKey && cells.some((c) => c.key === pinnedKey)) ? pinnedKey : (cells[0]?.key || '');
-  // RECENT-SET (the live/memory balance): on Firefox, each live tab accumulates an
-  // unreclaimable compositor surface, so we can only keep a BOUNDED set live. Track the
-  // last 3 FOCUSED cards — those stay live; dormant tabs freeze (their surfaces idle-free).
+  // type lanes (the gauges) — at every level, so the cockpit never loses its instruments
+  const typeCards: Record<string, Card> = {
+    panes: { key: 'panes', lane: 'type:minds', kind: 'panes', title: KIND_TITLE.panes, meta: 'broadcast one prompt to chosen claude panes', node: <PaneCockpit cardKey="panes" /> },
+    heart: { key: 'heart', lane: 'type:minds', kind: 'heart', title: KIND_TITLE.heart, meta: 'one pane as a pod — measured context, process, inspector', node: <PaneLive cardKey="heart" /> },
+    tasks: { key: 'tasks', lane: 'type:work', kind: 'tasks', title: KIND_TITLE.tasks, meta: `${instr.openCount} open`, node: <WorkBody cardKey="tasks" i={instr} /> },
+    record: { key: 'record', lane: 'type:work', kind: 'record', title: KIND_TITLE.record, meta: rec.recording ? `● ${rec.name} · ${rec.frames ?? 0} cmds` : '○ idle', text: recText(rec),
+      node: <RecBody rec={rec} /> },
+    compose: { key: 'compose', lane: 'type:work', kind: 'compose', title: KIND_TITLE.compose, meta: 'record → replay · manual http + ws', text: ['record', 'series', 'manual compose (http + ws)', '\n\n\n', 'fire'].join('\n'), node: <PasteCurl /> },
+    budget: { key: 'budget', lane: 'type:gauges', kind: 'budget', title: KIND_TITLE.budget, meta: 'claude · codex, segregated', text: BUDGET_LINES.join('\n'), node: <BudgetBody /> },
+    wire: { key: 'wire', lane: 'type:gauges', kind: 'wire', title: KIND_TITLE.wire, meta: `${wireRows.length} on the wire`, node: <WireRows rows={wireRows} cardKey="wire" /> },
+    resources: { key: 'resources', lane: 'type:gauges', kind: 'resources', title: KIND_TITLE.resources, meta: 'per-tab memory + cpu', node: <Resources session={session} cardKey="resources" /> },
+    clock: { key: 'clock', lane: 'type:gauges', kind: 'clock', title: KIND_TITLE.clock, meta: instr.now, node: <ClockBody cardKey="clock" i={instr} /> },
+    matrix: { key: 'matrix', lane: 'type:gauges', kind: 'matrix', title: KIND_TITLE.matrix, meta: 'the map of the unfound', node: <Matrix cardKey="matrix" /> },
+    inner: { key: 'inner', lane: 'type:gauges', kind: 'inner', title: KIND_TITLE.inner, meta: 'containers + colima', node: <InnerBody cardKey="inner" i={instr} /> },
+    portal: { key: 'portal', lane: 'type:gauges', kind: 'portal', title: KIND_TITLE.portal, meta: 'federated 8 nodes', node: <PortalBody cardKey="portal" i={instr} /> },
+  };
+  for (const c of Object.values(typeCards)) if (c.text === undefined) c.text = textOf(c.key) ?? `${c.title}\n\n\n`;
+  for (const tl of TYPE_LANES) lanes.push({ key: tl.key, label: tl.label, kind: 'type', tone: 'type', cols: 2, cards: tl.kinds.map((k) => typeCards[k]) });
+
+  // hidden cards leave the layout; stacked lanes; arrival order; hero
+  for (const l of lanes) { l.cards = ledger.sort(l.cards.filter((c) => !isHidden(c.key))); l.stacked = spreadBy[l.key] === false && l.cards.length > 1; }
+  const ordered = ledger.sort(lanes).filter((l) => l.cards.length > 0);
+  const allCards = ordered.flatMap((l) => l.cards);
+  const tabCards = allCards.filter((c) => c.kind === 'tab' || c.kind === 'seat');
+  const heroKey = (pinnedKey && allCards.some((c) => c.key === pinnedKey)) ? pinnedKey : (tabCards[0]?.key || '');
+  for (const c of allCards) c.hero = c.key === heroKey;
   useEffect(() => {
     if (!heroKey) return;
     setLiveKeys((prev) => (prev[0] === heroKey ? prev : [heroKey, ...prev.filter((k) => k !== heroKey)].slice(0, 3)));
   }, [heroKey]);
   const liveSet = new Set([heroKey, ...liveKeys, hoverKey].filter(Boolean));
 
-  // ── layout ───────────────────────────────────────────────────────────────────
-  const H = 680, GAP = 72, X0 = 120, Y0 = 175, WORLD_W = 2800, HEADER = 44, OFFX = 32, OFFY = 36;
-  const vpRect = wrap.current?.getBoundingClientRect();
-  const onScreen = (x: number, y: number, w: number, h: number) => {
-    if (!vpRect) return true;
-    const sx = cam.x + x * cam.z, sy = cam.y + y * cam.z, sw = w * cam.z, sh = h * cam.z, m = 120;
-    return sx + sw > -m && sx < vpRect.width + m && sy + sh > -m && sy < vpRect.height + m;
-  };
-  const cardW = (c: Cell) => Math.round(H * (aspectBy[c.key] || (c.device ? 0.46 : 1.6)));
-
-  interface Laid { c: Cell; x: number; y: number; w: number; z: number; top: boolean }
-  const laid: Laid[] = [];
-  const decks: { st: Stack; x: number; y: number; w: number; spread: boolean }[] = [];
-  let x = X0, y = Y0;
-  const rowH = H + HEADER + OFFY * 5 + GAP;
-  for (const st of stacks) {
-    // DEFAULT FANNED: a browser's tabs show ALL cards side-by-side unless the
-    // user explicitly stacks that deck (spreadBy[key]===false). Spreading only
-    // changes LAYOUT — the freeze/LOD logic still keeps dormant tabs cheap — so
-    // "see all open tabs" is the default, not a per-deck click. (fix b, 2026-07-28)
-    const spread = spreadBy[st.key] !== false;
-    const w0 = cardW(st.cells[0] || ({ key: '', session: '' } as Cell)) || 300;
-    const fpW = spread ? Math.max(w0, st.cells.reduce((a, c) => a + cardW(c) + 16, -16)) : w0 + OFFX * (st.cells.length - 1);
-    if (x > X0 && x + fpW > X0 + WORLD_W) { x = X0; y += rowH; }
-    const ox = x, oy = y + HEADER;
-    const offD = posBy[st.key] || { x: 0, y: 0 };
-    const topKey = st.cells.some((c) => c.key === heroKey) ? heroKey : st.cells[0]?.key;
-    const others = st.cells.filter((c) => c.key !== topKey);
-    let sx = ox + offD.x;
-    st.cells.forEach((c) => {
-      if (spread) { laid.push({ c, x: sx, y: oy + offD.y, w: cardW(c), z: 1, top: c.key === topKey }); sx += cardW(c) + 16; }
-      else {
-        const isTop = c.key === topKey;
-        const oi = isTop ? 0 : others.indexOf(c) + 1;
-        const z = isTop ? others.length + 2 : others.length - others.indexOf(c);
-        laid.push({ c, x: ox + offD.x + OFFX * oi, y: oy + offD.y + OFFY * oi, w: w0, z, top: isTop });
-      }
-    });
-    decks.push({ st, x: ox + offD.x, y: y + offD.y, w: fpW, spread });
-    x = ox + fpW + GAP;
-  }
-
-  const screened = laid.map((L) => ({ ...L, vis: onScreen(L.x, L.y, L.w, H) }));
-  rectsRef.current = {}; // card key -> world rect, for /focus auto-zoom
-  for (const L of laid) rectsRef.current[L.c.key] = { x: L.x, y: L.y, w: L.w };
-  // LEVEL-OF-DETAIL: the card's DISPLAYED width (world × zoom) → a quantized bucket
-  // 8 asks the capture for, so a tiny zoomed-out card costs tiny pixels and the
-  // zoomed hero asks for full res. Buckets keep the stream from reconnecting on
-  // every zoom tick. "Pay for the pixels you show."
-  const lodBucket = (px: number) => { for (const v of [160, 240, 360, 540, 768, 1024, 1440]) if (px <= v) return v; return 1600; };
-  const seatPanes: PaneRect[] = screened.map((L) => {
-    const hero = L.c.key === heroKey;
-    const isFox = L.c.session === 'fox' && !!L.c.context;
-    const inSet = liveSet.has(L.c.key); // hero + recent-set + hovered
-    // Firefox: a card is LIVE only if it's in the bounded set (else it freezes to bound
-    // memory). Other engines keep the classic "deck's top card streams" rule.
-    const live = isFox ? inSet : (L.top && L.vis);
-    // tmux panes are TEXT frames (capture-pane) — pennies, not compositor surfaces —
-    // so every on-screen pane polls; the bounded-set economy is a pixels problem.
-    // PARKED tabs (#7): discarded, no BiDi context — never stream; render frozen
-    // with a P badge + click-to-wake. parked = seen(chrome) minus drivable(BiDi).
-    const isParked = !!L.c.parked;
-    const streams = !isParked && (L.c.session === 'tmux' || L.c.session === 'daemons' || L.c.session === 'nvim' ? true : (isFox ? inSet : L.top)) && L.vis;
-    return {
-      id: 'seat-' + L.c.key, x: L.x, y: L.y, w: L.w, h: H, z: L.z, gravity: hero,
-      node: <Viewport session={L.c.session} context={L.c.context} title={L.c.title} url={L.c.url}
-        parked={isParked}
-        visible={streams} live={!isParked && live}
-        fps={parentMem > 3500 ? (hero ? 1 : 0) : (hero ? 3 : (streams ? 0.4 : 0))} pinned={hero}
-        lodW={lodBucket(L.w * cam.z)}
-        fx={isFox} fxNeedle={L.c.url ? host(L.c.url) : ''}
-        onPin={() => setPinnedKey(L.c.key)}
-        onAspect={(r) => setAspectBy((p) => (Math.abs((p[L.c.key] || 0) - r) > 0.01 ? { ...p, [L.c.key]: r } : p))}
-        hud={L.c.url ? hudBy[L.c.url] : undefined} />,
-    };
+  // ── PACK ────────────────────────────────────────────────────────────────────
+  const world = packWorld(ordered, heroKey, posBy);
+  rectsRef.current = {};
+  for (const L of world.lanes) for (const p of L.cards) rectsRef.current[p.key] = { x: p.x, y: p.y, w: p.w, h: p.h };
+  const laneRect = (key: string) => world.lanes.find((L) => L.lane.key === key);
+  const goto = (r: { x: number; y: number; w: number; h: number }, z: number) => { const w = vpRef.current.w || 1200, h = vpRef.current.h || 800; setCam({ z, x: w / 2 - (r.x + r.w / 2) * z, y: h / 2 - (r.y + r.h / 2) * z }); };
+  const pendingLane = useRef('');
+  function focusLane(key: string) { pendingLane.current = key; }
+  useEffect(() => { // after a level change that targeted a lane, land on it
+    const k = pendingLane.current; if (!k) return;
+    const L = world.lanes.find((x) => x.lane.key === k || x.lane.cards.some((c) => c.key.endsWith(k)));
+    if (L) { pendingLane.current = ''; goto({ x: L.x, y: L.y, w: L.w, h: L.h + GRID.laneHead }, Math.min(0.9, Math.max(0.45, (vpRef.current.w || 1200) / (L.w + 200)))); }
   });
+  // when the effective level flips (zoom crossed a threshold), keep the camera on the world
+  const prevLevel = useRef(level);
+  useEffect(() => {
+    if (prevLevel.current === level) return;
+    prevLevel.current = level;
+    if (pendingLane.current) return;
+    // the new level's world has a different height: keep x centred on it and
+    // clamp y so the top of the world is on screen (a deep scroll from the
+    // previous level would otherwise leave every card occluded).
+    setCam((c) => { const vh = vpRef.current.h || 800; const minY = Math.min(40, vh - world.h * c.z); return { ...c, x: (vpRef.current.w || 1200) / 2 - (world.w / 2) * c.z, y: Math.max(minY, Math.min(c.y, 40)) }; });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [level]);
 
-  const yBelow = y + rowH + 10;
-  // the RECORDING DECK — captured commands live, in place (not the default feed).
-  const recPane: PaneRect = {
-    id: 'recording', x: X0, y: yBelow, w: 640, h: 470, node: (
-      <div className="rec-deck">
-        <div className="panel-h">recording {rec.recording ? `· ● ${rec.name} · ${rec.frames ?? 0} cmds` : `· ○ idle`}</div>
-        <div className="rec-deck-body">
-          {!(rec.captured && rec.captured.length) && <div className="empty">{rec.recording ? 'drive a live card — each command lands here as you go' : 'press ● record, then drive a card; the case builds here'}</div>}
-          {(rec.captured || []).slice().reverse().map((f) => (
-            <div key={f.seq} className={`cap-card ${f.physics}`} title={f.url}>
-              <span className="cap-seq">{f.seq}</span>
-              <span className={`cap-phys ${f.physics}`}>{f.physics === 'channel' ? '⟂' : '→'}</span>
-              <span className="cap-method">{f.method}</span>
-              <span className="cap-url">{host(f.url)}</span>
-              {f.seat && <span className="cap-seat">{f.seat}</span>}
-              <span className={`cap-status s${Math.floor((f.status || 0) / 100)}`}>{f.status || '·'}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    ),
-  };
-  const panes: PaneRect[] = [
-    ...seatPanes,
-    recPane,
-    { id: 'resources', x: X0 + 680, y: yBelow, w: 560, h: 470, node: <Resources session={session} /> },
-    { id: 'compose', x: X0 + 1260, y: yBelow, w: 560, h: 470, node: <PasteCurl /> },
-  ];
-  const worldW = Math.max(2800, x);
-  const worldH = yBelow + 540;
+  // KEEP THE WORLD IN VIEW: a persisted camera from a taller level (or a lane
+  // that vanished) can leave the viewport over empty space with every card
+  // occluded. When the viewport and the world don't intersect, snap to the top-
+  // left. Runs on world/viewport/level changes only — panning off the edge by
+  // hand is the operator's, this never fights a drag.
+  const camRef = useRef(cam); camRef.current = cam;
+  useEffect(() => {
+    const v = vpRef.current, c = camRef.current;
+    if (!v.w || !world.h || pendingLane.current) return;
+    const vx = -c.x / c.z, vy = -c.y / c.z, vw = v.w / c.z, vh = v.h / c.z;
+    const intersects = vx < world.w && vx + vw > 0 && vy < world.h && vy + vh > 0;
+    if (!intersects) setCam((k) => ({ ...k, x: 40, y: 40 }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [world.w, world.h, vp.w, vp.h, level]);
+
+  // LEVEL-OF-DETAIL: displayed width → quantized capture width bucket
+  const lodBucket = (px: number) => { for (const v of [160, 240, 360, 540, 768, 1024, 1440]) if (px <= v) return v; return 1600; };
 
   useEffect(() => {
     const el = wrap.current; if (!el) return;
     const onWheel = (e: WheelEvent) => {
-      // OVERLAY WIDGETS scroll NATIVELY — the canvas must not steal their wheel.
-      // (2026-08-11: scrolling the work/matrix widget panned the MAP instead of
-      // the list, because this handler preventDefault'd everything but the live
-      // image. Now any floating panel — instruments, feed, minimap — keeps its
-      // own scroll; only the world (the "actual thing loaded") pans/zooms.)
-      // each card/panel body scrolls ITSELF, not the map (fix: scrolling a tmux
-      // pane card used to pan the canvas — now .vp-text/.vp-tmux and the floating
-      // panels keep their own wheel, visibly distinct from the world's pan/zoom).
-      if ((e.target as HTMLElement).closest('.vp-text, .vp-tmux, .canvas-live, .canvas-send, .pane-live, .pl-table, .dpane, .vp-interactive, .instruments, .wire-log, .rec-bar, .minimap, .persp-bar')) return;
+      // each card/panel body scrolls ITSELF, not the map; only the world pans/zooms.
+      if ((e.target as HTMLElement).closest('.card-b.scroll, .vp-text, .vp-tmux, .vp-interactive, .rec-bar, .minimap, .persp-bar, .cards-menu')) return;
       e.preventDefault();
       if (e.ctrlKey || e.metaKey) {
-        const r = el.getBoundingClientRect(); const mx = e.clientX - r.left, my = e.clientY - r.top;
-        setCam((c) => { const nz = Math.max(0.1, Math.min(3, c.z * (e.deltaY < 0 ? 1.06 : 0.94))); const k = nz / c.z; return { z: nz, x: mx - (mx - c.x) * k, y: my - (my - c.y) * k }; });
+        const r = (e.currentTarget as HTMLElement); const mx = e.clientX - r.offsetLeft, my = e.clientY - r.offsetTop;
+        setCam((c) => { const nz = Math.max(0.06, Math.min(3, c.z * (e.deltaY < 0 ? 1.06 : 0.94))); const k = nz / c.z; return { z: nz, x: mx - (mx - c.x) * k, y: my - (my - c.y) * k }; });
       } else {
         setCam((c) => ({ ...c, x: c.x - e.deltaX, y: c.y - e.deltaY }));
       }
     };
     const onDown = (e: PointerEvent) => {
-      if ((e.target as HTMLElement).closest('button, input, select, textarea, a, .seeing-tabs, .tab-pick, .series-row, .rec-btn, .curl-in, .persp-bar, .deck-head, .cap-card, .vp-interactive')) return;
+      if ((e.target as HTMLElement).closest('button, input, select, textarea, a, .card-b.scroll, .card-acts, .seeing-tabs, .tab-pick, .series-row, .rec-btn, .curl-in, .persp-bar, .deck-head, .cap-card, .vp-interactive, .cards-menu')) return;
       el.style.cursor = 'grabbing';
       let lx = e.clientX, ly = e.clientY;
       const move = (ev: PointerEvent) => { setCam((c) => ({ ...c, x: c.x + (ev.clientX - lx), y: c.y + (ev.clientY - ly) })); lx = ev.clientX; ly = ev.clientY; };
@@ -382,66 +363,105 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     return () => { el.removeEventListener('wheel', onWheel); el.removeEventListener('pointerdown', onDown); };
   }, [setCam]);
 
-  const goto = (rx: number, ry: number, rw: number, rh: number, z: number) => { const r = wrap.current!.getBoundingClientRect(); setCam({ z, x: r.width / 2 - (rx + rw / 2) * z, y: r.height / 2 - (ry + rh / 2) * z }); };
   const persp = {
-    p1: () => { const g = seatPanes.find((p) => p.gravity) || seatPanes[0]; if (g) goto(g.x, g.y, g.w, g.h, 0.9); },
-    p2: () => goto(X0, Y0, WORLD_W, H + HEADER, 0.45),
-    bird: () => goto(0, 100, worldW, worldH, 0.3),
+    p1: () => { const r = rectsRef.current[heroKey]; if (r) goto(r, 0.9); },
+    p2: () => goto({ x: GRID.x0, y: GRID.y0, w: world.w - GRID.x0, h: Math.min(world.h - GRID.y0, 1200) }, 0.45),
+    bird: () => { const w = vpRef.current.w || 1200, h = vpRef.current.h || 800; const z = Math.max(0.06, Math.min(0.3, Math.min(w / world.w, h / world.h) * 0.92)); goto({ x: 0, y: 0, w: world.w, h: world.h }, z); },
   };
+  const cycleLevel = () => { const order: ('auto' | Level)[] = ['auto', ...LEVELS]; setLevelPick(order[(order.indexOf(levelPick) + 1) % order.length]); };
+  const showCard = (key: string) => { setHidden((h) => ({ ...h, [key]: false })); window.setTimeout(() => { const r = rectsRef.current[key]; if (r) goto(r, 0.8); }, 60); };
 
   // NB: no window.prompt — the cockpit runs inside a WebDriver-controlled Firefox,
-  // which auto-DISMISSES native dialogs (default "dismiss and notify" prompt behavior),
-  // so a prompt() silently returned null and "+ tab" did nothing. Use an inline input.
-  const newTab = async (st: Stack, url: string) => {
+  // which auto-DISMISSES native dialogs. Use an inline input.
+  const newTab = async (seat: Seat, url: string) => {
     const u = (url || '').trim();
     if (!u) return;
     setAddFor('');
-    await addTab(st.session, u, st.isCDP);
+    await addTab(seat.id, u, seat.stream === 'cdp');
   };
+  const seatOfLane = (key: string): Seat | undefined => { for (const h of tree) for (const p of h.profiles) if (p.key === key) return p.seat; return undefined; };
 
+  let mounted = 0, ghosts = 0;
   return (
     <div className="canvas-wrap" ref={wrap}>
       <div className="world" style={{ transform: `translate(${cam.x}px,${cam.y}px) scale(${cam.z})` }}>
-        {/* deck headers — name · tab count · fan · add tab */}
-        {decks.map((d) => (
-          <div key={'h-' + d.st.key} className="deck-head" style={{ left: d.x, top: d.y, width: d.w }}
-            onPointerDown={(e) => {
-              if ((e.target as HTMLElement).closest('button, input')) return; // buttons still click
-              try { (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId); } catch { /* synthetic/pen pointers may lack capture — drag works regardless */ }
-              const cur = posBy[d.st.key] || { x: 0, y: 0 };
-              dragDeck.current = { key: d.st.key, px: e.clientX, py: e.clientY, bx: cur.x, by: cur.y };
-            }}
-            onPointerMove={(e) => {
-              const g = dragDeck.current; if (!g || g.key !== d.st.key) return;
-              setPosBy((p) => ({ ...p, [g.key]: { x: g.bx + (e.clientX - g.px) / cam.z, y: g.by + (e.clientY - g.py) / cam.z } }));
-            }}
-            onPointerUp={() => { dragDeck.current = null; }}>
-            <span className={`deck-name ${d.st.isCDP ? 'chrome' : d.st.isBrowser ? 'firefox' : 'seat'}`}>{d.st.label}</span>
-            {d.st.isBrowser && <span className="deck-count">{d.st.cells.length} tab{d.st.cells.length === 1 ? '' : 's'}</span>}
-            {d.st.isBrowser && d.st.cells.length > 1 && (
-              <button className="deck-btn" title={d.spread ? 'stack the deck' : 'fan the deck out — see all tabs'}
-                onClick={() => setSpreadBy((p) => ({ ...p, [d.st.key]: !d.spread }))}>{d.spread ? '▣ stack' : '⊞ fan'}</button>
-            )}
-            {d.st.isBrowser && (addFor === d.st.key
-              ? <input className="deck-add-in" autoFocus value={addUrl}
-                  onChange={(e) => setAddUrl(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') newTab(d.st, addUrl); else if (e.key === 'Escape') setAddFor(''); }}
-                  placeholder="url + Enter" />
-              : <button className="deck-btn add" title="open a new tab in this browser to drive/record" onClick={() => setAddFor(d.st.key)}>+ tab</button>)}
-          </div>
-        ))}
-        {panes.map((p) => {
-          const seatKey = p.id.startsWith('seat-') ? p.id.slice(5) : ''; // hover promotes a frozen tile to live
+        {/* lane heads — name · count · fan/stack · + tab · zoom */}
+        {world.lanes.map((L) => {
+          const l = L.lane; const seat = seatOfLane(l.key);
           return (
-            <div key={p.id} className={`cbox${p.gravity ? ' gravity' : ''}`} style={{ left: p.x, top: p.y, width: p.w, height: p.h, zIndex: p.z ?? 'auto' }}
-              onPointerEnter={seatKey ? () => setHoverKey(seatKey) : undefined}
-              onPointerLeave={seatKey ? () => setHoverKey((h) => (h === seatKey ? '' : h)) : undefined}>
-              {p.node}
+            <div key={'h-' + l.key} className="deck-head" style={{ left: L.x, top: L.y, width: L.w }}
+              onPointerDown={(e) => {
+                if ((e.target as HTMLElement).closest('button, input')) return;
+                try { (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId); } catch { /* */ }
+                const cur = posBy[l.key] || { x: 0, y: 0 };
+                dragLane.current = { key: l.key, px: e.clientX, py: e.clientY, bx: cur.x, by: cur.y };
+              }}
+              onPointerMove={(e) => {
+                const g = dragLane.current; if (!g || g.key !== l.key) return;
+                setPosBy((p) => ({ ...p, [g.key]: { x: g.bx + (e.clientX - g.px) / cam.z, y: g.by + (e.clientY - g.py) / cam.z } }));
+              }}
+              onPointerUp={() => { dragLane.current = null; }}>
+              <span className={`deck-name ${l.tone || 'seat'}`}>{l.label}</span>
+              {l.badge && <span className="deck-count">{l.badge}</span>}
+              {!l.badge && <span className="deck-count">{l.cards.length} card{l.cards.length === 1 ? '' : 's'}</span>}
+              {l.cards.length > 1 && (
+                <button className="deck-btn" title={l.stacked ? 'fan the deck out — masonry' : 'stack the deck — solitaire, hero on top'}
+                  onClick={() => setSpreadBy((p) => ({ ...p, [l.key]: !!l.stacked }))}>{l.stacked ? '⊞ fan' : '▣ stack'}</button>
+              )}
+              {l.kind === 'browser' && seat && (addFor === l.key
+                ? <input className="deck-add-in" autoFocus value={addUrl}
+                    onChange={(e) => setAddUrl(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') newTab(seat, addUrl); else if (e.key === 'Escape') setAddFor(''); }}
+                    placeholder="url + Enter" />
+                : <button className="deck-btn add" title="open a new tab in this browser to drive/record" onClick={() => setAddFor(l.key)}>+ tab</button>)}
+              {level !== 'tabs' && l.kind !== 'type' && (
+                <button className="deck-btn" title={`zoom in → ${level === 'hosts' ? 'profiles' : 'tabs'}`}
+                  onClick={() => { setLevelPick(level === 'hosts' ? 'profiles' : 'tabs'); focusLane(l.key); }}>▸ {level === 'hosts' ? 'profiles' : 'tabs'}</button>
+              )}
             </div>
           );
         })}
+        {world.lanes.flatMap((L) => L.cards.map((p) => {
+          const c = p.card;
+          const isVp = c.kind === 'tab' || c.kind === 'seat';
+          const vis = onScreen(p, cam, vp);
+          // OCCLUSION: off-screen cards aren't mounted — except viewports in the
+          // live set (hero + recent), whose stream state must survive a pan.
+          if (!vis && !(isVp && liveSet.has(c.key))) { ghosts++; return <div key={c.key} className="card-ghost" style={{ left: p.x, top: p.y, width: p.w, height: p.h }} />; }
+          mounted++;
+          const lod = !isVp && p.w * cam.z < 150;
+          let body = c.node;
+          if (isVp) {
+            const seatId = c.kind === 'seat' ? c.key : c.lane;
+            const seat = seatOfLane(c.lane);
+            const s = seat?.id || seatId;
+            const tab = c.kind === 'tab' ? (tabsBy[s] || []).find((t) => s + (t.context || '') === c.key) : undefined;
+            const hero = c.key === heroKey;
+            const isFox = !!seat && seat.physics === 'channel' && seat.stream !== 'cdp' && seat.stream !== 'text' && !!tab?.context;
+            const inSet = liveSet.has(c.key);
+            const live = isFox ? inSet : (p.top && vis);
+            const isParked = tab?.parked === 'true';
+            const isText = seat?.stream === 'text';
+            const streams = !isParked && (isText ? true : (isFox ? inSet : p.top)) && vis;
+            body = <Viewport session={s} context={tab?.context} title={c.title} url={tab?.url}
+              parked={isParked} visible={streams} live={!isParked && live}
+              fps={parentMem > 3500 ? (hero ? 1 : 0) : (hero ? 3 : (streams ? 0.4 : 0))} pinned={hero}
+              lodW={lodBucket(p.w * cam.z)}
+              fx={isFox} fxNeedle={tab?.url ? hostOf(tab.url) : ''}
+              onPin={() => setPinnedKey(c.key)}
+              onAspect={(r) => setAspectBy((prev) => (Math.abs((prev[c.key] || 0) - r) > 0.01 ? { ...prev, [c.key]: r } : prev))}
+              hud={tab?.url ? hudBy[tab.url] : undefined} />;
+          }
+          return (
+            <CardFrame key={c.key} card={c} rect={p} lod={lod}
+              onHide={isVp ? undefined : () => setHidden((h) => ({ ...h, [c.key]: true }))}
+              onEnter={isVp ? () => setHoverKey(c.key) : undefined}
+              onLeave={isVp ? () => setHoverKey((h) => (h === c.key ? '' : h)) : undefined}>
+              {body}
+            </CardFrame>
+          );
+        }))}
       </div>
-      {/* RECORD → REPLAY control (the deck itself lives in the world above) */}
       <div className="rec-bar">
         <button className={`rec-btn${rec.recording ? ' on' : ''}`} onClick={toggleRec} title="record every /act you drive on a live card; replay re-fires them — deterministic">
           {rec.recording ? `● REC ${rec.name} · ${rec.frames ?? 0} cmds` : '○ record'}
@@ -456,80 +476,99 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
       </div>
       <div className="persp-bar">
         <button onClick={persp.p1} title="one card">P1 · act</button>
-        <button onClick={persp.p2} title="all decks, side by side">P2 · decks</button>
+        <button onClick={persp.p2} title="all lanes, side by side">P2 · lanes</button>
         <button onClick={persp.bird} title="see everything">◇ bird's-eye</button>
+        <button className="lvl" onClick={cycleLevel} title="semantic zoom: hosts → profiles → tabs (auto follows the zoom)">◎ {levelPick === 'auto' ? `auto · ${level}` : level}</button>
         <button className={showSelf ? 'on' : ''} onClick={() => setShowSelf((v) => !v)} title="reflexive: let this 8 see its OWN tab (1 tab → 2 panes → controls itself)">⟲ self</button>
         <button className={theater ? 'on' : ''} onClick={() => setTheater((v) => !v)} title="watch the pinned card at the real tab's full size (1:1) — stay on 8, see the action live">⛶ watch</button>
-        <button className={sendOpen ? 'on' : ''} onClick={() => setSendOpen((v) => !v)} title="broadcast one prompt to selected/all live claude panes (POST /panes/send)">📣 send</button>
-        <button className={liveOpen ? 'on' : ''} onClick={() => setLiveOpen((v) => !v)} title="one pane as a pod: measured context per turn (usage), process, inspector">🫀 live</button>
-        <button onClick={() => { setPosBy({}); resetDrag(); location.reload(); }} title="forget operator positions — return to the deterministic layout">⌂ layout</button>
-        <span className="persp-z">{stacks.length} decks · {cells.length} cards · {Math.round(cam.z * 100)}%</span>
+        <button onClick={() => showCard('panes')} title="broadcast one prompt to selected/all live claude panes (POST /panes/send)">📣 send</button>
+        <button onClick={() => showCard('heart')} title="one pane as a pod: measured context per turn (usage), process, inspector">🫀 live</button>
+        <button className={menu ? 'on' : ''} onClick={() => setMenu((v) => !v)} title="every card kind: show / hide / go to">▤ cards</button>
+        <button onClick={() => { setPosBy({}); setHidden({}); ledger.reset(); resetDrag(); location.reload(); }} title="forget operator positions, hidden cards and arrival order — return to the deterministic layout">⌂ layout</button>
+        <span className="persp-z">{ordered.length} lanes · {allCards.length} cards · {mounted} live · {ghosts} occluded · {Math.round(cam.z * 100)}%</span>
       </div>
-      {liveOpen && (
-        <div ref={liveRef} className="canvas-send canvas-live" onPointerDown={(e) => e.stopPropagation()}>
-          <div className="cs-head drag-handle">pane · live<button className="cs-x" onClick={() => setLiveOpen(false)}>✕</button></div>
-          <PaneLive />
-        </div>
-      )}
-      {sendOpen && (
-        <div ref={sendRef} className="canvas-send" onPointerDown={(e) => e.stopPropagation()}>
-          <div className="cs-head drag-handle">panes · send<button className="cs-x" onClick={() => setSendOpen(false)}>✕</button></div>
-          <PaneCockpit />
+      {menu && (
+        <div className="cards-menu" onPointerDown={(e) => e.stopPropagation()}>
+          {Object.values(typeCards).map((c) => (
+            <button key={c.key} className={isHidden(c.key) ? '' : 'on'} title={isHidden(c.key) ? 'show + go to' : 'go to (✕ on the card hides it)'}
+              onClick={() => showCard(c.key)}>{isHidden(c.key) ? '○' : '●'} {c.title}</button>
+          ))}
         </div>
       )}
       {theater && (() => {
-        // THEATER — the watched card at the real tab's full size (1:1). You stay
-        // on 8; a tab you're driving fills 8's viewport at ITS real aspect,
-        // streamed crisp (hiRes). "as big as the actual tab when opened."
-        const h = cells.find((c) => c.key === heroKey) || cells[0];
+        // THEATER — the watched card at the real tab's full size (1:1).
+        const h = tabCards.find((c) => c.key === heroKey) || tabCards[0];
         if (!h) return null;
-        const vw = vpRect?.width || 1200, vh = vpRect?.height || 800;
+        const seat = seatOfLane(h.lane); const s = seat?.id || h.key;
+        const tab = (tabsBy[s] || []).find((t) => s + (t.context || '') === h.key);
+        const vw = vp.w || 1200, vh = vp.h || 800;
         const aspect = aspectBy[h.key] || 1.6;
         let W = vw - 48, H2 = W / aspect;
         if (H2 > vh - 96) { H2 = vh - 96; W = H2 * aspect; }
         return (
           <div className="theater" onPointerDown={(e) => { if (e.target === e.currentTarget) setTheater(false); }}>
             <div className="theater-frame" style={{ width: Math.round(W), height: Math.round(H2) }}>
-              <Viewport session={h.session} context={h.context} url={h.url} title={h.title}
+              <Viewport session={s} context={tab?.context} url={tab?.url} title={h.title}
                 visible live fps={12} lodW={Math.round(W)} hiRes
-                fx={h.session === 'fox' && !!h.context} fxNeedle={h.url} />
+                fx={!!seat && seat.stream !== 'cdp' && seat.stream !== 'text' && !!tab?.context} fxNeedle={tab?.url || ''} />
             </div>
             <button className="theater-exit" onClick={() => setTheater(false)} title="exit theater (Esc)">✕ exit</button>
           </div>
         );
       })()}
-      <Instruments />
-      <WireLog />
-      {vpRect && worldW > 0 && (
-        <svg className="minimap" viewBox={`0 0 ${worldW} ${worldH}`}
-          style={{ width: 220, height: Math.round(Math.min(170, 220 * worldH / worldW)) }}
+      {vp.w > 0 && world.w > 0 && (
+        <svg className="minimap" viewBox={`0 0 ${world.w} ${world.h}`}
+          style={{ width: 220, height: Math.round(Math.min(170, 220 * world.h / world.w)) }}
           onPointerDown={(e) => {
-            // DRAG to scrub the camera across the WHOLE world (not the canvas's
-            // 4-way wheel pan): the cursor on the minimap IS where the view centers,
-            // so dragging sweeps the entire board. Click = a single scrub.
+            // DRAG to scrub the camera across the WHOLE world: the cursor on the
+            // minimap IS where the view centers. (One rect read of the minimap on
+            // click — a hit-test, not a layout measurement of any card.)
             const svg = e.currentTarget as SVGSVGElement;
+            const r = svg.getBoundingClientRect();
             const to = (cx: number, cy: number) => {
-              const r = svg.getBoundingClientRect();
-              const wx = (cx - r.left) / r.width * worldW, wy = (cy - r.top) / r.height * worldH;
-              setCam((c) => ({ ...c, x: vpRect.width / 2 - wx * c.z, y: vpRect.height / 2 - wy * c.z }));
+              const wx = (cx - r.left) / r.width * world.w, wy = (cy - r.top) / r.height * world.h;
+              setCam((c) => ({ ...c, x: vp.w / 2 - wx * c.z, y: vp.h / 2 - wy * c.z }));
             };
             to(e.clientX, e.clientY);
             const mv = (ev: PointerEvent) => to(ev.clientX, ev.clientY);
             const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); };
             window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up);
           }}>
-          <rect x={0} y={0} width={worldW} height={worldH} className="mm-bg" />
-          {screened.map((L) => (
-            <rect key={L.c.key} x={L.x} y={L.y} width={L.w} height={H}
-              className={L.c.key === heroKey ? 'mm-hero' : 'mm-seat'} />
-          ))}
+          <rect x={0} y={0} width={world.w} height={world.h} className="mm-bg" />
+          {world.lanes.flatMap((L) => L.cards.map((p) => (
+            <rect key={p.key} x={p.x} y={p.y} width={p.w} height={p.h} className={p.key === heroKey ? 'mm-hero' : 'mm-seat'} />
+          )))}
           {(() => {
             const vx = Math.max(0, -cam.x / cam.z), vy = Math.max(0, -cam.y / cam.z);
-            const vx2 = Math.min(worldW, (vpRect.width - cam.x) / cam.z), vy2 = Math.min(worldH, (vpRect.height - cam.y) / cam.z);
+            const vx2 = Math.min(world.w, (vp.w - cam.x) / cam.z), vy2 = Math.min(world.h, (vp.h - cam.y) / cam.z);
             return <rect x={vx} y={vy} width={Math.max(0, vx2 - vx)} height={Math.max(0, vy2 - vy)} className="mm-view" vectorEffect="non-scaling-stroke" />;
           })()}
         </svg>
       )}
+    </div>
+  );
+}
+
+// ── the recording deck body + its text ───────────────────────────────────────
+function recText(rec: { recording: boolean; name?: string; frames?: number; captured?: CapFrame[] }): string {
+  const rows = rec.captured || [];
+  if (!rows.length) return rec.recording ? 'drive a live card — each command lands here as you go' : 'press ● record, then drive a card; the case builds here';
+  return rows.map((f) => `${f.seq} ${f.physics === 'channel' ? '⟂' : '→'} ${f.method} ${hostOf(f.url)} ${f.seat || ''} ${f.status || '·'}`).join('\n');
+}
+function RecBody({ rec }: { rec: { recording: boolean; name?: string; frames?: number; captured?: CapFrame[] } }) {
+  return (
+    <div className="rec-deck-body">
+      {!(rec.captured && rec.captured.length) && <div className="empty">{rec.recording ? 'drive a live card — each command lands here as you go' : 'press ● record, then drive a card; the case builds here'}</div>}
+      {(rec.captured || []).slice().reverse().map((f) => (
+        <div key={f.seq} className={`cap-card ${f.physics}`} title={f.url}>
+          <span className="cap-seq">{f.seq}</span>
+          <span className={`cap-phys ${f.physics}`}>{f.physics === 'channel' ? '⟂' : '→'}</span>
+          <span className="cap-method">{f.method}</span>
+          <span className="cap-url">{hostOf(f.url)}</span>
+          {f.seat && <span className="cap-seat">{f.seat}</span>}
+          <span className={`cap-status s${Math.floor((f.status || 0) / 100)}`}>{f.status || '·'}</span>
+        </div>
+      ))}
     </div>
   );
 }
