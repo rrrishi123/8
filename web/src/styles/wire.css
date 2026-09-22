@@ -771,3 +771,18 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .h-attach-msg { font-size: 10px; color: var(--fg-dim); max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .h-attach-msg.err { color: #ff7b72; }
 .node-live .nl-bar .h-attach.nl-attach button { margin-left: 0; }
+
+/* ── pretext-B: DOM panels as CSS CONTAINER QUERIES ──────────────────────────
+   The flow-layout half of the two-regime responsiveness standard: canvas cards
+   use pretext + the fluid UNIT (regime A); DOM flow panels respond to their OWN
+   width via @container (regime B), the W3C-standard component-responsiveness.
+   Each panel is a size-query container; rules only shrink/wrap at narrow widths
+   (additive, reversible). Per-panel breakpoints can be tuned further. */
+.panel, .pane-cockpit { container-type: inline-size; }
+.hud { flex-wrap: wrap; }                 /* the budget HUD wraps instead of overflowing */
+@container (max-width: 360px) {
+  .pane-cockpit { gap: 4px; padding: 4px; font-size: 11px; }
+}
+@container (max-width: 300px) {
+  .panel .panel-h { font-size: 10px; opacity: .8; }
+}
