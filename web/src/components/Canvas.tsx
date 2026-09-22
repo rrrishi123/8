@@ -283,7 +283,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   // type lanes (the gauges) — at every level, so the cockpit never loses its instruments
   const typeCards: Record<string, Card> = {
     panes: { key: 'panes', lane: 'type:minds', kind: 'panes', title: KIND_TITLE.panes, meta: 'broadcast one prompt to chosen claude panes', measure: 'dom', node: <PaneCockpit cardKey="panes" /> },
-    heart: { key: 'heart', lane: 'type:minds', kind: 'heart', title: KIND_TITLE.heart, meta: 'one pane as a pod — measured context, process, inspector', node: <PaneLive cardKey="heart" /> },
+    heart: { key: 'heart', lane: 'type:minds', kind: 'heart', title: KIND_TITLE.heart, meta: 'one pane as a pod — measured context, process, inspector', measure: 'dom', node: <PaneLive cardKey="heart" /> },
     tasks: { key: 'tasks', lane: 'type:work', kind: 'tasks', title: KIND_TITLE.tasks, meta: `${instr.openCount} open`, node: <WorkBody cardKey="tasks" i={instr} /> },
     record: { key: 'record', lane: 'type:work', kind: 'record', title: KIND_TITLE.record, meta: rec.recording ? `● ${rec.name} · ${rec.frames ?? 0} cmds` : '○ idle', text: recText(rec),
       node: <RecBody rec={rec} /> },
