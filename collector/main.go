@@ -4318,7 +4318,11 @@ func main() {
 		brokers = append(brokers, broker{id: strings.TrimSpace(id), base: strings.TrimSpace(base)})
 	}
 	if len(brokers) == 0 {
-		log.Fatal("collector: -brokers is required (session=url,session=url,...)")
+		// WITNESS-ONLY boot: a browserless host (a headless VM, a witness-only node)
+		// still serves the db, the wire, and every /endpoint — it just observes no
+		// browser. up.go already treats "no firefox -> collector-only" as a valid boot;
+		// this makes the collector agree instead of fataling, so 8 is portable to ANY host.
+		log.Println("collector: no -brokers — WITNESS-ONLY boot (db + wire + endpoints; no browser observation on this host). A browser host adds brokers via `collector up`.")
 	}
 
 	c := newCollector(brokers)
