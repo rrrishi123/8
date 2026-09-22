@@ -65,6 +65,20 @@ export const GRID = {
   x0: 120, y0: 175,          // world origin
 };
 
+// FLUID UNIT — responsiveness regime A: the column width tracks the viewport so
+// TEXT cards reflow (pretext re-wraps at the new width) instead of a fixed 560
+// world column that is only camera-zoomed. Clamped so text stays legible. DOM
+// flow panels get responsiveness from CSS container queries — the two-regime
+// standard. Canvas calls setUnit(viewportWidth) on resize; a change re-lays-out.
+let UNIT = GRID.unit;
+export const unitOf = () => UNIT;
+export function setUnit(viewportW: number): number {
+  if (!viewportW) return UNIT;
+  const u = Math.round(Math.max(420, Math.min(760, viewportW * 0.46)));
+  if (u !== UNIT) { UNIT = u; bumpLayout(); }
+  return UNIT;
+}
+
 // ── MEASURE: pretext, cached ──────────────────────────────────────────────────
 // prepare() once per (text, font) — the expensive segmentation+measurement pass;
 // layout() per (width) — arithmetic. The cache is bounded so a chatty feed can't
@@ -113,7 +127,7 @@ export function measureText(text: string, width: number): { height: number; line
 // ── SIZE: a card's rect from its size-source ─────────────────────────────────
 export function cardSize(c: Card): { w: number; h: number } {
   const span = Math.max(1, c.span || 1);
-  const w = span * GRID.unit + (span - 1) * GRID.gap;
+  const w = span * UNIT + (span - 1) * GRID.gap;
   const head = c.bare ? 0 : GRID.headH;
   let body: number;
   const measured = c.measure === 'dom' ? heightOf(c.key) : undefined;
@@ -124,7 +138,7 @@ export function cardSize(c: Card): { w: number; h: number } {
     body = Math.round(m.height) + 2 * GRID.padY;
   }
   const minH = c.minH ?? (c.aspect ? 0 : LH * 3 + 2 * GRID.padY);
-  const maxH = c.maxH ?? (c.aspect ? Infinity : Math.round(GRID.unit * 1.15));
+  const maxH = c.maxH ?? (c.aspect ? Infinity : Math.round(UNIT * 1.15));
   body = Math.max(minH, Math.min(maxH, body));
   return { w, h: head + body };
 }
@@ -169,7 +183,7 @@ export function packLane(l: Lane, heroKey: string): { w: number; h: number; card
   }
   const cols = laneCols(l);
   const tops = new Array<number>(cols).fill(0);
-  const colX = (i: number) => i * (GRID.unit + GRID.gap);
+  const colX = (i: number) => i * (UNIT + GRID.gap);
   let maxW = 0;
   for (const c of l.cards) {
     const { w, h } = cardSize(c);
@@ -185,7 +199,7 @@ export function packLane(l: Lane, heroKey: string): { w: number; h: number; card
     maxW = Math.max(maxW, x + w);
   }
   const h = Math.max(0, Math.max(...tops, 0) - GRID.gap);
-  return { w: Math.max(maxW, cols * GRID.unit + (cols - 1) * GRID.gap), h, cards: out };
+  return { w: Math.max(maxW, cols * UNIT + (cols - 1) * GRID.gap), h, cards: out };
 }
 
 /** lanes side by side, left → right, in the given order; each lane may carry an operator offset */

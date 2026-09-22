@@ -11,7 +11,7 @@ import { useWireRows, WireRows } from './WireLog';
 import { CardFrame, HostBody, ProfileBody, BudgetBody } from './Card';
 import { useLocal } from './Dock';
 import { procinfo, recordCtl, listSeries, replaySeries, addTab, getFocus, type SeriesInfo, type CapFrame } from '../lib/api';
-import { GRID, SeqLedger, packWorld, onScreen, syncFontFromCSS, levelForZoom, LEVELS, type Card, type Lane, type Level, type CardKind } from '../lib/cards';
+import { GRID, SeqLedger, packWorld, onScreen, syncFontFromCSS, setUnit, levelForZoom, LEVELS, type Card, type Lane, type Level, type CardKind } from '../lib/cards';
 import { fetchNodes, buildTree, liveView, type BrowserNode, type Seat, type Tab, type HostNode, type ProfileNode } from '../lib/nodes';
 import { useReportedTexts, textOf } from '../lib/cardText';
 
@@ -91,7 +91,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   const [vp, setVp] = useState({ w: 0, h: 0 });
   useEffect(() => {
     const el = wrap.current; if (!el) return;
-    const ro = new ResizeObserver((es) => { const r = es[0]?.contentRect; if (r) setVp({ w: r.width, h: r.height }); });
+    const ro = new ResizeObserver((es) => { const r = es[0]?.contentRect; if (r) { setUnit(r.width); setVp({ w: r.width, h: r.height }); } });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
