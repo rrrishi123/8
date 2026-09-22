@@ -778,8 +778,14 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
    width via @container (regime B), the W3C-standard component-responsiveness.
    Each panel is a size-query container; rules only shrink/wrap at narrow widths
    (additive, reversible). Per-panel breakpoints can be tuned further. */
-.panel, .pane-cockpit { container-type: inline-size; }
-.hud { flex-wrap: wrap; }                 /* the budget HUD wraps instead of overflowing */
+/* A @container query matches DESCENDANTS of a container, never the container
+   itself. So the container is the ANCESTOR of what a rule styles: .card-measure
+   (the dom-regime body wrapper) contains .pane-cockpit; .panel contains its own
+   .panel-h. inline-size containment only fixes the WIDTH axis (taken from the
+   parent, as these full-width bodies already do) — height still flows from
+   content, so the ResizeObserver height measurement is unaffected. */
+.card-measure, .panel { container-type: inline-size; }
+.hud { flex-wrap: wrap; }                 /* plain flex aid (not a query): the budget HUD wraps instead of overflowing */
 @container (max-width: 360px) {
   .pane-cockpit { gap: 4px; padding: 4px; font-size: 11px; }
 }

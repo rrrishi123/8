@@ -60,6 +60,7 @@ export const GRID = {
   headH: 34,     // card header (kind · title · meta · actions)
   padY: 10,      // body vertical padding (text cards)
   padX: 12,
+  border: 1,     // .card border width — box-sizing:border-box eats 2×this from the interior, so the card's total height must include it or every dom card scrolls 2px (#1147)
   laneHead: 44,  // lane head strip above a lane
   stackOX: 32, stackOY: 36, // solitaire offsets
   x0: 120, y0: 175,          // world origin
@@ -140,7 +141,10 @@ export function cardSize(c: Card): { w: number; h: number } {
   const minH = c.minH ?? (c.aspect ? 0 : LH * 3 + 2 * GRID.padY);
   const maxH = c.maxH ?? (c.aspect ? Infinity : Math.round(UNIT * 1.15));
   body = Math.max(minH, Math.min(maxH, body));
-  return { w, h: head + body };
+  // + the card's own top+bottom border: rect.h is a border-box (box-sizing:border-box),
+  // so the interior the body gets is rect.h − 2×border. Without this the measured body
+  // is 2px taller than its slot and every structured card shows a permanent 2px scroll.
+  return { w, h: head + body + 2 * GRID.border };
 }
 
 // ── PACK: masonry per lane ───────────────────────────────────────────────────
