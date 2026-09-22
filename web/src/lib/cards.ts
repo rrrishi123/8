@@ -1,14 +1,20 @@
 import { prepare, layout, type PreparedText } from '@chenglou/pretext';
 import type { ReactNode } from 'react';
+import { heightOf, bumpLayout } from './cardText';
 
 // ── THE CARD GRAMMAR ──────────────────────────────────────────────────────────
 // ONE grammar for every card on the cockpit canvas: a tab, a tmux pane, a host,
 // a profile, the budget HUD, the tasks list, the heart (pane·live), the panes
 // cockpit, the wire feed, recording, resources, compose, clock, matrix, inner
 // host, portal. A card is {identity, lane, kind, title, meta, size-source, body}.
-// Its SIZE comes from one of two sources, never from the DOM:
+// Its SIZE comes from one of THREE regimes (#1147):
 //   • aspect  — a picture card (viewport): h = w / aspect (+ header)
 //   • text    — a text card: h = pretext.layout(text, w) (+ chrome), NO reflow
+//   • measure — a STRUCTURED card (host/profile/panes/budget): its body is
+//               measured ONCE in the DOM (ResizeObserver in CardFrame) and the
+//               height lands in the same layout store the text regime reads.
+//               Until the first measurement it falls back to its text (if any)
+//               or the 3-line floor. No parallel plaintext copy to drift.
 // The engine below turns cards into rects (masonry per lane, lanes side by side)
 // and answers "is this rect on screen" for virtualization/occlusion.
 export type CardKind =
@@ -24,6 +30,7 @@ export interface Card {
   meta?: string;        // second line under the title
   aspect?: number;      // picture cards: width / height of the body
   text?: string;        // text cards: the body text pretext measures ('\n' = hard break)
+  measure?: 'dom';      // structured cards: body height measured once in the DOM (see cardText.reportHeight)
   span?: number;        // unit columns (default 1)
   minH?: number;        // body floor (px, world)
   maxH?: number;        // body ceiling (px, world) — beyond it the body scrolls
@@ -79,6 +86,13 @@ export const cardFont = () => ({ font: FONT, lineHeight: LH });
 
 const cache = new Map<string, PreparedText>();
 const CACHE_MAX = 3000;
+// a late webfont (JetBrains Mono) changes every glyph advance: prepared texts
+// measured against the fallback face are wrong once it lands. Drop the cache
+// and re-layout when the document's fonts finish loading. Measured (dom)
+// cards re-report on their own — the ResizeObserver sees the reflow.
+try {
+  document.fonts?.addEventListener?.('loadingdone', () => { cache.clear(); syncFontFromCSS(); bumpLayout(); });
+} catch { /* no DOM */ }
 function prepared(text: string): PreparedText {
   const k = FONT + '\u0000' + text;
   let p = cache.get(k);
@@ -102,7 +116,9 @@ export function cardSize(c: Card): { w: number; h: number } {
   const w = span * GRID.unit + (span - 1) * GRID.gap;
   const head = c.bare ? 0 : GRID.headH;
   let body: number;
+  const measured = c.measure === 'dom' ? heightOf(c.key) : undefined;
   if (c.aspect) body = Math.round(w / Math.max(0.2, c.aspect)) + (c.bare ? GRID.headH : 0);
+  else if (measured !== undefined) body = measured; // dom regime: the wrapper's own height (its padding included)
   else {
     const m = measureText(c.text || '', w - 2 * GRID.padX);
     body = Math.round(m.height) + 2 * GRID.padY;

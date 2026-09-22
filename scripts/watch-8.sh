@@ -31,7 +31,7 @@ echo "$(date +%H:%M:%S) 8-WATCH watcher started (pid $$)" >> "$LOG"
 
 prev="INIT"; hi=0; wdBad=0; upBad=0
 while true; do
-  ff=$(pgrep -f 'firefox.*ltqa-firefox-deepseek' 2>/dev/null | head -1)
+  ff=$(pgrep -f 'firefox.*firefox-profile' 2>/dev/null | head -1)
   wc=$(pgrep -f 'bash scripts/watchdog.sh' 2>/dev/null | grep -c .)
   uc=$(pgrep -f 'bash scripts/up.sh' 2>/dev/null | grep -c .)
   mem=$(curl -s -m4 "http://127.0.0.1:7070/procinfo?session=fox" 2>/dev/null | jq -r '.parent_mem_mb // -1' 2>/dev/null); mem=${mem%.*}; [ -z "$mem" ] && mem=-1

@@ -49,7 +49,7 @@ func recycleThresholdMB() int {
 
 // ── HOST RESOURCE METRICS (/collector/hostres) ──────────────────────────────
 // Each collector reports the resources of the host it runs on, so 8's main
-// collector on this mac can show an inner host — omarchy, a container — over
+// collector on this mac can show an inner host — a Linux peer, a container — over
 // the wire. Read straight from the OS (no external dependency): /proc on Linux,
 // sysctl/vm_stat on macOS — the same runtime-branch pattern totalRAMMB uses.
 

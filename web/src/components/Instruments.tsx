@@ -206,7 +206,7 @@ export function Instruments() {
         <button className={`inst-chip${open === 'work' ? ' on' : ''}`} onClick={() => tog('work')} title="shared work surface">✓ {openCount}</button>
         <button className={`inst-chip${open === 'matrix' ? ' on' : ''}`} onClick={() => tog('matrix')} title="surfaces × senses — the map of the unfound">▦</button>
         <button className={`inst-chip${open === 'inner' ? ' on' : ''}`} onClick={() => tog('inner')} title="inner host — this machine's containers + colima VM (the 4-system observing its own containerized incarnation)">▣ host</button>
-        <button className={`inst-chip${open === 'portal' ? ' on' : ''}`} onClick={() => tog('portal')} title="portal — the federated 8 nodes (mac, omarchy, colima, claude-web) as co-present slices, from /peers">◈ portal</button>
+        <button className={`inst-chip${open === 'portal' ? ' on' : ''}`} onClick={() => tog('portal')} title="portal — the federated 8 nodes (mac, a Linux host, colima, claude-web) as co-present slices, from /peers">◈ portal</button>
       </div>
       {open === 'clock' && <ClockBody i={i} />}
       {open === 'work' && <WorkBody i={i} />}

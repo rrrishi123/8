@@ -62,6 +62,7 @@ type broker struct {
 
 type collector struct {
 	brokers     []broker
+	brokersMu   sync.RWMutex // guards brokers — /nodes/attach appends at runtime (#1147)
 	client      *http.Client
 	geckoClient *http.Client // bounded timeout for geckodriver calls — a dead socket during a recycle can't hang chromeMu (the long-lived SSE pump keeps using client, which must have no timeout)
 	gecko       string       // geckodriver session base (http://host:port/session/<id>) — enables /procinfo
@@ -688,7 +689,7 @@ cb(JSON.stringify({parked:v.u,mb:v.mb}));
 		// dogs — the bloat is capture-driven (collector-driven), so this is where it belongs.
 		if recycleMB > 0 && amb >= recycleMB && time.Since(lastRecycle) > recycleCooldown {
 			lastRecycle = time.Now()
-			// AUTO-DEFER: where a multi-agent lease ledger owns recycle (omarchy
+			// AUTO-DEFER: where a multi-agent lease ledger owns recycle (a Linux peer host
 			// ~/.8/leases.json) the watchdog closes tabs gracefully BY LEASE before
 			// killing — so the collector must not pkill out from under it. Single-agent
 			// machines (mac, no leases file) recycle directly here.
@@ -697,7 +698,7 @@ cb(JSON.stringify({parked:v.u,mb:v.mb}));
 			} else {
 				log.Printf("aperture: parent %dMB >= %dMB recycle bound -> proactive recycle (FLOW 10)", amb, recycleMB)
 				c.publish(fmt.Sprintf(`{"session":"fox","origin":"COLLECTOR","frame":{"method":"aperture.recycle","params":{"parent_mb":%d,"bound_mb":%d}}}`, amb, recycleMB))
-				_ = exec.Command("pkill", "-f", "firefox.*ltqa-firefox-deepseek").Run()
+				_ = exec.Command("pkill", "-f", "firefox.*firefox-profile").Run() // OUR seat's profile (up.go: 8/.firefox-profile), not an operator's
 			}
 		}
 	}
@@ -915,12 +916,38 @@ func (c *collector) handleDrawProbe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *collector) find(id string) *broker {
+	c.brokersMu.RLock()
+	defer c.brokersMu.RUnlock()
 	for i := range c.brokers {
 		if c.brokers[i].id == id {
-			return &c.brokers[i]
+			b := c.brokers[i]
+			return &b
 		}
 	}
 	return nil
+}
+
+// brokerList — a snapshot of the held brokers; readers iterate the copy while
+// /nodes/attach may append (#1147).
+func (c *collector) brokerList() []broker {
+	c.brokersMu.RLock()
+	defer c.brokersMu.RUnlock()
+	out := make([]broker, len(c.brokers))
+	copy(out, c.brokers)
+	return out
+}
+
+// addBroker holds one more broker at runtime; false if the id is already held.
+func (c *collector) addBroker(b broker) bool {
+	c.brokersMu.Lock()
+	defer c.brokersMu.Unlock()
+	for _, x := range c.brokers {
+		if x.id == b.id {
+			return false
+		}
+	}
+	c.brokers = append(c.brokers, b)
+	return true
 }
 
 // frameChan is a session's latest-screencast-frame channel (buffered 1).
@@ -1308,9 +1335,10 @@ func (c *collector) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 		Body    json.RawMessage `json:"body,omitempty"`
 		Error   string          `json:"error,omitempty"`
 	}
-	results := make([]result, len(c.brokers))
+	brokers := c.brokerList()
+	results := make([]result, len(brokers))
 	var wg sync.WaitGroup
-	for i, b := range c.brokers {
+	for i, b := range brokers {
 		wg.Add(1)
 		go func(i int, b broker) {
 			defer wg.Done()
@@ -2508,7 +2536,7 @@ func (c *collector) handleMatrix(w http.ResponseWriter, r *http.Request) {
 	tmuxN, nvimN, dmnN := len(tmuxPanes()), len(nvimBufs()), len(daemonList())
 	rows := []row{}
 	live := map[string]bool{}
-	for _, b := range c.brokers {
+	for _, b := range c.brokerList() {
 		live[b.id] = true
 	}
 	if live["fox"] {
@@ -2747,13 +2775,14 @@ func rewriteRegistry(calls []sessionRec) {
 }
 
 type sessionRec struct {
-	ID      string `json:"id"`
-	Hub     string `json:"hub"`
-	Kind    string `json:"kind"`             // local | cloud
-	Physics string `json:"physics"`          // call | channel
-	Stream  string `json:"stream,omitempty"` // live MJPEG source URL, if any
-	Status  string `json:"status,omitempty"` // live | disconnected (computed at /sessions time, not persisted)
-	Created string `json:"created_at,omitempty"`
+	ID       string `json:"id"`
+	Hub      string `json:"hub"`
+	Kind     string `json:"kind"`               // local | cloud
+	Physics  string `json:"physics"`            // call | channel
+	Stream   string `json:"stream,omitempty"`   // live MJPEG source URL, if any
+	Status   string `json:"status,omitempty"`   // live | disconnected (computed at /sessions time, not persisted)
+	Upstream string `json:"upstream,omitempty"` // channel seats: the held socket's origin (redacted) — the node⨝seat join key (#1147)
+	Created  string `json:"created_at,omitempty"`
 }
 
 func registerSession(rec sessionRec) {
@@ -2891,8 +2920,8 @@ func (c *collector) handleAttach(w http.ResponseWriter, r *http.Request) {
 // (always channel sessions) plus everything in the shared registry file.
 func (c *collector) handleSessions(w http.ResponseWriter, r *http.Request) {
 	byID := map[string]sessionRec{}
-	for _, b := range c.brokers {
-		rec := sessionRec{ID: b.id, Hub: b.base, Kind: "local", Physics: "channel"}
+	for _, b := range c.brokerList() {
+		rec := sessionRec{ID: b.id, Hub: b.base, Kind: "local", Physics: "channel", Upstream: c.brokerFactFor(b).Upstream}
 		if b.id != "fox" {
 			rec.Stream = "cdp" // non-fox channel brokers are CDP screencast-capable
 		}
@@ -3504,8 +3533,9 @@ func (c *collector) handleStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *collector) handleHealth(w http.ResponseWriter, r *http.Request) {
-	ids := make([]string, len(c.brokers))
-	for i, b := range c.brokers {
+	brokers := c.brokerList()
+	ids := make([]string, len(brokers))
+	for i, b := range brokers {
 		ids[i] = b.id
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -3547,8 +3577,9 @@ func (c *collector) handleType(w http.ResponseWriter, r *http.Request) {
 	cmd := map[string]any{"method": "input.performActions", "params": map[string]any{
 		"context": ctx, "actions": []any{map[string]any{"type": "key", "id": "kbd", "actions": acts}}}}
 	body, _ := json.Marshal(cmd)
-	br := c.brokers[0]
-	for _, x := range c.brokers {
+	brokers := c.brokerList()
+	br := brokers[0]
+	for _, x := range brokers {
 		if x.id == "fox" {
 			br = x
 			break
@@ -4317,7 +4348,8 @@ func main() {
 	// says Firefox is ready, then start them STAGGERED so no wave of requests hits it.
 	go func() {
 		c.waitReady()
-		for _, b := range c.brokers {
+		c.adoptChannelSeats() // #1147: re-hold brokers a previous collector attached (they outlive it)
+		for _, b := range c.brokerList() {
 			go c.pump(ctx, b)
 			time.Sleep(100 * time.Millisecond)
 		}
@@ -4361,6 +4393,8 @@ func main() {
 	mux.HandleFunc("/fxstats", c.handleFxStats)
 	mux.HandleFunc("/fxdiag", c.handleFxDiag)
 	mux.HandleFunc("/sessions", c.handleSessions)
+	mux.HandleFunc("/nodes", c.handleNodes)               // #1147: browser-node registry, node⨝seat JOINED here (file + docker + held brokers)
+	mux.HandleFunc("/nodes/attach", c.handleNodesAttach)  // #1147: hold an unjoined node's cdp_url with a fresh channel broker
 	mux.HandleFunc("/attach", c.handleAttach)             // connect any provider's live session (CALL) at runtime
 	mux.HandleFunc("/adapters/fire", c.handleAdapterFire) // fire a real adapter loopback (grpc|mqtt|webrtc|unix), witnessed
 	mux.HandleFunc("/source", c.handleSource)

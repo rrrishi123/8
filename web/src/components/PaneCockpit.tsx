@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { identity, panesSend, type PaneIdentity, type PaneSendResult } from '../lib/api';
-import { useCardText } from '../lib/cardText';
 
 declare const __BUILD_TS__: number;
 const bundleAge = () => { const h = (Date.now() - __BUILD_TS__) / 36e5; return h < 1 ? `${Math.round(h*60)}m` : h < 48 ? `${Math.round(h)}h` : `${Math.round(h/24)}d`; };
@@ -31,7 +30,9 @@ export function PaneCockpit({ cardKey }: { cardKey?: string } = {}) {
     return () => { dead = true; clearInterval(t); };
   }, []);
 
-  useCardText(cardKey, [`all live claude panes (${panes.length})`, ...panes.map((p) => `${p.pane} ${p.name || '·'} ${(p.title || '').slice(0, 42)}`), panes.length ? '' : 'no live claude panes seen yet', '\n\n', 'send → ALL', res ? 'landed' : '', err || '']);
+  // sized by the dom regime (#1147): CardFrame measures this structured body once
+  // via ResizeObserver — no plaintext twin of the roster to drift out of step.
+  void cardKey;
   const chosen = panes.filter((p) => sel[p.pane!]).map((p) => p.pane!);
   const allSelected = panes.length > 0 && chosen.length === panes.length;
   const toggleAll = () => {

@@ -8,12 +8,12 @@
 # resume-uuid is used at most once (fixes the %0/%me 12444bc8 duplicate).
 #
 # Usage:
-#   restore-8.sh                      # rebuild kosaten1 (REFUSES if it already exists)
-#   SRC=kosaten1 DST=kosaten1-test MODE=dry restore-8.sh   # structural dry-run into a scratch name
+#   SRC=<session> restore-8.sh        # rebuild <session> (REFUSES if it already exists)
+#   SRC=<session> DST=<session>-test MODE=dry restore-8.sh   # structural dry-run into a scratch name
 set -euo pipefail
 
 DB="${DB:-$HOME/.8/eight.db}"
-SRC="${SRC:-kosaten1}"        # session rows to read
+SRC="${SRC:?set SRC=<tmux session>}"  # session rows to read (required; no baked-in name)
 DST="${DST:-$SRC}"           # session name to build
 MODE="${MODE:-live}"         # live | dry
 FLAG="--dangerously-skip-permissions"

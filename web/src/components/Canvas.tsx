@@ -8,11 +8,11 @@ import { PasteCurl } from './PasteCurl';
 import { Matrix } from './Matrix';
 import { useInstruments, WorkBody, ClockBody, InnerBody, PortalBody } from './Instruments';
 import { useWireRows, WireRows } from './WireLog';
-import { CardFrame, HostBody, ProfileBody, BudgetBody, hostLines, profileLines, BUDGET_LINES } from './Card';
+import { CardFrame, HostBody, ProfileBody, BudgetBody } from './Card';
 import { useLocal } from './Dock';
 import { procinfo, recordCtl, listSeries, replaySeries, addTab, getFocus, type SeriesInfo, type CapFrame } from '../lib/api';
 import { GRID, SeqLedger, packWorld, onScreen, syncFontFromCSS, levelForZoom, LEVELS, type Card, type Lane, type Level, type CardKind } from '../lib/cards';
-import { fetchNodes, buildTree, type BrowserNode, type Seat, type Tab, type HostNode } from '../lib/nodes';
+import { fetchNodes, buildTree, liveView, type BrowserNode, type Seat, type Tab, type HostNode, type ProfileNode } from '../lib/nodes';
 import { useReportedTexts, textOf } from '../lib/cardText';
 
 const BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
@@ -30,8 +30,9 @@ const SELF_ID = (() => {
 })();
 
 // PRETEXT COCKPIT (#1132). Every live target — and every gauge — is a CARD in one
-// grammar (src/lib/cards.ts), sized by pretext from its text (or its aspect),
-// never by the DOM. Cards are packed masonry-style into LANES (one per host /
+// grammar (src/lib/cards.ts), sized by pretext from its text, by its aspect, or
+// — structured cards (host/profile/panes/budget) — by ONE DOM measurement of the
+// real body (#1147). Cards are packed masonry-style into LANES (one per host /
 // profile / seat / type), lanes stand side by side, and the camera pans/zooms
 // the world like a map. SEMANTIC ZOOM: far out you see hosts (browser-nodes.json),
 // closer you see profiles, close you see tabs (BiDi getTree). Cards you can't see
@@ -221,20 +222,36 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   const lanes: Lane[] = [];
   const cellTitle = (s: Seat, t: Tab) => s.stream === 'text' ? (t.title || `${t.context} · ${t.url.replace(/^\w+:\/\//, '')}`) : hostOf(t.url);
   const tone = (h: HostNode) => h.tone;
+  // DRILL INTO a browser node: land on its tabs lane and pin its card as hero —
+  // the live desktop card when the node has one, else its first tab. A click
+  // never zooms OUT (the old "no session" card sent you back to profiles).
+  const LIVE_ASPECT = 1.6; // the desktop is a picture card, sized like a tab viewport
+  const heroOf = (p: ProfileNode) => (p.seat && p.tabs.length && !liveView(p.node)) ? p.seat.id + (p.tabs[0].context || 'blank-0') : 'profile:' + p.key;
+  const drill = (p: ProfileNode) => { setPinnedKey(heroOf(p)); setLevelPick('tabs'); focusLane(p.key); };
+  const drillHost = (h: HostNode) => { if (h.profiles.length === 1) drill(h.profiles[0]); else { setLevelPick('profiles'); focusLane(h.key); } };
   if (level === 'hosts') {
     lanes.push({ key: 'hosts', label: 'hosts', kind: 'host', tone: 'type', badge: `${tree.length} host${tree.length === 1 ? '' : 's'}`,
-      cards: tree.map((h) => ({ key: 'host:' + h.key, lane: 'hosts', kind: 'host' as const, title: h.label, meta: `${h.engine} · ${h.mode}`, text: hostLines(h).join('\n'),
-        node: <HostBody host={h} onZoom={() => { setLevelPick('profiles'); focusLane(h.key); }} /> })) });
+      cards: tree.map((h) => ({ key: 'host:' + h.key, lane: 'hosts', kind: 'host' as const, title: h.label, meta: `${h.engine} · ${h.mode}${liveView(h.node) ? ' · live' : ''}`,
+        aspect: liveView(h.node) ? LIVE_ASPECT : undefined, measure: liveView(h.node) ? undefined : 'dom' as const,
+        node: <HostBody host={h} onZoom={() => drillHost(h)} /> })) });
   } else if (level === 'profiles') {
     for (const h of tree) lanes.push({ key: h.key, label: h.label, kind: 'profile', tone: tone(h), badge: `${h.profiles.length} profile${h.profiles.length === 1 ? '' : 's'}`,
-      cards: h.profiles.map((p) => ({ key: 'profile:' + p.key, lane: h.key, kind: 'profile' as const, title: p.label, meta: `${h.label} · ${p.tabs.length} tabs`, text: profileLines(h, p).join('\n'),
-        node: <ProfileBody host={h} profile={p} onZoom={() => { setLevelPick('tabs'); focusLane(p.key); }} /> })) });
+      cards: h.profiles.map((p) => ({ key: 'profile:' + p.key, lane: h.key, kind: 'profile' as const, title: p.label, meta: `${h.label} · ${p.tabs.length} tabs${liveView(p.node) ? ' · live' : ''}`,
+        aspect: liveView(p.node) ? LIVE_ASPECT : undefined, measure: liveView(p.node) ? undefined : 'dom' as const, span: liveView(p.node) ? 2 : undefined,
+        node: <ProfileBody host={h} profile={p} onZoom={() => drill(p)} /> })) });
   } else {
     for (const h of tree) for (const p of h.profiles) {
       const laneKey = p.key;
       const label = h.profiles.length > 1 || p.label !== h.label ? (p.label === 'host' || p.label === h.label ? h.label : `${h.label} · ${p.label}`) : h.label;
       const cards: Card[] = [];
       const seenCtx = new Set<string>();
+      const live = liveView(p.node);
+      if (live) {
+        // the container's REAL desktop, first in its lane — with or without a
+        // seat (the desktop is up regardless; tabs arrive when a session does)
+        cards.push({ key: 'profile:' + p.key, lane: laneKey, kind: 'profile', title: p.label, meta: `${h.label} · live desktop`, span: 2, aspect: LIVE_ASPECT,
+          node: <ProfileBody host={h} profile={p} onZoom={() => drill(p)} /> });
+      }
       if (p.seat) {
         const s = p.seat;
         p.tabs.filter((t) => { if (!t.context) return true; if (seenCtx.has(t.context)) return false; seenCtx.add(t.context); return true; })
@@ -244,32 +261,34 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
             cards.push({ key, lane: laneKey, kind: 'tab', title: cellTitle(s, t), meta: t.url, bare: true, span: device ? 1 : 2,
               aspect: aspectBy[key] || 1.6, node: null });
           });
-        if (!cards.length && s.physics !== 'channel') {
+        if (!cards.some((c) => c.kind === 'tab') && s.physics !== 'channel') {
           const device = !!s.stream;
           cards.push({ key: s.id, lane: laneKey, kind: 'seat', title: `${device ? 'device' : 'seat'} · ${s.id.slice(0, 8)}`, bare: true, span: device ? 1 : 2, aspect: aspectBy[s.id] || (device ? 0.46 : 1.6), node: null });
         }
       }
       if (!cards.length) {
-        // a declared host with no drivable session yet — keep it visible as its profile card
-        cards.push({ key: 'profile:' + p.key, lane: laneKey, kind: 'profile', title: p.label, meta: `${h.label} · no session`, text: profileLines(h, p).join('\n'),
-          node: <ProfileBody host={h} profile={p} onZoom={() => setLevelPick('profiles')} /> });
+        // a declared host with no drivable session yet — keep it visible as its
+        // profile card, which OFFERS ⚡ attach when the node has a cdp_url (#1147)
+        cards.push({ key: 'profile:' + p.key, lane: laneKey, kind: 'profile', title: p.label, meta: `${h.label} · ${p.node?.attachable ? 'no session · attachable' : 'no session'}`, measure: 'dom',
+          node: <ProfileBody host={h} profile={p} onZoom={() => drill(p)} /> });
       }
       // a session-less host holds one placeholder profile card: 2 columns, not the
       // 8 a browser lane reserves (a session arriving re-lays the lane anyway)
+      const nTabs = cards.filter((c) => c.kind === 'tab').length;
       lanes.push({ key: laneKey, label, kind: h.seat && h.seat.physics === 'channel' && h.seat.stream !== 'text' ? 'browser' : 'seat', tone: tone(h),
         cols: p.seat ? undefined : 2,
-        badge: p.seat ? `${cards.filter((c) => c.kind === 'tab').length} tab${cards.length === 1 ? '' : 's'}` : 'no session', cards });
+        badge: p.seat ? `${nTabs} tab${nTabs === 1 ? '' : 's'}${live ? ' · live' : ''}` : (live ? 'live · no session' : 'no session'), cards });
     }
   }
   // type lanes (the gauges) — at every level, so the cockpit never loses its instruments
   const typeCards: Record<string, Card> = {
-    panes: { key: 'panes', lane: 'type:minds', kind: 'panes', title: KIND_TITLE.panes, meta: 'broadcast one prompt to chosen claude panes', node: <PaneCockpit cardKey="panes" /> },
+    panes: { key: 'panes', lane: 'type:minds', kind: 'panes', title: KIND_TITLE.panes, meta: 'broadcast one prompt to chosen claude panes', measure: 'dom', node: <PaneCockpit cardKey="panes" /> },
     heart: { key: 'heart', lane: 'type:minds', kind: 'heart', title: KIND_TITLE.heart, meta: 'one pane as a pod — measured context, process, inspector', node: <PaneLive cardKey="heart" /> },
     tasks: { key: 'tasks', lane: 'type:work', kind: 'tasks', title: KIND_TITLE.tasks, meta: `${instr.openCount} open`, node: <WorkBody cardKey="tasks" i={instr} /> },
     record: { key: 'record', lane: 'type:work', kind: 'record', title: KIND_TITLE.record, meta: rec.recording ? `● ${rec.name} · ${rec.frames ?? 0} cmds` : '○ idle', text: recText(rec),
       node: <RecBody rec={rec} /> },
     compose: { key: 'compose', lane: 'type:work', kind: 'compose', title: KIND_TITLE.compose, meta: 'record → replay · manual http + ws', text: ['record', 'series', 'manual compose (http + ws)', '\n\n\n', 'fire'].join('\n'), node: <PasteCurl /> },
-    budget: { key: 'budget', lane: 'type:gauges', kind: 'budget', title: KIND_TITLE.budget, meta: 'claude · codex, segregated', text: BUDGET_LINES.join('\n'), node: <BudgetBody /> },
+    budget: { key: 'budget', lane: 'type:gauges', kind: 'budget', title: KIND_TITLE.budget, meta: 'claude · codex, segregated', measure: 'dom', node: <BudgetBody /> },
     wire: { key: 'wire', lane: 'type:gauges', kind: 'wire', title: KIND_TITLE.wire, meta: `${wireRows.length} on the wire`, node: <WireRows rows={wireRows} cardKey="wire" /> },
     resources: { key: 'resources', lane: 'type:gauges', kind: 'resources', title: KIND_TITLE.resources, meta: 'per-tab memory + cpu', node: <Resources session={session} cardKey="resources" /> },
     clock: { key: 'clock', lane: 'type:gauges', kind: 'clock', title: KIND_TITLE.clock, meta: instr.now, node: <ClockBody cardKey="clock" i={instr} /> },
@@ -277,7 +296,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     inner: { key: 'inner', lane: 'type:gauges', kind: 'inner', title: KIND_TITLE.inner, meta: 'containers + colima', node: <InnerBody cardKey="inner" i={instr} /> },
     portal: { key: 'portal', lane: 'type:gauges', kind: 'portal', title: KIND_TITLE.portal, meta: 'federated 8 nodes', node: <PortalBody cardKey="portal" i={instr} /> },
   };
-  for (const c of Object.values(typeCards)) if (c.text === undefined) c.text = textOf(c.key) ?? `${c.title}\n\n\n`;
+  for (const c of Object.values(typeCards)) if (c.text === undefined && c.measure !== 'dom') c.text = textOf(c.key) ?? `${c.title}\n\n\n`;
   for (const tl of TYPE_LANES) lanes.push({ key: tl.key, label: tl.label, kind: 'type', tone: 'type', cols: 2, cards: tl.kinds.map((k) => typeCards[k]) });
 
   // hidden cards leave the layout; stacked lanes; arrival order; hero
@@ -304,14 +323,18 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   useEffect(() => { // after a level change that targeted a lane, land on it
     const k = pendingLane.current; if (!k) return;
     const L = world.lanes.find((x) => x.lane.key === k || x.lane.cards.some((c) => c.key.endsWith(k)));
-    if (L) { pendingLane.current = ''; goto({ x: L.x, y: L.y, w: L.w, h: L.h + GRID.laneHead }, Math.min(0.9, Math.max(0.45, (vpRef.current.w || 1200) / (L.w + 200)))); }
+    if (L) { pendingLane.current = ''; landed.current = true; goto({ x: L.x, y: L.y, w: L.w, h: L.h + GRID.laneHead }, Math.min(0.9, Math.max(0.45, (vpRef.current.w || 1200) / (L.w + 200)))); }
   });
   // when the effective level flips (zoom crossed a threshold), keep the camera on the world
+  // — unless this very commit LANDED on a lane (a drill): the landing effect above
+  // runs first and has already cleared pendingLane; without `landed` the recentre
+  // below would override it and the drilled-into lane would be off-screen.
   const prevLevel = useRef(level);
+  const landed = useRef(false);
   useEffect(() => {
     if (prevLevel.current === level) return;
     prevLevel.current = level;
-    if (pendingLane.current) return;
+    if (pendingLane.current || landed.current) { landed.current = false; return; }
     // the new level's world has a different height: keep x centred on it and
     // clamp y so the top of the world is on screen (a deep scroll from the
     // previous level would otherwise leave every card occluded).
@@ -429,7 +452,9 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
           // live set (hero + recent), whose stream state must survive a pan.
           if (!vis && !(isVp && liveSet.has(c.key))) { ghosts++; return <div key={c.key} className="card-ghost" style={{ left: p.x, top: p.y, width: p.w, height: p.h }} />; }
           mounted++;
-          const lod = !isVp && p.w * cam.z < 150;
+          // picture cards (viewports, live desktops) stay pictures when small — a
+          // thumbnail of the real desktop reads; a 40px label of it does not
+          const lod = !isVp && !c.aspect && p.w * cam.z < 150;
           let body = c.node;
           if (isVp) {
             const seatId = c.kind === 'seat' ? c.key : c.lane;

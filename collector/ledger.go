@@ -1052,7 +1052,7 @@ var interiorRe = regexp.MustCompile(`(?i)typed[^.]{0,30}never sent|never receive
 // construction), and depth-1 is already noVerifySpawn.
 func (c *collector) derangedVerifier(authorLabel string) string {
 	// FAMILY-SCOPED (#754 gate 2, tightened): liveClaudePanes() includes
-	// UNRELATED claude panes on this host (%0/%1: kosaten lanes) and verifies
+	// UNRELATED agent panes on this host and verifies
 	// leaked outside the family (#777/#781/#812 routed to %0). The ring is
 	// those who DECLARED — a pane joins by POST /identity, not by merely
 	// running claude on the same box.

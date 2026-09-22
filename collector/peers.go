@@ -9,7 +9,7 @@ import (
 )
 
 // ── PEERS RENDEZVOUS (#886, PORTAL 2/6) — the federation organ, push-based ───
-// A peer 8 (mac / omarchy / colima foursys / claude-web sandbox) POSTs itself
+// A peer 8 (mac / a Linux host / colima foursys / claude-web sandbox) POSTs itself
 // here every N seconds: {host, hostres, manifest, thumbnail, ...}. The portal
 // serves GET /peers. PUSH, not pull, by design — the crux constraint (#889) is
 // that a sandboxed node can only reach OUT; a rendezvous the node reaches

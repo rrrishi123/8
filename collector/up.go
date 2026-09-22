@@ -15,8 +15,8 @@ import (
 )
 
 // ── 8 up — the bring-up as a WIRE PROGRAM folded into the one binary (#279),
-// replacing scripts/up.sh (which hardcoded /Users/rishirajs, the office firefox
-// profile ~/.ltqa-firefox-deepseek, a DeepSeek chat URL, and unix-only
+// replacing scripts/up.sh (which hardcoded an operator home path, a specific
+// Firefox profile, a chat URL, and unix-only
 // lsof/pgrep/jq). The theory we settled and now apply:
 //   BUNDLE the machinery  — our Go binaries, paths from os.Executable, never hardcoded
 //   DISCOVER the substrate — firefox/geckodriver/tmux via LookPath; probe, don't assume
@@ -196,10 +196,25 @@ func wireUp(root, collectorAddr string) {
 // packUp launches the firefox seat via the browser pack (shared by `up` and the
 // watch guard). The pack owns replace-stale-seat semantics; we just fire it.
 func packUp(root string) {
-	pack := filepath.Join(root, "adapters", "browser", "browser")
+	// the pack is built by adapters/build.sh into .bin/ (the in-tree
+	// browser/browser binary is untracked and gone on a fresh clone) — same
+	// resolution as up.sh's BROWSERPACK and the collector's adaptersRoot()
+	// (EIGHT_ADAPTERS overrides the root). The legacy in-tree path stays as a
+	// fallback for a dev checkout that built it by hand.
+	pack := ""
+	for _, cand := range []string{
+		filepath.Join(adaptersRoot(), ".bin", "browser"),
+		filepath.Join(root, "adapters", ".bin", "browser"),
+		filepath.Join(root, "adapters", "browser", "browser"),
+	} {
+		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
+			pack = cand
+			break
+		}
+	}
 	profile := filepath.Join(root, "8", ".firefox-profile") // OUR profile, not the office one
-	if _, err := os.Stat(pack); err != nil {
-		fmt.Printf("  browser:      pack not built at %s (run adapters build.sh)\n", pack)
+	if pack == "" {
+		fmt.Printf("  browser:      pack not built at %s (run adapters/build.sh → .bin/browser)\n", filepath.Join(adaptersRoot(), ".bin", "browser"))
 		return
 	}
 	cmd := exec.Command(pack, "up", "--engine", "firefox", "--port", "4444", "--profile", profile)

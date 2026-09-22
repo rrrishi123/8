@@ -40,7 +40,7 @@ sqlite3 ~/.8/eight.db \
 - `spawned_by` — provenance, if the seat was spawned by another.
 - `cwd` matters: a pane whose cwd is elsewhere (e.g. `~/.8/higgsfield`)
   stores its transcript under a **different** project dir
-  (`-Users-rishirajs--8-higgsfield`), not the repo's.
+  (`-Users-<user>--8-higgsfield`), not the repo's.
 
 Live equivalent over the wire (subset of columns, no shell):
 

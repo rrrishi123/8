@@ -15,7 +15,7 @@
 #               Cloudflare et al. don't block the automated session (which would
 #               also block the saved login from loading).
 
-# single-reviver mkdir-lock (port of omarchy start-auto fix): manual runs and the
+# single-reviver mkdir-lock (port of a Linux host start-auto fix): manual runs and the
 # watchdog's revive raced each other (tab restore collapsed to 2/12 tabs, 2026-07-24).
 # mkdir-lock is pid-owned, EXIT-trapped, dead-owner stolen; flock is unusable here
 # (spawned daemons inherit the fd and hold it forever).

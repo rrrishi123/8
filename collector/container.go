@@ -10,7 +10,7 @@ import (
 )
 
 // ── INNER-HOST METRICS (#850) — the 4-system observing its own containerized
-// incarnation. The operator's lazydocker lives on omarchy and cannot see this
+// incarnation. The operator's lazydocker lives on a Linux peer host and cannot see this
 // mac's colima; so the witness reads its OWN inner host and serves it, no
 // per-host tool dependency. Data sources are literal and proven:
 //   container: docker stats --no-stream --format '...'

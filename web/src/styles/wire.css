@@ -1,7 +1,7 @@
 /* Wire — 8's OWN design tokens, lifted verbatim from the original design
    (.dc.html). It's an nvim color scheme: bottom
-   statusline, line-number gutter, cursorline selection. NOT Kosaten — Kosaten
-   is its own universe; this palette is this cockpit's own. Dark-first, with a
+   statusline, line-number gutter, cursorline selection. This palette is this
+   cockpit's own — the design system is a swappable seam (drop in any). Dark-first, with a
    light variant via prefers-color-scheme. */
 :root {
   --bg: #1e1e1e; --bg2: #181818; --panel: #1e1e1e;
@@ -722,7 +722,7 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 /* host / profile cards (semantic zoom levels) */
 /* host/profile bodies are laid out ON the measured grammar: every row is one
    --card-lh line (the big title = two), no gaps, tab hosts as plain wrapped text
-   — so the pretext height of hostLines()/profileLines() IS the rendered height. */
+   — kept so the measured body stays exactly one line per row (dom regime, #1147). */
 .card-host { padding: 10px 12px 8px; display: flex; flex-direction: column; gap: 0; cursor: zoom-in; line-height: var(--card-lh); } /* 22px title glyph box overshoots the 2×lh row by ~2px: absorb it here */
 .card-host .h-line { display: flex; gap: 0; align-items: baseline; white-space: pre-wrap; word-break: break-all; line-height: var(--card-lh); }
 .card-host .h-k { color: var(--fg-faint); width: 9ch; flex: none; }
@@ -742,3 +742,32 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
 .cards-menu button.on { color: var(--fg); border-color: var(--purple); }
 .cards-menu button:hover { color: var(--fg); }
 .persp-bar button.lvl { border-color: color-mix(in srgb, var(--blue) 50%, var(--border)); }
+/* node-live: a container's REAL desktop (Selkies) inside a host/profile card.
+   Picture card: the iframe fills the aspect-sized body; metadata rides a strip
+   over its foot. Watch mode (default) keeps pointer events off the iframe so a
+   click drills in and a drag pans; ✋ drive arms it. */
+.node-live { position: relative; height: 100%; display: flex; background: #000; }
+.node-live iframe { flex: 1; width: 100%; height: 100%; border: 0; background: #000; pointer-events: none; display: block; }
+.node-live.armed iframe { pointer-events: auto; }
+.node-live .nl-catch { position: absolute; inset: 0 0 26px 0; cursor: zoom-in; }
+.node-live .nl-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 26px; display: flex; align-items: center; gap: 10px; padding: 0 8px; background: #000b; color: var(--fg-dim); font-size: 11px; line-height: 26px; white-space: nowrap; overflow: hidden; }
+.node-live .nl-name { font-weight: 700; color: var(--fg); }
+.node-live .nl-name.chrome { color: #6cb6ff; } .node-live .nl-name.firefox { color: #ff9a52; }
+.node-live .nl-dot { color: #4ade80; }
+.node-live .nl-info { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.node-live .nl-url { color: var(--fg-faint); overflow: hidden; text-overflow: ellipsis; }
+.node-live .nl-bar button { margin-left: auto; flex: none; background: var(--bg2); color: var(--fg-dim); border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; height: 18px; line-height: 16px; font: inherit; font-size: 10px; cursor: pointer; }
+.node-live .nl-bar button.on { color: var(--fg); border-color: #4ade80; }
+.node-live.armed { outline: 1px solid #4ade80; outline-offset: -1px; }
+
+/* dom-measured (structured) card bodies (#1147): the wrapper is in normal flow
+   inside the scrolling body — its own height is what the engine reads. */
+.card-measure { display: flow-root; }
+/* ⚡ attach — an unjoined node's verb */
+.h-attach { display: inline-flex; align-items: center; gap: 6px; vertical-align: baseline; }
+.h-attach button { background: var(--bg2); color: var(--fg); border: 1px solid color-mix(in srgb, var(--purple) 60%, var(--border)); border-radius: 999px; padding: 0 8px; height: 18px; line-height: 16px; font: inherit; font-size: 10px; cursor: pointer; }
+.h-attach button:hover { border-color: var(--purple); }
+.h-attach button:disabled { opacity: .6; cursor: progress; }
+.h-attach-msg { font-size: 10px; color: var(--fg-dim); max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.h-attach-msg.err { color: #ff7b72; }
+.node-live .nl-bar .h-attach.nl-attach button { margin-left: 0; }

@@ -148,7 +148,7 @@ measured fact. (Work-item numbers refer to the 8 work queue, `GET /work`.)*
 | Forgetting vs withholding | sibling-1 broke its own every-call-declares rule ≥2×; ledger showed 4 acts against 30+ calls — discipline unauditable (#64, break 1) |
 | Fires that doubt fires | every done item auto-spawns `[verify #N]`; regress terminates at depth 1 (#104) |
 | The mind behind the wall | container-claude: no inbound, github-only egress; git-as-CHANNEL round-trip; commands as commits fired on the witnessed Fox (#17, #19) |
-| The flattering mirror | 49→7 kosaten-call miscount (#102); "neutral-me" inverted by evidence, 7 vs 2 (#103); "dented" was 345:2 build-vs-observe (#109) |
+| The flattering mirror | 49→7 sibling-call miscount (#102); "neutral-me" inverted by evidence, 7 vs 2 (#103); "dented" was 345:2 build-vs-observe (#109) |
 | No mind verifies its own claim | verifier==author happened (#55 assigned to sibling-1 to verify #50) and the finding says so in its first line (#64) |
 | Disagreement as the true mirror | the 3-lens panel produced genuine divergence and that divergence was the signal (#110, #113) |
 

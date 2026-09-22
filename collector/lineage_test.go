@@ -94,7 +94,7 @@ func TestClassifyScreen(t *testing.T) {
 		{"✻ Thinking… (esc to interrupt)", "claude.exe", "working", ""},
 		{"You've hit your usage limit. Resets at 2:30pm", "claude.exe", "capped", "Resets at 2:30pm"},
 		{"Adjust monthly spend limit\n Resets 14:00", "claude", "capped", "Resets 14:00"},
-		{"rishirajs@mac ~ %", "zsh", "shell", ""},
+		{"user@mac ~ %", "zsh", "shell", ""},
 	}
 	for _, c := range cases {
 		s, r := classifyScreen(c.screen, c.cmd)
@@ -148,7 +148,7 @@ func TestWSFrameAndUsage(t *testing.T) {
 func TestSessionIDFor(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	os.MkdirAll(os.ExpandEnv("$HOME/.claude/sessions"), 0o755)
-	os.WriteFile(os.ExpandEnv("$HOME/.claude/sessions/4242.json"), []byte(`{"pid":4242,"sessionId":"f9129044-e1f3-4ff4-862a-fe4dcb1cdbda","tmux":"kosaten1:@4.%24"}`), 0o644)
+	os.WriteFile(os.ExpandEnv("$HOME/.claude/sessions/4242.json"), []byte(`{"pid":4242,"sessionId":"f9129044-e1f3-4ff4-862a-fe4dcb1cdbda","tmux":"sess1:@4.%24"}`), 0o644)
 	if sessionIDFor("4242") != "f9129044-e1f3-4ff4-862a-fe4dcb1cdbda" || sessionIDFor("1") != "" {
 		t.Fatal("sessionIDFor wrong")
 	}

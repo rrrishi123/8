@@ -70,7 +70,7 @@ run_up() {
 
 fails=0  # consecutive cycles with the Firefox PROCESS gone (process death, not socket silence)
 while true; do
-  if pgrep -f 'firefox.*ltqa-firefox-deepseek' >/dev/null 2>&1; then
+  if pgrep -f 'firefox.*firefox-profile' >/dev/null 2>&1; then
     fails=0
     # ALIVE (process exists). Opportunistically save tabs — a slow/failed getTree
     # here is just a busy socket, never a recycle trigger.

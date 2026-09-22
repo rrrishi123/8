@@ -129,7 +129,9 @@ func (c *collector) handleCompose(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 	dir := filepath.Dir(jsonlForUUID(roleUUID("conductor")))
 	if dir == "." || dir == "" {
-		dir = os.ExpandEnv("$HOME/.claude/projects/-Users-rishirajs-Desktop-repos")
+		// derive the claude-projects dir from the cwd (abs path → dashes), never a hardcoded user
+		enc := strings.NewReplacer("/", "-", ".", "-").Replace(req.Cwd)
+		dir = filepath.Join(os.ExpandEnv("$HOME/.claude/projects"), enc)
 	}
 	path := filepath.Join(dir, newID+".jsonl")
 
@@ -203,7 +205,7 @@ func (c *collector) handleCompose(w http.ResponseWriter, r *http.Request) {
 // exits — ~10x cheaper. So isolated work should be DELEGATED, not done inline.
 // This spawns `claude -p <task> --output-format json` (its own new session), and
 // returns the result WITH the usage it billed, so the fleet routes by cost and
-// the budget/phase governs whether to spend. Like kosaten's delegate_work, but
+// the budget/phase governs whether to spend. Like a peer's delegate_work, but
 // first-party and budget-aware. BUN_INSPECT is stripped (else port collision).
 type delegateReq struct {
 	Task     string `json:"task"`
