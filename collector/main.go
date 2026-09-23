@@ -4090,6 +4090,7 @@ func seriesDir() string {
 func seriesPath(name string) string {
 	return seriesDir() + "/" + strings.ReplaceAll(name, "/", "_") + ".json"
 }
+
 // seriesContractVersion stamps every recorded series with the wire contract's
 // version, so a future replayer can identify the format a trace was written in
 // (D1: this is the cheap half of the contract's value — drift-identifiability —
