@@ -4090,14 +4090,37 @@ func seriesDir() string {
 func seriesPath(name string) string {
 	return seriesDir() + "/" + strings.ReplaceAll(name, "/", "_") + ".json"
 }
+// seriesContractVersion stamps every recorded series with the wire contract's
+// version, so a future replayer can identify the format a trace was written in
+// (D1: this is the cheap half of the contract's value — drift-identifiability —
+// without adopting the Frame type or importing the contract package). It tracks
+// http-mcp contract.Version, currently v0.0.2; 8 deliberately does not import the
+// contract (the no-arrow decoupling), so bump this in lockstep at the release cut.
+const seriesContractVersion = "v0.0.2"
+
+// seriesFile is the on-disk series envelope: the contract version + the frames.
+type seriesFile struct {
+	Contract string   `json:"contract"`
+	Frames   []reqRec `json:"frames"`
+}
+
 func writeSeries(name string, frames []reqRec) error {
-	b, _ := json.MarshalIndent(frames, "", " ")
+	b, _ := json.MarshalIndent(seriesFile{Contract: seriesContractVersion, Frames: frames}, "", " ")
 	return os.WriteFile(seriesPath(name), b, 0o644)
 }
 func readSeries(name string) ([]reqRec, error) {
 	b, err := os.ReadFile(seriesPath(name))
 	if err != nil {
 		return nil, err
+	}
+	// tolerant read: the current format is the {contract, frames} envelope; a
+	// legacy series is a bare [reqRec] array. Disambiguate on the first token.
+	if t := bytes.TrimSpace(b); len(t) > 0 && t[0] == '{' {
+		var sf seriesFile
+		if err := json.Unmarshal(b, &sf); err != nil {
+			return nil, err
+		}
+		return sf.Frames, nil
 	}
 	var f []reqRec
 	return f, json.Unmarshal(b, &f)
