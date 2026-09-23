@@ -2001,13 +2001,18 @@ func (c *collector) reconcileManifest(session string, tabs []map[string]string) 
 // authoritative fallback. Without this, /shot + pollCDPManifest silently missed
 // a live chrome seat held by an old broker (found post-restart, 2026-09-23).
 func (c *collector) cdpSeat(b broker) bool {
-	if c.brokerFactFor(b).Protocol == "cdp" {
+	switch c.brokerFactFor(b).Protocol {
+	case "cdp":
 		return true
+	case "bidi":
+		return false
 	}
-	if rec := lookupSession(b.id); rec != nil && rec.Stream == "cdp" {
-		return true
-	}
-	return false
+	// protocol unknown — an old broker built before /health carried its upstream
+	// (the registry's Stream is no help either: a restart clears it and
+	// adoptChannelSeats doesn't re-set it). Fall back to the SAME convention
+	// /sessions uses (handleSessions ~L3003): the fox seat is BiDi, every other
+	// browser broker is a chrome-family CDP seat.
+	return b.id != "fox"
 }
 
 // pollCDPManifest folds a CDP (chrome-family) seat's tabs into the durable
