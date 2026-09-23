@@ -118,11 +118,22 @@ function prepared(text: string): PreparedText {
   }
   return p;
 }
-/** height (world px) of `text` wrapped at `width` — pure arithmetic after the first call for this text */
-export function measureText(text: string, width: number): { height: number; lineCount: number } {
+export type Measurer = (text: string, width: number) => { height: number; lineCount: number };
+// the REAL measurer: pretext, which measures through a canvas text-metrics
+// context and so cannot run outside a browser. Injectable (setMeasurer) so the
+// cardSize arithmetic can be unit-tested with a deterministic stub — no jsdom,
+// no canvas polyfill. Production always uses this one.
+const pretextMeasure: Measurer = (text, width) => {
   if (!text) return { height: 0, lineCount: 0 };
   const r = layout(prepared(text), Math.max(40, width), LH);
   return { height: r.height, lineCount: r.lineCount };
+};
+let MEASURE: Measurer = pretextMeasure;
+/** swap the text measurer (tests inject a stub); setMeasurer(null) restores pretext */
+export function setMeasurer(fn: Measurer | null): void { MEASURE = fn ?? pretextMeasure; }
+/** height (world px) of `text` wrapped at `width` — routes through the current measurer */
+export function measureText(text: string, width: number): { height: number; lineCount: number } {
+  return MEASURE(text, width);
 }
 
 // ── SIZE: a card's rect from its size-source ─────────────────────────────────

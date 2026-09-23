@@ -17,6 +17,9 @@ let ver = 0;
 let raf = 0;
 export function bumpLayout() {
   if (raf) return;
+  // outside a browser (unit tests, SSR) there is no rAF — coalesce synchronously
+  // so the module loads and runs without a DOM.
+  if (typeof requestAnimationFrame !== 'function') { ver++; subs.forEach((s) => s()); return; }
   raf = requestAnimationFrame(() => { raf = 0; ver++; subs.forEach((s) => s()); });
 }
 const bump = bumpLayout;
