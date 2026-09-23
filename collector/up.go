@@ -29,6 +29,8 @@ type substrate struct {
 	Tmux    string
 	Firefox string
 	Gecko   string
+	Chrome  string // a chrome-family browser (chrome/chromium/edge/brave), CDP built in — no separate driver
+	Engine  string // the seat to bring up: "firefox" | "chrome" | "" (dormant)
 }
 
 func look(name string) string { p, _ := exec.LookPath(name); return p }
@@ -43,6 +45,40 @@ func firefoxCandidates() []string {
 	return nil
 }
 
+func chromeCandidates() []string {
+	switch runtime.GOOS {
+	case "darwin":
+		return []string{
+			"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+			"/Applications/Chromium.app/Contents/MacOS/Chromium",
+			"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+			"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+		}
+	case "linux":
+		return []string{
+			"/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser",
+			"/usr/bin/chrome", "/snap/bin/chromium", "/usr/bin/microsoft-edge", "/usr/bin/brave-browser",
+		}
+	}
+	return nil
+}
+
+// lookChrome — DISCOVER a chrome-family browser (never inscribe a path): PATH
+// first (any of the common names), then the OS's standard install locations.
+func lookChrome() string {
+	for _, n := range []string{"google-chrome", "chromium", "chromium-browser", "chrome", "microsoft-edge", "brave-browser", "brave"} {
+		if p := look(n); p != "" {
+			return p
+		}
+	}
+	for _, cand := range chromeCandidates() {
+		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
+			return cand
+		}
+	}
+	return ""
+}
+
 func discoverSubstrate() substrate {
 	s := substrate{OS: runtime.GOOS, Tmux: look("tmux"), Gecko: look("geckodriver"), Firefox: look("firefox")}
 	if s.Firefox == "" { // not on PATH — try the OS's standard install location
@@ -52,6 +88,16 @@ func discoverSubstrate() substrate {
 				break
 			}
 		}
+	}
+	s.Chrome = lookChrome()
+	// engine selection: firefox is the seat only WITH geckodriver (its driver); a
+	// chrome-family browser drives itself over CDP, so it's a valid seat on its own.
+	// Firefox stays the preferred default; chrome is the fallback when it's absent.
+	switch {
+	case s.Firefox != "" && s.Gecko != "":
+		s.Engine = "firefox"
+	case s.Chrome != "":
+		s.Engine = "chrome"
 	}
 	return s
 }
@@ -119,6 +165,8 @@ func runUp() {
 	report("tmux", s.Tmux)
 	report("firefox", s.Firefox)
 	report("geckodriver", s.Gecko)
+	report("chrome", s.Chrome)
+	report("engine", s.Engine)
 
 	self, _ := os.Executable()
 
@@ -146,16 +194,26 @@ func runUp() {
 	// started the wire).
 	wireUp(root, probeAddr(cargs))
 
-	// BODY 2 — the firefox seat. DISCOVERED substrate; absent => dormant, not fatal.
-	if s.Firefox == "" || s.Gecko == "" {
-		fmt.Println("  browser:      DORMANT — firefox/geckodriver absent; collector-only is a valid boot")
+	// BODY 2 — the browser seat. DISCOVERED substrate; absent => dormant, not fatal.
+	// firefox (via geckodriver) is preferred; a chrome-family browser is the
+	// fallback seat where firefox/geckodriver isn't installed (e.g. a container).
+	if s.Engine == "" {
+		fmt.Println("  browser:      DORMANT — no firefox+geckodriver or chrome-family browser; collector-only is a valid boot")
 		return
 	}
-	if portUp("127.0.0.1:4444") {
-		fmt.Println("  browser:      seat already up on :4444")
+	seatPort := 4444
+	if s.Engine == "chrome" {
+		seatPort = 9333
+	}
+	if portUp(fmt.Sprintf("127.0.0.1:%d", seatPort)) {
+		fmt.Printf("  browser:      %s seat already up on :%d\n", s.Engine, seatPort)
 		return
 	}
-	packUp(root)
+	if s.Engine == "firefox" {
+		packUp(root)
+	} else {
+		packUpEngine(root, s.Engine, seatPort, s.Chrome)
+	}
 }
 
 // wireBin discovers the wire binary — build.sh output first, then the install.sh
@@ -195,7 +253,15 @@ func wireUp(root, collectorAddr string) {
 
 // packUp launches the firefox seat via the browser pack (shared by `up` and the
 // watch guard). The pack owns replace-stale-seat semantics; we just fire it.
-func packUp(root string) {
+// packUp launches the firefox seat (the watchdog + legacy callers' default).
+func packUp(root string) { packUpEngine(root, "firefox", 4444, "") }
+
+// packUpEngine launches a seat of the given engine via the browser pack (shared
+// by `up` and the watch guard). The pack owns replace-stale-seat semantics and,
+// for a chrome-family engine, starts its own channel broker and registers it —
+// we just fire it. firefox carries our profile; a chrome-family engine carries
+// the discovered binary via --bin (the pack manages its own user-data-dir).
+func packUpEngine(root, engine string, port int, bin string) {
 	// the pack is built by adapters/build.sh into .bin/ (the in-tree
 	// browser/browser binary is untracked and gone on a fresh clone) — same
 	// resolution as up.sh's BROWSERPACK and the collector's adaptersRoot()
@@ -212,17 +278,26 @@ func packUp(root string) {
 			break
 		}
 	}
-	profile := filepath.Join(root, "8", ".firefox-profile") // OUR profile, not the office one
 	if pack == "" {
 		fmt.Printf("  browser:      pack not built at %s (run adapters/build.sh → .bin/browser)\n", filepath.Join(adaptersRoot(), ".bin", "browser"))
 		return
 	}
-	cmd := exec.Command(pack, "up", "--engine", "firefox", "--port", "4444", "--profile", profile)
+	args := []string{"up", "--engine", engine, "--port", fmt.Sprint(port)}
+	label := ""
+	if engine == "firefox" {
+		profile := filepath.Join(root, "8", ".firefox-profile") // OUR profile, not the office one
+		args = append(args, "--profile", profile)
+		label = "profile " + profile
+	} else if bin != "" {
+		args = append(args, "--bin", bin)
+		label = "bin " + bin
+	}
+	cmd := exec.Command(pack, args...)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
-		fmt.Printf("  browser:      seat FAILED: %v\n", err)
+		fmt.Printf("  browser:      %s seat FAILED: %v\n", engine, err)
 	} else {
-		fmt.Printf("  browser:      seat starting via browser pack (pid %d, profile %s)\n", cmd.Process.Pid, profile)
+		fmt.Printf("  browser:      %s seat starting via browser pack (pid %d, %s)\n", engine, cmd.Process.Pid, label)
 	}
 }
 
