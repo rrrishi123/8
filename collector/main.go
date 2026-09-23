@@ -1659,40 +1659,51 @@ func (c *collector) handleShot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// CHANNEL session (BiDi): captureScreenshot on the held socket.
+	// CHANNEL session: captureScreenshot on the held socket. Physics-aware (B2):
+	// BiDi (firefox) captures a context via browsingContext; CDP (a chrome-family
+	// seat, which holds a PAGE socket) captures the viewport directly with
+	// Page.captureScreenshot — no getTree/context (multi-tab CDP enumeration is
+	// /manifest's job, B4). Both return {"result":{"data":<base64>}}.
 	b := c.find(sid)
 	if b == nil {
 		http.Error(w, `{"error":"unknown or missing session — needs ?session=<id>. List live seats at /sessions (e.g. fox, tmux, nvim, daemons). If /sessions is empty this is a cold witness, not broken."}`, http.StatusNotFound)
 		return
 	}
 	ctx := r.URL.Query().Get("context")
-	if ctx == "" {
-		tr, err := c.command(b, `{"method":"browsingContext.getTree","params":{}}`)
-		if err != nil {
-			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
+	var sr []byte
+	var err error
+	if c.brokerFactFor(*b).Protocol == "cdp" {
+		// CDP: quality is 0..100; the held page socket needs no context.
+		sr, err = c.command(b, `{"method":"Page.captureScreenshot","params":{"format":"jpeg","quality":50}}`)
+	} else {
+		if ctx == "" {
+			tr, terr := c.command(b, `{"method":"browsingContext.getTree","params":{}}`)
+			if terr != nil {
+				http.Error(w, `{"error":"`+terr.Error()+`"}`, http.StatusBadGateway)
+				return
+			}
+			var t struct {
+				Result struct {
+					Contexts []struct {
+						Context string `json:"context"`
+					} `json:"contexts"`
+				} `json:"result"`
+			}
+			json.Unmarshal(tr, &t)
+			if len(t.Result.Contexts) > 0 {
+				ctx = t.Result.Contexts[0].Context
+			}
+		}
+		if ctx == "" {
+			http.Error(w, `{"error":"no context"}`, http.StatusBadGateway)
 			return
 		}
-		var t struct {
-			Result struct {
-				Contexts []struct {
-					Context string `json:"context"`
-				} `json:"contexts"`
-			} `json:"result"`
-		}
-		json.Unmarshal(tr, &t)
-		if len(t.Result.Contexts) > 0 {
-			ctx = t.Result.Contexts[0].Context
-		}
+		// JPEG q0.5 keeps a poll-able frame small (a full PNG is ~1.4MB; this is a
+		// fraction of that) — good enough for a ~1fps live mirror.
+		// origin "viewport" = only the visible area (NOT the full scrollable page —
+		// a long page would balloon to tens of MB and choke the cockpit).
+		sr, err = c.command(b, `{"method":"browsingContext.captureScreenshot","params":{"context":"`+ctx+`","origin":"viewport","format":{"type":"image/jpeg","quality":0.5}}}`)
 	}
-	if ctx == "" {
-		http.Error(w, `{"error":"no context"}`, http.StatusBadGateway)
-		return
-	}
-	// JPEG q0.6 keeps a poll-able frame small (a full PNG is ~1.4MB; this is a
-	// fraction of that) — good enough for a ~1fps live mirror.
-	// origin "viewport" = only the visible area (NOT the full scrollable page —
-	// a long page would balloon to tens of MB and choke the cockpit).
-	sr, err := c.command(b, `{"method":"browsingContext.captureScreenshot","params":{"context":"`+ctx+`","origin":"viewport","format":{"type":"image/jpeg","quality":0.5}}}`)
 	if err != nil {
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
 		return
