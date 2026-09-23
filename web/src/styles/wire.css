@@ -786,8 +786,14 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--
    content, so the ResizeObserver height measurement is unaffected. */
 .card-measure, .panel { container-type: inline-size; }
 .hud { flex-wrap: wrap; }                 /* plain flex aid (not a query): the budget HUD wraps instead of overflowing */
+/* selector is .card-b .pane-cockpit (not bare .pane-cockpit) so it ties the
+   specificity of `.card-b .pane-cockpit { font: inherit }` (line ~720) — a
+   container query adds no specificity of its own, so the bare form lost and
+   font-size never applied. NB: in-canvas the UNIT floor (420) keeps .card-measure
+   ≥ ~404 layout px, so this breakpoint fires only where a panel renders in a
+   narrower DOM context (regime B's real domain), not on the canvas. */
 @container (max-width: 360px) {
-  .pane-cockpit { gap: 4px; padding: 4px; font-size: 11px; }
+  .card-b .pane-cockpit { gap: 4px; padding: 4px; font-size: 11px; }
 }
 @container (max-width: 300px) {
   .panel .panel-h { font-size: 10px; opacity: .8; }

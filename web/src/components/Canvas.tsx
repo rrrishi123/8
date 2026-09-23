@@ -292,7 +292,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     wire: { key: 'wire', lane: 'type:gauges', kind: 'wire', title: KIND_TITLE.wire, meta: `${wireRows.length} on the wire`, node: <WireRows rows={wireRows} cardKey="wire" /> },
     resources: { key: 'resources', lane: 'type:gauges', kind: 'resources', title: KIND_TITLE.resources, meta: 'per-tab memory + cpu', node: <Resources session={session} cardKey="resources" /> },
     clock: { key: 'clock', lane: 'type:gauges', kind: 'clock', title: KIND_TITLE.clock, meta: instr.now, node: <ClockBody cardKey="clock" i={instr} /> },
-    matrix: { key: 'matrix', lane: 'type:gauges', kind: 'matrix', title: KIND_TITLE.matrix, meta: 'the map of the unfound', node: <Matrix cardKey="matrix" /> },
+    matrix: { key: 'matrix', lane: 'type:gauges', kind: 'matrix', title: KIND_TITLE.matrix, meta: 'the map of the unfound', measure: 'dom', node: <Matrix cardKey="matrix" /> },
     inner: { key: 'inner', lane: 'type:gauges', kind: 'inner', title: KIND_TITLE.inner, meta: 'containers + colima', node: <InnerBody cardKey="inner" i={instr} /> },
     portal: { key: 'portal', lane: 'type:gauges', kind: 'portal', title: KIND_TITLE.portal, meta: 'federated 8 nodes', node: <PortalBody cardKey="portal" i={instr} /> },
   };
