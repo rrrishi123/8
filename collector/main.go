@@ -1994,6 +1994,57 @@ func (c *collector) reconcileManifest(session string, tabs []map[string]string) 
 	}
 }
 
+// pollCDPManifest folds a CDP (chrome-family) seat's tabs into the durable
+// manifest (B3/B4). The pump can't: it early-returns for non-fox brokers because
+// streamCDP owns their /events (the screencast-ack consumer — a second reader
+// starves it). So this polls Target.getTargets — a request/response, NOT the
+// /events stream — on its own cadence and reconciles under the seat's OWN
+// session id. Fully additive: reconcileManifest closes only entries whose
+// Session matches (main.go ~1980), so firefox/tmux/nvim are untouched; a chrome
+// seat that had no manifest presence (BiDi getTree is blind to it) finally gets
+// one. The first tick is deferred so the fox pump seeds manifestSeeded first.
+func (c *collector) pollCDPManifest(ctx context.Context, b broker) {
+	if b.id == "fox" || c.brokerFactFor(b).Protocol != "cdp" {
+		return
+	}
+	tick := time.NewTicker(5 * time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		cr, err := c.command(&b, `{"method":"Target.getTargets","params":{}}`)
+		if err != nil {
+			continue // dead/reconnecting broker — try next tick, never prune on a blip
+		}
+		var ct struct {
+			Result struct {
+				TargetInfos []struct {
+					TargetID string `json:"targetId"`
+					Type     string `json:"type"`
+					URL      string `json:"url"`
+					Title    string `json:"title"`
+				} `json:"targetInfos"`
+			} `json:"result"`
+		}
+		if json.Unmarshal(cr, &ct) != nil {
+			continue
+		}
+		tabs := make([]map[string]string, 0, len(ct.Result.TargetInfos))
+		for _, ti := range ct.Result.TargetInfos {
+			if ti.Type != "page" { // tabs only — not workers/iframes/extensions
+				continue
+			}
+			tabs = append(tabs, map[string]string{"context": ti.TargetID, "url": ti.URL, "title": ti.Title})
+		}
+		if len(tabs) > 0 {
+			c.reconcileManifest(b.id, tabs)
+		}
+	}
+}
+
 // reconcileLoop keeps the manifest true even when NO cockpit is looking (fix for
 // background-throttling) AND enumerates from CHROME context — every tab in every
 // window — so the manifest finally sees ALL tabs, not just BiDi's session subset.
@@ -4366,6 +4417,7 @@ func main() {
 		c.adoptChannelSeats() // #1147: re-hold brokers a previous collector attached (they outlive it)
 		for _, b := range c.brokerList() {
 			go c.pump(ctx, b)
+			go c.pollCDPManifest(ctx, b) // CDP seats: fold their tabs into the manifest (pump owns fox's /events only)
 			time.Sleep(100 * time.Millisecond)
 		}
 		time.Sleep(200 * time.Millisecond)
