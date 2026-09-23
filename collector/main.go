@@ -1672,7 +1672,7 @@ func (c *collector) handleShot(w http.ResponseWriter, r *http.Request) {
 	ctx := r.URL.Query().Get("context")
 	var sr []byte
 	var err error
-	if c.brokerFactFor(*b).Protocol == "cdp" {
+	if c.cdpSeat(*b) {
 		// CDP: quality is 0..100; the held page socket needs no context.
 		sr, err = c.command(b, `{"method":"Page.captureScreenshot","params":{"format":"jpeg","quality":50}}`)
 	} else {
@@ -1994,6 +1994,22 @@ func (c *collector) reconcileManifest(session string, tabs []map[string]string) 
 	}
 }
 
+// cdpSeat reports whether a broker's seat speaks CDP. brokerFact.Protocol (from
+// the broker's /health upstream) is the primary signal, but a long-running
+// broker built before /health carried its upstream reports no protocol — so the
+// session registry's stream ("cdp", set at registration, nodes.go) is the
+// authoritative fallback. Without this, /shot + pollCDPManifest silently missed
+// a live chrome seat held by an old broker (found post-restart, 2026-09-23).
+func (c *collector) cdpSeat(b broker) bool {
+	if c.brokerFactFor(b).Protocol == "cdp" {
+		return true
+	}
+	if rec := lookupSession(b.id); rec != nil && rec.Stream == "cdp" {
+		return true
+	}
+	return false
+}
+
 // pollCDPManifest folds a CDP (chrome-family) seat's tabs into the durable
 // manifest (B3/B4). The pump can't: it early-returns for non-fox brokers because
 // streamCDP owns their /events (the screencast-ack consumer — a second reader
@@ -2004,7 +2020,7 @@ func (c *collector) reconcileManifest(session string, tabs []map[string]string) 
 // seat that had no manifest presence (BiDi getTree is blind to it) finally gets
 // one. The first tick is deferred so the fox pump seeds manifestSeeded first.
 func (c *collector) pollCDPManifest(ctx context.Context, b broker) {
-	if b.id == "fox" || c.brokerFactFor(b).Protocol != "cdp" {
+	if b.id == "fox" || !c.cdpSeat(b) {
 		return
 	}
 	tick := time.NewTicker(5 * time.Second)
