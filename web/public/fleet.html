@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fleet · cross-host 8</title>
+<style>
+  :root { --bg:#0a0b0d; --fg:#c9d1d9; --dim:#6b7280; --line:#20242b; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --acc:#58a6ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; padding:16px; }
+  h1 { font-size:13px; font-weight:600; letter-spacing:.06em; margin:0 0 2px; }
+  .sub { color:var(--dim); font-size:11px; margin-bottom:14px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:12px; }
+  .host { border:1px solid var(--line); border-radius:8px; padding:12px 14px; background:#0e1014; }
+  .host h2 { font-size:13px; margin:0 0 8px; display:flex; align-items:center; gap:8px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--dim); flex:none; }
+  .dot.up { background:var(--ok); } .dot.down { background:var(--bad); }
+  .kind { color:var(--dim); font-size:10px; font-weight:400; margin-left:auto; }
+  .row { display:flex; justify-content:space-between; gap:10px; padding:3px 0; border-top:1px solid #16181d; }
+  .row .k { color:var(--dim); } .row .v { text-align:right; }
+  .bar { height:6px; border-radius:3px; background:#16181d; overflow:hidden; margin-top:2px; }
+  .bar > i { display:block; height:100%; background:var(--ok); }
+  .bar > i.mid { background:var(--warn); } .bar > i.hi { background:var(--bad); }
+  .seats { color:var(--acc); font-size:11px; word-break:break-word; }
+  .warn { color:var(--warn); font-size:11px; margin-top:6px; }
+  .off { color:var(--bad); }
+  .foot { color:var(--dim); font-size:11px; margin-top:14px; }
+</style>
+</head>
+<body>
+  <h1>FLEET · everything the wire can see</h1>
+  <div class="sub" id="sub">polling…</div>
+  <div class="grid" id="grid"></div>
+  <div class="foot" id="foot"></div>
+
+<script>
+const HOSTS = [
+  { name: 'mac · lt-mbp-490',   base: 'http://127.0.0.1:7070',      kind: 'origin (local)' },
+  { name: 'omarchy · home',     base: 'http://100.83.251.102:7070', kind: 'tailscale' },
+];
+const CEIL = 0.5; // the <50% action gate
+
+async function get(base, path) {
+  const c = new AbortController(); const t = setTimeout(() => c.abort(), 3500);
+  try { const r = await fetch(base + path, { signal: c.signal, cache: 'no-store' }); clearTimeout(t); return r.ok ? await r.json() : null; }
+  catch { clearTimeout(t); return null; }
+}
+function utilOf(b) { if (!b) return null; const x = b.five_h_util ?? b.budget?.five_h_util; return (x === undefined) ? null : x; }
+function esc(s){ return String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])); }
+
+async function pollHost(h) {
+  const [health, budget, nodes] = await Promise.all([ get(h.base,'/health'), get(h.base,'/budget'), get(h.base,'/nodes') ]);
+  const up = !!(health && health.alive !== false);
+  const seats = (health?.sessions) || (nodes?.nodes || []).map(n => n.seat || n.id);
+  const containers = (nodes?.nodes || []).filter(n => n.mode === 'container').map(n => n.id);
+  const util = utilOf(budget);
+  const usageUnfed = budget && budget.budget === null;
+  return { h, up, seats, containers, util, usageUnfed };
+}
+function usageCell(s) {
+  if (s.util == null) return `<span class="off">${s.usageUnfed ? 'no sensor (untapped pane)' : '—'}</span>`;
+  const pct = Math.round(s.util*100), cls = s.util >= CEIL ? 'hi' : s.util >= CEIL*0.7 ? 'mid' : '';
+  return `${pct}% ${s.util>=CEIL?'· OVER GATE':''}<div class="bar"><i class="${cls}" style="width:${Math.min(100,pct)}%"></i></div>`;
+}
+function card(s) {
+  const seats = s.seats && s.seats.length ? esc(s.seats.join(', ')) : '<span class="off">none</span>';
+  const warns = [];
+  if (!s.up) warns.push('unreachable over the wire');
+  if (s.usageUnfed) warns.push('Claude usage invisible — pane needs BUN_INSPECT + /panes/tap');
+  if (s.util != null && s.util >= CEIL) warns.push('over the 50% gate — an action rule would throttle here');
+  return `<div class="host">
+    <h2><span class="dot ${s.up?'up':'down'}"></span>${esc(s.h.name)}<span class="kind">${esc(s.h.kind)}</span></h2>
+    <div class="row"><span class="k">8 collector</span><span class="v">${s.up?'live':'<span class=off>down</span>'}</span></div>
+    <div class="row"><span class="k">Claude 5h usage</span><span class="v">${usageCell(s)}</span></div>
+    <div class="row"><span class="k">seats</span><span class="v seats">${seats}</span></div>
+    <div class="row"><span class="k">containers</span><span class="v">${s.containers.length?esc(s.containers.join(', ')):'<span class=k>—</span>'}</span></div>
+    ${warns.map(w=>`<div class="warn">⚠ ${esc(w)}</div>`).join('')}
+  </div>`;
+}
+async function tick() {
+  const states = await Promise.all(HOSTS.map(pollHost));
+  document.getElementById('grid').innerHTML = states.map(card).join('');
+  const upN = states.filter(s=>s.up).length;
+  document.getElementById('sub').textContent = `${upN}/${HOSTS.length} hosts reachable · updated ${new Date().toLocaleTimeString()}`;
+  document.getElementById('foot').innerHTML =
+    'observe-half, live. gaps by design: omarchy usage null (untapped), container usage is account-side, no host cpu/mem yet, registries not federated. ' +
+    'the missing act-half = throttle a host whose 5h usage crosses 50%.';
+}
+tick(); setInterval(tick, 3000);
+</script>
+</body>
+</html>
