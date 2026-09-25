@@ -126,3 +126,38 @@ export async function replaySeries(name: string): Promise<{ fired: number; resul
   const r = await fetch(`${BASE}/replay-series?name=${encodeURIComponent(name)}`, { method: 'POST' });
   return r.json();
 }
+
+// ── PANE COCKPIT (#641) — the fan-out nerve's UI side ────────────────────────
+export interface PaneIdentity { pane?: string; cmd?: string; title?: string; uuid?: string; name?: string; jsonl?: string }
+export async function identity(): Promise<PaneIdentity[]> {
+  const r = await fetch(`${BASE}/identity`);
+  const j = await r.json();
+  return j.identity || [];
+}
+export interface PaneSendResult { sent: number; total: number; targets: { pane: string; sent: boolean }[] }
+export async function panesSend(text: string, panes: string[], all: boolean): Promise<PaneSendResult> {
+  const r = await fetch(`${BASE}/panes/send`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-8-Actor': 'cockpit' },
+    body: JSON.stringify(all ? { all: true, text } : { panes, text }),
+  });
+  if (!r.ok) throw new Error(`${r.status} ${r.status === 404 ? '— /panes/send not deployed yet (restart the collector)' : await r.text()}`);
+  return r.json();
+}
+
+
+// ── INNER-HOST metrics (#850): the 4-system observing its containerized self ──
+export interface ContainerStat { name: string; cpu: string; mem: string; mem_pc: string; net_io: string; blk_io: string; pids: string }
+export interface VMRow { name: string; status: string; arch?: string; cpus?: string; memory?: string; disk?: string; runtime?: string }
+export interface InnerHost { containers: ContainerStat[] | null; vms: VMRow[] | null; at: string; docker_ok: boolean; colima_ok: boolean }
+export async function innerHost(): Promise<InnerHost> {
+  const r = await fetch(`${BASE}/container`);
+  return r.json();
+}
+
+
+// ── PEERS / PORTAL superposition (#888): the registered federation nodes ─────
+export interface Peer { host: string; at: string; actor?: string; hostres?: unknown; manifest?: unknown; thumbnail?: string; age_s: number; stale: boolean }
+export async function peers(): Promise<{ peers: Peer[]; n: number; stale_after_s: number }> {
+  const r = await fetch(`${BASE}/peers`);
+  return r.json();
+}

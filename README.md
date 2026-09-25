@@ -33,7 +33,7 @@ The dependency arrow is one-way: adapters → host/witness → wire. Lower layer
 
 ## Two MODES, two atoms
 
-A **mode** is an interaction shape — *not* a transport. There are exactly two:
+A **mode** is an interaction shape — *not* a transport. There are exactly two — a **conjecture**, not a law: under the Reduction rules below it is killable by one honest counterexample, and it has survived every attempt so far (ledger #139):
 
 - **CALL** — one request → one response (discrete). Tool: **`http_request`**.
 - **CHANNEL** — a held duplex connection you produce commands into and consume events from (continuous). Tool: **`bidi_command`**.
@@ -47,6 +47,7 @@ flowchart LR
   HTTP["HTTP"] --> CALL
   GRPCU["gRPC-unary"] --> CALL
   UNIX["Unix socket"] --> CALL
+  GB["gitbroker"] --> CALL
   WS["WebSocket / CDP / BiDi"] --> CHAN
   GRPCS["gRPC-stream"] --> CHAN
   MQTT["MQTT pub/sub"] --> CHAN
@@ -54,6 +55,7 @@ flowchart LR
   UNIX --> CHAN
   SSE["SSE"] --> OBS
   RTCV["WebRTC (video)"] --> OBS
+  MJPEG["MJPEG"] --> OBS
   subgraph MODES["the only true shapes (the wire owns shape only)"]
     CALL["CALL · http_request"]
     CHAN["CHANNEL · bidi_command"]
@@ -78,8 +80,36 @@ flowchart LR
 | WebRTC | CHANNEL (data) / OBSERVE (video) | adapter SDP | — |
 | Unix domain socket | CALL/CHANNEL (locality) | adapters · BYOD | `unix://` + `SCM_RIGHTS` fd-passing |
 | SSE | OBSERVE (afferent-only) | **8** (witness) | held read-only `/feed` |
+| MJPEG | OBSERVE (afferent-only) | **8** (witness) | held read-only `/stream` (multipart/x-mixed-replace) |
+| gitbroker | CALL | adapter (store-and-forward) | git-commit relay; CALL-post + CALL-poll |
+| SQL over HTTP (`POST /sql`) | CALL (dialect; payload language = SQL, substrate = the store) | **8** serves, loopback-only, witnessed | collector `/sql` over `eight.db` |
 
 Three orthogonal properties were conflated by the naive "list of physics": **shape** (the only true mode: CALL/CHANNEL), **transport/locality** (a dialect — lives in adapters), and **direction** (full-duplex vs afferent-only OBSERVE — a sub-mode of CHANNEL, the witness's diet). The wire owns shape only; adapters own every dialect's encoding.
+
+## Reduction rules — how a thing gets classified
+
+Without these rules, "exactly two" is irrefutable-as-stated — any apparent counterexample can be
+absorbed by silently promoting its substrate to a counterpart (**counterpart-sliding**), which makes
+the count metaphysics, not physics (ledger #139). With them, it is a falsifiable claim:
+
+1. **Shape mints atoms; nothing else does.** One request → one response = **CALL**. A held
+   connection you produce into and consume from = **CHANNEL** (afferent-only ⇒ its sub-mode
+   **OBSERVE**). Shape is the *only* property that can create an atom.
+2. **Dialect never mints.** Transport, locality, encoding, and *payload language* are dialects of an
+   atom. `POST /sql` is a **CALL dialect** whose payload happens to be SQL over the store substrate —
+   not a third atom. (Commit 9555080's phrase "the DB ATOM" is retracted language; ledger #315.)
+3. **Substrate promotion must be stated and witnessed.** An operation with no apparent counterpart
+   (a shared file, a kernel signal, a clock expiry, shared memory) may be classified only by promoting
+   its substrate to a counterpart — and the promotion counts only if it is (a) declared here and
+   (b) **witnessed**: the substrate's side must land frames on the feed. An unstated promotion is not
+   a classification; it is the slide this section exists to forbid.
+4. **Composition is taxonomy, never physics.** A queue = CALL-post + CALL-poll *for classification*,
+   but composition never claims equivalence of physics: poll-of-CALLs ≠ CHANNEL in latency and
+   witnessability (the "costume" ruling, ledger #34). Ontology may compose; physics may not.
+5. **The falsifiability clause.** A real operation that resists rules 1–4 after honest application
+   **refutes the count**. Standing crucial experiment: shared-state access to `eight.db` is absorbed
+   today as a witnessed CALL dialect (`/sql`); *direct* unwitnessed file access by two minds remains
+   the open Lamport-duality case. If it cannot be reduced under rule 3, the count is wrong.
 
 ## The afferent law (the core IP)
 
@@ -168,7 +198,7 @@ flowchart TB
     HX["http_request → internal/httpx (CALL)"]
     WX["bidi_command → internal/wsx (CHANNEL)"]
     DISC["discover — re-perceive a live hub"]
-    TR["transports — the 7→2 manifest"]
+    TR["transports — the 9→2 manifest"]
     AUTH["auth-injection · auth_slot · profiles"]
     PROBE["probe / harvest · route-priors (specs/)"]
   end
@@ -194,7 +224,7 @@ flowchart TB
 
 Independent semver **per arm** + a separately-versioned **contract** (trace format, RunRequest/RunResult).
 Each arm declares which contract version it supports; the replay runner checks a trace's contract version
-before replaying. Baseline: **`v0.0.1`** across all four arms.
+before replaying. Baseline: **`v0.0.2`** across all four arms.
 
 ## Why "the wire is enough"
 
@@ -221,7 +251,7 @@ Orients/Decides, witness Observes; **Kalman observability** — you cannot contr
 
 The full transport candidate list — **HTTP, WebSocket, SSE, MJPEG, Unix socket, gRPC, MQTT, WebRTC** — all reduce to the wire's **two atoms**: `http_request` (CALL) and `bidi_command` (CHANNEL). Raw bytes ⇒ wire; framing/routing/negotiation ⇒ adapter.
 
-→ See **[TRANSPORTS.md](./TRANSPORTS.md)** for the full map (prose + Mermaid). Machine-readable: the http-mcp MCP **`transports`** tool returns [`transports.json`](https://github.com/rrrishi123/http-mcp/blob/v.0.0.1/cmd/mcp/transports.json) verbatim — the map any agent reads first.
+→ See **[TRANSPORTS.md](./TRANSPORTS.md)** for the full map (prose + Mermaid). Machine-readable: the http-mcp MCP **`transports`** tool returns [`transports.json`](https://github.com/rrrishi123/http-mcp/blob/release/v0.0.2/contract/transports/transports.json) verbatim — the map any agent reads first.
 
 ## Local stack — drivers & seats
 

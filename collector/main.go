@@ -51,7 +51,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -63,6 +62,7 @@ type broker struct {
 
 type collector struct {
 	brokers     []broker
+	brokersMu   sync.RWMutex // guards brokers — /nodes/attach appends at runtime (#1147)
 	client      *http.Client
 	geckoClient *http.Client // bounded timeout for geckodriver calls — a dead socket during a recycle can't hang chromeMu (the long-lived SSE pump keeps using client, which must have no timeout)
 	gecko       string       // geckodriver session base (http://host:port/session/<id>) — enables /procinfo
@@ -94,6 +94,9 @@ type collector struct {
 
 	wmu     sync.Mutex        // #12 change-detector: a tab you WATCH pushes tab.changed on DOM shift
 	watched map[string]string // ctx -> last DOM signature (opt-in; only watched tabs are read)
+
+	pmu       sync.Mutex        // witness pane appearance (#277): pane_id -> first_seen
+	panesSeen map[string]string // so a spawned pane is RECORDED (pane.appeared), not guessed
 
 	xmu       sync.Mutex // #13 cross-substrate timeline: every seat's .changed in one line
 	xtimeline []xEvent
@@ -128,9 +131,9 @@ type collector struct {
 	fxDriver string               // path to adapters/browser/firefox-stream.js
 	fxShot   string               // path to adapters/browser/firefox-drawshot.js (leak-free periphery still)
 
-	lastCapture atomic.Int64 // unixnano of the last capture served (drawshot/shot/fxchunk) — gates the memory aperture
-	chromeMu     sync.Mutex // serializes /moz/context chrome<->content toggles so concurrent chrome-exec (drawshot/procinfo/aperture) don't corrupt each other's context state
-	lastChromeOp time.Time  // guarded by chromeMu — for pacing chrome ops (feature A rate-limit)
+	lastCapture  atomic.Int64 // unixnano of the last capture served (drawshot/shot/fxchunk) — gates the memory aperture
+	chromeMu     sync.Mutex   // serializes /moz/context chrome<->content toggles so concurrent chrome-exec (drawshot/procinfo/aperture) don't corrupt each other's context state
+	lastChromeOp time.Time    // guarded by chromeMu — for pacing chrome ops (feature A rate-limit)
 }
 
 // fxStream is one Firefox tab's live WebM relay: the init segment (first cluster,
@@ -216,7 +219,6 @@ func (c *collector) witnessHeaders(w http.ResponseWriter, ledgerID int64, physic
 	ctx, seq := c.focusContext, c.focusSeq
 	c.focusMu.Unlock()
 	h := w.Header()
-	h.Set("Access-Control-Expose-Headers", "X-8-Witness, X-8-Ledger, X-8-Physics, X-8-Replayable, X-8-Focus-Seq, X-8-Focus-Context")
 	h.Set("X-8-Ledger", strconv.FormatInt(ledgerID, 10))
 	h.Set("X-8-Physics", physics)
 	h.Set("X-8-Replayable", "true")
@@ -240,7 +242,7 @@ func (c *collector) handleFocus(w http.ResponseWriter, r *http.Request) {
 }
 
 func newCollector(brokers []broker) *collector {
-	return &collector{brokers: brokers, client: &http.Client{}, geckoClient: &http.Client{Timeout: 25 * time.Second}, subs: map[int]chan string{}, frames: map[string]chan []byte{}, dprCache: map[string]float64{}, vpCache: map[string][2]float64{}, fxRecv: map[string]*fxStream{}, manifest: map[string]*tabRec{}}
+	return &collector{brokers: brokers, client: &http.Client{}, geckoClient: &http.Client{Timeout: 25 * time.Second}, subs: map[int]chan string{}, frames: map[string]chan []byte{}, dprCache: map[string]float64{}, vpCache: map[string][2]float64{}, fxRecv: map[string]*fxStream{}, manifest: map[string]*tabRec{}, panesSeen: map[string]string{}}
 }
 
 // chanDPR is a tab's devicePixelRatio (cached per context). The /stream screenshot
@@ -335,6 +337,7 @@ func (c *collector) handleProcInfo(w http.ResponseWriter, r *http.Request) {
 	post := func(path, body string) ([]byte, error) {
 		return c.geckoPost("POST", path, body) // auto-recovers the session on recycle
 	}
+	post("/timeouts", `{"script":30000}`) // async scripts need a script timeout, or /execute/async returns empty (same as execChrome)
 	if _, err := post("/moz/context", `{"context":"chrome"}`); err != nil {
 		http.Error(w, `{"error":"chrome context: `+err.Error()+`"}`, http.StatusBadGateway)
 		return
@@ -633,9 +636,11 @@ cb(JSON.stringify({parked:v.u,mb:v.mb}));
 	log.Printf("aperture: watching (soft=%dMB, recycle=%dMB, cooldown=%s)", softMB, recycleMB, cooldown)
 	for {
 		time.Sleep(30 * time.Second)
-		if n := c.lastCapture.Load(); n == 0 || time.Since(time.Unix(0, n)) > 90*time.Second {
-			continue // idle — nothing accumulating, nothing to flush
-		}
+		// Check parent memory EVERY cycle, capture or not. The graphics-surface
+		// bloat OUTLIVES the capture that created it — gating this on lastCapture
+		// meant an idle 7GB parent was never reclaimed (force-quit territory,
+		// 2026-08-20). The `before < softMB` guard below is the real "nothing to
+		// do" short-circuit; a memScript call every 30s is cheap.
 		if !lastFire.IsZero() && time.Since(lastFire) < cooldown {
 			continue
 		}
@@ -684,7 +689,7 @@ cb(JSON.stringify({parked:v.u,mb:v.mb}));
 		// dogs — the bloat is capture-driven (collector-driven), so this is where it belongs.
 		if recycleMB > 0 && amb >= recycleMB && time.Since(lastRecycle) > recycleCooldown {
 			lastRecycle = time.Now()
-			// AUTO-DEFER: where a multi-agent lease ledger owns recycle (omarchy
+			// AUTO-DEFER: where a multi-agent lease ledger owns recycle (a Linux peer host
 			// ~/.8/leases.json) the watchdog closes tabs gracefully BY LEASE before
 			// killing — so the collector must not pkill out from under it. Single-agent
 			// machines (mac, no leases file) recycle directly here.
@@ -693,46 +698,10 @@ cb(JSON.stringify({parked:v.u,mb:v.mb}));
 			} else {
 				log.Printf("aperture: parent %dMB >= %dMB recycle bound -> proactive recycle (FLOW 10)", amb, recycleMB)
 				c.publish(fmt.Sprintf(`{"session":"fox","origin":"COLLECTOR","frame":{"method":"aperture.recycle","params":{"parent_mb":%d,"bound_mb":%d}}}`, amb, recycleMB))
-				_ = exec.Command("pkill", "-f", "firefox.*ltqa-firefox-deepseek").Run()
+				_ = exec.Command("pkill", "-f", "firefox.*firefox-profile").Run() // OUR seat's profile (up.go: 8/.firefox-profile), not an operator's
 			}
 		}
 	}
-}
-
-// totalRAMMB returns physical RAM in MB, platform-agnostically (macOS/BSD sysctl,
-// Linux /proc/meminfo) — sizes the proactive-recycle bound to the machine. One Go
-// function replaces the per-OS shell that used to live in two watchdog scripts.
-func totalRAMMB() int {
-	if out, err := exec.Command("sysctl", "-n", "hw.memsize").Output(); err == nil {
-		if b, e := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64); e == nil && b > 0 {
-			return int(b / 1048576)
-		}
-	}
-	if data, err := os.ReadFile("/proc/meminfo"); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			if strings.HasPrefix(line, "MemTotal:") {
-				if f := strings.Fields(line); len(f) >= 2 {
-					if kb, e := strconv.Atoi(f[1]); e == nil {
-						return kb / 1024
-					}
-				}
-			}
-		}
-	}
-	return 0
-}
-
-// recycleThresholdMB — ~18% of physical RAM, capped 4500 (Firefox OOMs below 4500 on
-// RAM-starved machines: 18GB→~3300 < ~3800 crash). 0 RAM → 4500 fallback.
-func recycleThresholdMB() int {
-	ram := totalRAMMB()
-	if ram <= 0 {
-		return 4500
-	}
-	if rec := ram * 18 / 100; rec < 4500 {
-		return rec
-	}
-	return 4500
 }
 
 // handleFxChunk receives one WebM cluster from the HiddenFrame driver (POST body =
@@ -947,12 +916,38 @@ func (c *collector) handleDrawProbe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *collector) find(id string) *broker {
+	c.brokersMu.RLock()
+	defer c.brokersMu.RUnlock()
 	for i := range c.brokers {
 		if c.brokers[i].id == id {
-			return &c.brokers[i]
+			b := c.brokers[i]
+			return &b
 		}
 	}
 	return nil
+}
+
+// brokerList — a snapshot of the held brokers; readers iterate the copy while
+// /nodes/attach may append (#1147).
+func (c *collector) brokerList() []broker {
+	c.brokersMu.RLock()
+	defer c.brokersMu.RUnlock()
+	out := make([]broker, len(c.brokers))
+	copy(out, c.brokers)
+	return out
+}
+
+// addBroker holds one more broker at runtime; false if the id is already held.
+func (c *collector) addBroker(b broker) bool {
+	c.brokersMu.Lock()
+	defer c.brokersMu.Unlock()
+	for _, x := range c.brokers {
+		if x.id == b.id {
+			return false
+		}
+	}
+	c.brokers = append(c.brokers, b)
+	return true
 }
 
 // frameChan is a session's latest-screencast-frame channel (buffered 1).
@@ -1064,83 +1059,6 @@ func (c *collector) publish(frame string) {
 	}
 }
 
-type xEvent struct {
-	TS    string `json:"ts"`
-	Frame string `json:"frame"`
-}
-
-// handleTimeline — #13: the interleaved cross-substrate timeline (tmux · nvim ·
-// daemons · browser, one line). GET /timeline[?n=100&since=HH:MM:SS]. Two
-// captures compared client-side = the diff of "what changed between runs."
-func (c *collector) handleTimeline(w http.ResponseWriter, r *http.Request) {
-	c.xmu.Lock()
-	out := make([]xEvent, len(c.xtimeline))
-	copy(out, c.xtimeline)
-	c.xmu.Unlock()
-	if since := r.URL.Query().Get("since"); since != "" {
-		f := out[:0]
-		for _, e := range out {
-			if e.TS >= since {
-				f = append(f, e)
-			}
-		}
-		out = f
-	}
-	// distinct substrates present — the "cross" in cross-substrate, proven
-	kinds := map[string]int{}
-	for _, e := range out {
-		for _, k := range []string{"tmux", "nvim", "daemons", "tab"} {
-			if strings.Contains(e.Frame, `"`+k+`.changed"`) {
-				kinds[k]++
-			}
-		}
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"timeline": out, "substrates": kinds, "count": len(out)})
-}
-
-// handleWitnessed (#70 FIX #24) is the sink that turns cmd/wire (the transparent
-// MITM proxy) into a real 8 witness: the proxy POSTs each call it OBSERVED (it
-// already forwarded it — this only RECORDS it), and 8 folds it into the ledger/
-// provenance/timeline exactly like a /fetch, but WITHOUT re-executing. So a
-// MITM'd Selenium/Appium smoke becomes a witnessed replayable record. Credentials
-// in the URL (user:pass@host — LambdaTest's key) are REDACTED before recording:
-// the witness must never persist the secret it sees in transit (the I1 spirit).
-func (c *collector) handleWitnessed(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		Physics  string  `json:"physics"` // call | channel
-		Method   string  `json:"method"`
-		URL      string  `json:"url"`
-		Status   int     `json:"status"`
-		LatUS    float64 `json:"latency_us"`
-		RespLen  int     `json:"resp_bytes"`
-		Session  string  `json:"session"`
-		Actor    string  `json:"actor"`
-	}
-	if json.NewDecoder(r.Body).Decode(&in) != nil || in.URL == "" {
-		http.Error(w, `{"error":"need {url,...}"}`, http.StatusBadRequest)
-		return
-	}
-	// REDACT credentials: strip user:pass@ from the URL so the key LambdaTest puts
-	// in the hub URL is never persisted in 8's ledger.
-	redacted := in.URL
-	if u, err := url.Parse(in.URL); err == nil && u.User != nil {
-		u.User = url.User("REDACTED")
-		redacted = u.String()
-	}
-	phys := in.Physics
-	if phys == "" {
-		phys = "call"
-	}
-	id := c.record(reqRec{TS: nowNano(), Physics: phys, Session: in.Session, Method: in.Method,
-		URL: redacted, Status: in.Status, LatUS: in.LatUS, RespLen: in.RespLen,
-		Actor: actorOf(r, in.Actor)})
-	c.publish(fmt.Sprintf(`{"session":%q,"physics":%q,"origin":"COLLECTOR","frame":{"method":"witnessed","params":{"route":%q,"ledger_id":%d,"status":%d,"mitm":true}}}`,
-		firstNonEmpty(in.Session, "wire"), phys, in.Method+" "+redacted, id, in.Status))
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"witnessed":true,"ledger_id":%d}`, id)
-}
-
 func firstNonEmpty(a, b string) string {
 	if a != "" {
 		return a
@@ -1165,11 +1083,20 @@ func (c *collector) handleProvenance(w http.ResponseWriter, r *http.Request) {
 	// fresh <90s). The witness does NOT reject a spoofed actor (open model) — it
 	// SHOWS the trust bit, so a declared-but-unleased "rishi-the-operator" is
 	// visibly authenticated:false. Attributable AND (where leased) authenticated.
+	// #124.2 remainder (closed here): when claim tokens are ENFORCED, a live
+	// lease is not enough — authenticated requires a VERIFIED lease (granted
+	// against a host-resolved credential, tabRec.ClaimVerified). Without this,
+	// an unverified free-text /claim reads as authenticated even under
+	// enforcement, and the trust bit lies to the one buyer who pays for it.
+	// Open model (no tokens file) keeps leased→authenticated unchanged.
+	_, tokensEnforced := claimTokens()
 	leased := map[string]bool{}
 	c.tmu.Lock()
 	for _, rec := range c.manifest {
 		if rec != nil && rec.ClaimedBy != "" && claimLive(rec) {
-			leased[rec.ClaimedBy] = true
+			if !tokensEnforced || rec.ClaimVerified {
+				leased[rec.ClaimedBy] = true
+			}
 		}
 	}
 	c.tmu.Unlock()
@@ -1408,9 +1335,10 @@ func (c *collector) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 		Body    json.RawMessage `json:"body,omitempty"`
 		Error   string          `json:"error,omitempty"`
 	}
-	results := make([]result, len(c.brokers))
+	brokers := c.brokerList()
+	results := make([]result, len(brokers))
 	var wg sync.WaitGroup
-	for i, b := range c.brokers {
+	for i, b := range brokers {
 		wg.Add(1)
 		go func(i int, b broker) {
 			defer wg.Done()
@@ -1430,6 +1358,59 @@ func (c *collector) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"results": results})
+}
+
+// handlePanesSend fans ONE prompt into selected panes — or every live claude
+// pane — through sendToPane, the same guarded throat wake/summon use (so
+// EIGHT_NO_SUMMON, paneAlive and the TOCTOU tail all still hold). This is the
+// operator's (and any agent's) "type the same thing into all/any Claude at
+// once" nerve — the thing a solo mind kept faking by hand.
+//
+//	POST /panes/send  {"panes":["%8","%9"],"text":"..."}  — explicit targets
+//	POST /panes/send  {"all":true,"text":"..."}           — every live claude pane
+//	POST /panes/send  {"text":"..."}                      — same (empty == all claude)
+//
+// Only panes whose current command is claude are auto-targeted; an explicit
+// list is sent as-given (the operator chose it). Reply is per-pane {pane,sent}.
+func (c *collector) handlePanesSend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Panes []string `json:"panes"`
+		All   bool     `json:"all"`
+		Text  string   `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Text) == "" {
+		http.Error(w, `{"error":"need {text, and panes[] or all:true}"}`, http.StatusBadRequest)
+		return
+	}
+	targets := req.Panes
+	if req.All || len(targets) == 0 { // unspecified == the whole live claude choir
+		targets = nil
+		for _, p := range tmuxPanes() {
+			if strings.Contains(strings.ToLower(p.Cmd), "claude") {
+				targets = append(targets, p.ID)
+			}
+		}
+	}
+	type res struct {
+		Pane string `json:"pane"`
+		Sent bool   `json:"sent"`
+	}
+	out := make([]res, 0, len(targets))
+	n := 0
+	for _, p := range targets {
+		ok := sendToPane(p, req.Text, nil)
+		if ok {
+			n++
+		}
+		out = append(out, res{Pane: p, Sent: ok})
+	}
+	c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"panes.send","params":{"sent":%d,"total":%d}}}`, n, len(targets)))
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"sent": n, "total": len(targets), "targets": out})
 }
 
 // handleFetch executes one raw HTTP request server-side (the "curl hit"), and
@@ -1678,40 +1659,54 @@ func (c *collector) handleShot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// CHANNEL session (BiDi): captureScreenshot on the held socket.
+	// CHANNEL session: captureScreenshot on the held socket. Physics-aware (B2):
+	// BiDi (firefox) captures a context via browsingContext; CDP (a chrome-family
+	// seat, which holds a PAGE socket) captures the viewport directly with
+	// Page.captureScreenshot — no getTree/context (multi-tab CDP enumeration is
+	// /manifest's job, B4). Both return {"result":{"data":<base64>}}.
 	b := c.find(sid)
 	if b == nil {
 		http.Error(w, `{"error":"unknown or missing session — needs ?session=<id>. List live seats at /sessions (e.g. fox, tmux, nvim, daemons). If /sessions is empty this is a cold witness, not broken."}`, http.StatusNotFound)
 		return
 	}
 	ctx := r.URL.Query().Get("context")
-	if ctx == "" {
-		tr, err := c.command(b, `{"method":"browsingContext.getTree","params":{}}`)
-		if err != nil {
-			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
+	var sr []byte
+	var err error
+	if c.cdpSeat(*b) {
+		// CDP: a page-level socket captures its viewport directly; a browser-level
+		// seat (a /nodes/attach seat holds /devtools/browser/…) has no page in scope,
+		// so cdpShot falls back to enumerating targets and capturing one via a
+		// flat-mode session (B4). ctx, if set, selects the target by id.
+		sr, err = c.cdpShot(b, ctx)
+	} else {
+		if ctx == "" {
+			tr, terr := c.command(b, `{"method":"browsingContext.getTree","params":{}}`)
+			if terr != nil {
+				http.Error(w, `{"error":"`+terr.Error()+`"}`, http.StatusBadGateway)
+				return
+			}
+			var t struct {
+				Result struct {
+					Contexts []struct {
+						Context string `json:"context"`
+					} `json:"contexts"`
+				} `json:"result"`
+			}
+			json.Unmarshal(tr, &t)
+			if len(t.Result.Contexts) > 0 {
+				ctx = t.Result.Contexts[0].Context
+			}
+		}
+		if ctx == "" {
+			http.Error(w, `{"error":"no context"}`, http.StatusBadGateway)
 			return
 		}
-		var t struct {
-			Result struct {
-				Contexts []struct {
-					Context string `json:"context"`
-				} `json:"contexts"`
-			} `json:"result"`
-		}
-		json.Unmarshal(tr, &t)
-		if len(t.Result.Contexts) > 0 {
-			ctx = t.Result.Contexts[0].Context
-		}
+		// JPEG q0.5 keeps a poll-able frame small (a full PNG is ~1.4MB; this is a
+		// fraction of that) — good enough for a ~1fps live mirror.
+		// origin "viewport" = only the visible area (NOT the full scrollable page —
+		// a long page would balloon to tens of MB and choke the cockpit).
+		sr, err = c.command(b, `{"method":"browsingContext.captureScreenshot","params":{"context":"`+ctx+`","origin":"viewport","format":{"type":"image/jpeg","quality":0.5}}}`)
 	}
-	if ctx == "" {
-		http.Error(w, `{"error":"no context"}`, http.StatusBadGateway)
-		return
-	}
-	// JPEG q0.6 keeps a poll-able frame small (a full PNG is ~1.4MB; this is a
-	// fraction of that) — good enough for a ~1fps live mirror.
-	// origin "viewport" = only the visible area (NOT the full scrollable page —
-	// a long page would balloon to tens of MB and choke the cockpit).
-	sr, err := c.command(b, `{"method":"browsingContext.captureScreenshot","params":{"context":"`+ctx+`","origin":"viewport","format":{"type":"image/jpeg","quality":0.5}}}`)
 	if err != nil {
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
 		return
@@ -1769,7 +1764,7 @@ func (c *collector) handleTabs(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"tabs": tabs})
 		return
 	}
-		if r.URL.Query().Get("session") == "daemons" { // the host's background minds
+	if r.URL.Query().Get("session") == "daemons" { // the host's background minds
 		tabs := make([]map[string]string, 0, 8)
 		for _, d := range daemonList() {
 			tabs = append(tabs, map[string]string{"context": "d-" + d.Name, "url": "daemon://" + d.Name + " · pid " + d.Pid + " · " + d.Info, "title": d.Name})
@@ -1894,7 +1889,7 @@ func (c *collector) handleTabs(w http.ResponseWriter, r *http.Request) {
 const chromeTabsScript = `const cb=arguments[arguments.length-1];try{` +
 	`let ck=[];for(let w of Services.wm.getEnumerator("navigator:browser")){for(let t of Array.from(w.gBrowser.tabs)){if(t.linkedBrowser.currentURI.spec.includes("8088"))ck.push({t:t,w:w,sel:t.selected});}}` +
 	`if(ck.length>1){let keep=ck.find(c=>c.sel)||ck[0];for(let c of ck){if(c!==keep){try{c.w.gBrowser.removeTab(c.t);}catch(e){}}}}` +
-	`let out=[];for(let w of Services.wm.getEnumerator("navigator:browser")){for(let t of w.gBrowser.tabs){let b=t.linkedBrowser;out.push({bcid:String(b.browsingContext?b.browsingContext.id:""),url:b.currentURI?b.currentURI.spec:"",title:t.label||""});}}` +
+	`let out=[];for(let w of Services.wm.getEnumerator("navigator:browser")){for(let t of w.gBrowser.tabs){let b=t.linkedBrowser;out.push({bcid:String(b.browsingContext?b.browsingContext.id:""),url:b.currentURI?b.currentURI.spec:"",title:t.label||"",sel:!!t.selected});}}` +
 	`cb(JSON.stringify(out));}catch(e){cb("ERR:"+e);}`
 
 // ── TAB MANIFEST ────────────────────────────────────────────────────────────
@@ -1904,16 +1899,16 @@ const chromeTabsScript = `const cb=arguments[arguments.length-1];try{` +
 // the manifest is the durable identity + provenance layer on top, reconciled every
 // few seconds so dead-context ghosts turn "closed" and new tabs are "born".
 type tabRec struct {
-	UID       int64  `json:"uid"`
-	Ctx       string `json:"ctx"`
-	URL       string `json:"url"`
-	Session   string `json:"session"`
-	OpenedBy  string `json:"opened_by"` // "human" | "<agent-id>"
-	Why       string `json:"why"`
-	FirstSeen string `json:"first_seen"`
-	LastSeen  string `json:"last_seen"`
-	Status    string `json:"status"` // live | closed
-	ClosedAt  string `json:"closed_at,omitempty"`
+	UID           int64  `json:"uid"`
+	Ctx           string `json:"ctx"`
+	URL           string `json:"url"`
+	Session       string `json:"session"`
+	OpenedBy      string `json:"opened_by"` // "human" | "<agent-id>"
+	Why           string `json:"why"`
+	FirstSeen     string `json:"first_seen"`
+	LastSeen      string `json:"last_seen"`
+	Status        string `json:"status"` // live | closed
+	ClosedAt      string `json:"closed_at,omitempty"`
 	ClaimedBy     string `json:"claimed_by,omitempty"`     // an agent CURRENTLY using this tab (a lease)
 	ClaimAt       string `json:"claim_at,omitempty"`       // heartbeat — a claim is LIVE only if fresh (<90s)
 	ClaimVerified bool   `json:"claim_verified,omitempty"` // #83 the lease was granted against a host-resolved credential (not a free-text name)
@@ -1999,6 +1994,168 @@ func (c *collector) reconcileManifest(session string, tabs []map[string]string) 
 	os.MkdirAll(os.ExpandEnv("$HOME/.8"), 0o755)
 	if b, err := json.MarshalIndent(snap, "", " "); err == nil {
 		os.WriteFile(os.ExpandEnv("$HOME/.8/manifest.json"), b, 0o644)
+	}
+}
+
+// cdpSeat reports whether a broker's seat speaks CDP. brokerFact.Protocol (from
+// the broker's /health upstream) is the primary signal, but a long-running
+// broker built before /health carried its upstream reports no protocol — so the
+// session registry's stream ("cdp", set at registration, nodes.go) is the
+// authoritative fallback. Without this, /shot + pollCDPManifest silently missed
+// a live chrome seat held by an old broker (found post-restart, 2026-09-23).
+func (c *collector) cdpSeat(b broker) bool {
+	switch c.brokerFactFor(b).Protocol {
+	case "cdp":
+		return true
+	case "bidi":
+		return false
+	}
+	// protocol unknown — an old broker built before /health carried its upstream
+	// (the registry's Stream is no help either: a restart clears it and
+	// adoptChannelSeats doesn't re-set it). Fall back to the SAME convention
+	// /sessions uses (handleSessions ~L3003): the fox seat is BiDi, every other
+	// browser broker is a chrome-family CDP seat.
+	return b.id != "fox"
+}
+
+// cdpShot captures one frame from a CDP seat, page-level or browser-level (B4).
+// A page-level socket (/devtools/page/…) screenshots its own viewport directly.
+// A browser-level socket (a /nodes/attach seat holds /devtools/browser/…) has no
+// page in scope, so a direct capture returns empty; we then enumerate targets,
+// attach to a page with a FLAT-MODE session (which needs the channel's sessionId
+// passthrough), capture that, and detach. ctx, if set, selects a target by id;
+// else the first real (non-devtools) page. It degrades safely: any failure — an
+// old channel that drops sessionId, no page, an attach error — returns the direct
+// (empty) result rather than an error, so a page-level seat is unaffected and a
+// browser-level seat is no worse than before the fix.
+func (c *collector) cdpShot(b *broker, ctx string) ([]byte, error) {
+	// The browser-level capture (no sessionId) always returns the HELD/active page,
+	// regardless of ctx — so when a specific target is pinned, taking it would make
+	// two tabs yield byte-identical images (the B4 gap the cowork found). Only take
+	// the page-level shortcut when NO ctx is pinned; a pinned ctx always goes through
+	// the per-target attach below so each tab captures itself.
+	var direct []byte
+	if ctx == "" {
+		var err error
+		direct, err = c.command(b, `{"method":"Page.captureScreenshot","params":{"format":"jpeg","quality":50}}`)
+		if err != nil || cdpHasData(direct) {
+			return direct, err // single-seat / held page (or a hard error) — unchanged
+		}
+	}
+	tr, terr := c.command(b, `{"method":"Target.getTargets"}`)
+	if terr != nil {
+		return direct, nil
+	}
+	var t struct {
+		Result struct {
+			TargetInfos []struct {
+				TargetID string `json:"targetId"`
+				Type     string `json:"type"`
+				URL      string `json:"url"`
+			} `json:"targetInfos"`
+		} `json:"result"`
+	}
+	json.Unmarshal(tr, &t)
+	target := ""
+	for _, ti := range t.Result.TargetInfos {
+		if ti.Type != "page" {
+			continue
+		}
+		if ctx != "" {
+			if ti.TargetID == ctx {
+				target = ti.TargetID
+				break
+			}
+			continue
+		}
+		if ti.URL != "" && !strings.HasPrefix(ti.URL, "devtools://") {
+			target = ti.TargetID
+			break
+		}
+	}
+	if target == "" {
+		return direct, nil
+	}
+	ar, aerr := c.command(b, `{"method":"Target.attachToTarget","params":{"targetId":"`+target+`","flatten":true}}`)
+	if aerr != nil {
+		return direct, nil
+	}
+	var a struct {
+		Result struct {
+			SessionID string `json:"sessionId"`
+		} `json:"result"`
+	}
+	json.Unmarshal(ar, &a)
+	if a.Result.SessionID == "" {
+		return direct, nil
+	}
+	shot, serr := c.command(b, `{"sessionId":"`+a.Result.SessionID+`","method":"Page.captureScreenshot","params":{"format":"jpeg","quality":50}}`)
+	c.command(b, `{"method":"Target.detachFromTarget","params":{"sessionId":"`+a.Result.SessionID+`"}}`) // best-effort
+	if serr != nil || !cdpHasData(shot) {
+		return direct, nil // old channel drops sessionId, or capture failed — no worse than before
+	}
+	return shot, nil
+}
+
+// cdpHasData reports whether a CDP screenshot response carries a non-empty frame.
+func cdpHasData(sr []byte) bool {
+	var s struct {
+		Result struct {
+			Data string `json:"data"`
+		} `json:"result"`
+	}
+	json.Unmarshal(sr, &s)
+	return s.Result.Data != ""
+}
+
+// pollCDPManifest folds a CDP (chrome-family) seat's tabs into the durable
+// manifest (B3/B4). The pump can't: it early-returns for non-fox brokers because
+// streamCDP owns their /events (the screencast-ack consumer — a second reader
+// starves it). So this polls Target.getTargets — a request/response, NOT the
+// /events stream — on its own cadence and reconciles under the seat's OWN
+// session id. Fully additive: reconcileManifest closes only entries whose
+// Session matches (main.go ~1980), so firefox/tmux/nvim are untouched; a chrome
+// seat that had no manifest presence (BiDi getTree is blind to it) finally gets
+// one. The first tick is deferred so the fox pump seeds manifestSeeded first.
+func (c *collector) pollCDPManifest(ctx context.Context, b broker) {
+	if b.id == "fox" || !c.cdpSeat(b) {
+		return
+	}
+	tick := time.NewTicker(5 * time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		cr, err := c.command(&b, `{"method":"Target.getTargets","params":{}}`)
+		if err != nil {
+			continue // dead/reconnecting broker — try next tick, never prune on a blip
+		}
+		var ct struct {
+			Result struct {
+				TargetInfos []struct {
+					TargetID string `json:"targetId"`
+					Type     string `json:"type"`
+					URL      string `json:"url"`
+					Title    string `json:"title"`
+				} `json:"targetInfos"`
+			} `json:"result"`
+		}
+		if json.Unmarshal(cr, &ct) != nil {
+			continue
+		}
+		tabs := make([]map[string]string, 0, len(ct.Result.TargetInfos))
+		for _, ti := range ct.Result.TargetInfos {
+			if ti.Type != "page" { // tabs only — not workers/iframes/extensions
+				continue
+			}
+			tabs = append(tabs, map[string]string{"context": ti.TargetID, "url": ti.URL, "title": ti.Title})
+		}
+		if len(tabs) > 0 {
+			c.reconcileManifest(b.id, tabs)
+		}
 	}
 }
 
@@ -2203,13 +2360,12 @@ func (c *collector) reconcileLoop() {
 		} else {
 			eyeClosed = 0
 		}
-		var ct []struct {
-			Bcid  string `json:"bcid"`
-			URL   string `json:"url"`
-			Title string `json:"title"`
-		}
+		var ct []chromeTab
 		if json.Unmarshal([]byte(out), &ct) != nil {
 			continue
+		}
+		if c.manifestSeeded { // #643: never prune a world the witness has not yet read
+			c.autoDedupe(ct)
 		}
 		tabs := make([]map[string]string, 0, len(ct))
 		for _, tb := range ct {
@@ -2244,892 +2400,6 @@ func (c *collector) reconcileLoop() {
 	}
 }
 
-// ── TMUX — the agents' surface, native (the system's own eyes, no claude-deck) ──
-type tmuxPaneRec struct{ ID, Loc, Cmd, Title string }
-
-func tmuxBin() string {
-	for _, p := range []string{"/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"} {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	if p, err := exec.LookPath("tmux"); err == nil {
-		return p
-	}
-	return ""
-}
-
-// tmuxPanes enumerates every pane on the local tmux server. Empty (not error)
-// when tmux is absent or no server runs — the seat simply doesn't appear.
-func tmuxPanes() []tmuxPaneRec {
-	tb := tmuxBin()
-	if tb == "" {
-		return nil
-	}
-	out, err := exec.Command(tb, "list-panes", "-a", "-F", "#{pane_id}|#{session_name}:#{window_index}.#{pane_index}|#{pane_current_command}|#{pane_title}").Output()
-	if err != nil {
-		return nil
-	}
-	var panes []tmuxPaneRec
-	for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		f := strings.SplitN(ln, "|", 4)
-		if len(f) == 4 && strings.HasPrefix(f[0], "%") {
-			panes = append(panes, tmuxPaneRec{ID: f[0], Loc: f[1], Cmd: f[2], Title: f[3]})
-		}
-	}
-	return panes
-}
-
-// handleTmuxPane returns a pane's visible text (capture-pane) — the tmux seat's
-// "frame". GET /tmuxpane?pane=%25N (a %id). Afferent-only: reading never focuses.
-func (c *collector) handleTmuxPane(w http.ResponseWriter, r *http.Request) {
-	pane := r.URL.Query().Get("pane")
-	ok := strings.HasPrefix(pane, "%") && len(pane) > 1
-	for _, ch := range pane[1:] {
-		if ch < '0' || ch > '9' {
-			ok = false
-			break
-		}
-	}
-	tb := tmuxBin()
-	if !ok || tb == "" {
-		http.Error(w, `{"error":"bad pane id"}`, http.StatusBadRequest)
-		return
-	}
-	// -S -3000 captures scrollback, not just the visible screen — the pane's
-	// FULL recent history (the card was showing only the visible slice before).
-	out, err := exec.Command(tb, "capture-pane", "-p", "-S", "-3000", "-t", pane).Output()
-	if err != nil {
-		http.Error(w, `{"error":"capture failed"}`, http.StatusBadGateway)
-		return
-	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Write(out)
-}
-
-// fileBirth returns a file's CREATION time (darwin birthtime), falling back to
-// modtime. The jsonl of a Claude session is born when that session starts — so
-// birth time is the stable per-session fingerprint that modtime is not (modtime
-// churns on every append, so the newest-modtime jsonl is just whoever wrote last).
-func fileBirth(path string) time.Time {
-	fi, err := os.Stat(path)
-	if err != nil {
-		return time.Time{}
-	}
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-		return time.Unix(st.Birthtimespec.Sec, st.Birthtimespec.Nsec)
-	}
-	return fi.ModTime()
-}
-
-// binOr returns the first existing absolute path, else the bare name (last hope
-// via PATH). Lets the collector exec system tools regardless of its launchd PATH.
-func binOr(name string, abs ...string) string {
-	for _, p := range abs {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	if p, err := exec.LookPath(name); err == nil {
-		return p
-	}
-	return name
-}
-
-// paneClaudeStart returns when the Claude process in a tmux pane started. The
-// pane's root is a shell; claude is a descendant — so we walk two levels of
-// children and take the earliest claude/node start. Empty when no Claude runs.
-func paneClaudeStart(tb, pane string) (time.Time, bool) {
-	ppb, err := exec.Command(tb, "display-message", "-p", "-t", pane, "#{pane_pid}").Output()
-	if err != nil {
-		return time.Time{}, false
-	}
-	pp := strings.TrimSpace(string(ppb))
-	// ABSOLUTE paths: the collector is launched by launchd/watchdog with a minimal
-	// PATH that lacks /usr/bin, so bare "pgrep"/"ps" fail to exec (tmux only works
-	// because tmuxBin() is absolute). This was the same-cwd fix's silent failure.
-	pgrepBin, psBin := binOr("pgrep", "/usr/bin/pgrep"), binOr("ps", "/bin/ps")
-	pids := []string{pp}
-	for _, parent := range []string{pp} {
-		if ch, e := exec.Command(pgrepBin, "-P", parent).Output(); e == nil {
-			for _, k := range strings.Fields(string(ch)) {
-				pids = append(pids, k)
-				if gc, e2 := exec.Command(pgrepBin, "-P", k).Output(); e2 == nil {
-					pids = append(pids, strings.Fields(string(gc))...)
-				}
-			}
-		}
-	}
-	var best time.Time
-	found := false
-	for _, pid := range pids {
-		out, e := exec.Command(psBin, "-o", "lstart=,comm=", "-p", pid).Output()
-		if e != nil {
-			continue
-		}
-		line := strings.TrimSpace(string(out))
-		idx := strings.LastIndex(line, " ")
-		if idx < 0 {
-			continue
-		}
-		comm := strings.ToLower(line[idx+1:])
-		if !strings.Contains(comm, "claude") && !strings.Contains(comm, "node") {
-			continue
-		}
-		lstart := strings.Join(strings.Fields(line[:idx]), " ")
-		t, e2 := time.Parse("Mon 2 Jan 15:04:05 2006", lstart)
-		if e2 != nil {
-			continue
-		}
-		if !found || t.Before(best) {
-			best, found = t, true
-		}
-	}
-	return best, found
-}
-
-// normAlnum lowercases and drops EVERYTHING but [a-z0-9]. Stripping all
-// whitespace + punctuation from both a wrapped tmux pane AND a jsonl makes the
-// pane's line-wrapping (and box chrome) irrelevant: "foo\nbar" and "foo bar"
-// both become "foobar", so a fingerprint taken from the screen matches the file.
-func normAlnum(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-			b.WriteRune(r)
-		case r >= 'A' && r <= 'Z':
-			b.WriteRune(r + 32)
-		}
-	}
-	return b.String()
-}
-
-// paneJsonlByContent maps a pane to its transcript by MATCHING what the pane is
-// currently showing against each jsonl's tail — resume-proof and pane-specific
-// (birthtime breaks when a session is resumed; the process hides its sessionId).
-// Returns "" if nothing matches (fresh pane, or output too short to fingerprint).
-func paneJsonlByContent(tb, pane, projDir string) string {
-	cap, err := exec.Command(tb, "capture-pane", "-p", "-S", "-200", "-t", pane).Output()
-	if err != nil {
-		return ""
-	}
-	pn := normAlnum(string(cap))
-	if len(pn) < 80 {
-		return ""
-	}
-	// several fingerprints from the RECENT (tail) portion of the screen
-	var fps []string
-	for _, off := range []int{len(pn) - 60, len(pn) - 180, len(pn) - 340, len(pn) - 520} {
-		if off >= 0 && off+44 <= len(pn) {
-			fps = append(fps, pn[off:off+44])
-		}
-	}
-	if len(fps) == 0 {
-		return ""
-	}
-	entries, _ := os.ReadDir(projDir)
-	type fe struct {
-		path string
-		mod  time.Time
-	}
-	var fs []fe
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".jsonl") {
-			continue
-		}
-		if fi, er := e.Info(); er == nil {
-			fs = append(fs, fe{projDir + "/" + e.Name(), fi.ModTime()})
-		}
-	}
-	sort.Slice(fs, func(i, j int) bool { return fs[i].mod.After(fs[j].mod) })
-	for _, f := range fs {
-		data, _ := os.ReadFile(f.path)
-		if len(data) > 1<<20 { // only the last 1MB — the pane shows RECENT output
-			data = data[len(data)-(1<<20):]
-		}
-		dn := normAlnum(string(data))
-		for _, fp := range fps {
-			if strings.Contains(dn, fp) {
-				return f.path
-			}
-		}
-	}
-	return ""
-}
-
-// paneJsonl maps a tmux PANE to ITS OWN Claude transcript — the fix for the
-// same-cwd collision (many claude panes share one cwd, so newest-by-modtime
-// picks whichever mind wrote last, NOT this pane). Primary signal: CONTENT match
-// (resume-proof); then jsonl BIRTH nearest claude START; last, newest-by-modtime.
-func paneJsonl(tb, pane, projDir string) (string, time.Time) {
-	if p := paneJsonlByContent(tb, pane, projDir); p != "" {
-		mt := time.Time{}
-		if fi, err := os.Stat(p); err == nil {
-			mt = fi.ModTime()
-		}
-		return p, mt
-	}
-	entries, _ := os.ReadDir(projDir)
-	var newest string
-	var newestT time.Time
-	type cand struct {
-		path  string
-		birth time.Time
-		mod   time.Time
-	}
-	var cands []cand
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".jsonl") {
-			continue
-		}
-		fi, err := e.Info()
-		if err != nil {
-			continue
-		}
-		p := projDir + "/" + e.Name()
-		cands = append(cands, cand{p, fileBirth(p), fi.ModTime()})
-		if fi.ModTime().After(newestT) {
-			newestT, newest = fi.ModTime(), p
-		}
-	}
-	if start, ok := paneClaudeStart(tb, pane); ok {
-		best := ""
-		var bestD time.Duration = 1 << 62
-		for _, cd := range cands {
-			d := cd.birth.Sub(start)
-			if d < 0 {
-				d = -d
-			}
-			if d < bestD {
-				bestD, best = d, cd.path
-			}
-		}
-		// only trust the match if it's within a few minutes of claude start —
-		// otherwise the pane's claude predates all transcripts we can see.
-		if best != "" && bestD < 10*time.Minute {
-			for _, cd := range cands {
-				if cd.path == best {
-					return best, cd.mod
-				}
-			}
-		}
-	}
-	return newest, newestT
-}
-
-// handleTmuxSummary — WHAT HAS THIS CLAUDE BEEN DOING. A tmux pane running a
-// sibling Claude has its own jsonl transcript; this reads it (pane cwd → the
-// project dir → the newest session) and returns a summary: recent prompts, the
-// tool-use count, the last thing it said. Refreshed on request from 8 so we can
-// focus attention on a sibling's conversation without commanding it — the
-// witness READS a peer's history, it doesn't drive it. GET /tmuxsummary?pane=%N.
-func (c *collector) handleTmuxSummary(w http.ResponseWriter, r *http.Request) {
-	pane := r.URL.Query().Get("pane")
-	tb := tmuxBin()
-	if !strings.HasPrefix(pane, "%") || tb == "" {
-		http.Error(w, `{"error":"need pane=%N"}`, http.StatusBadRequest)
-		return
-	}
-	cwdb, err := exec.Command(tb, "display-message", "-p", "-t", pane, "#{pane_current_path}").Output()
-	if err != nil {
-		http.Error(w, `{"error":"no such pane"}`, http.StatusNotFound)
-		return
-	}
-	cwd := strings.TrimSpace(string(cwdb))
-	// Claude Code encodes a project's cwd by replacing every '/' with '-'.
-	projDir := os.ExpandEnv("$HOME/.claude/projects/") + strings.ReplaceAll(cwd, "/", "-")
-	newest, newestT := paneJsonl(tb, pane, projDir) // THIS pane's own transcript, not newest-by-mtime
-	resp := map[string]any{"pane": pane, "cwd": cwd}
-	if newest == "" {
-		resp["note"] = "no Claude transcript for this pane's cwd — not a Claude session, or a fresh one"
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
-		return
-	}
-	data, _ := os.ReadFile(newest)
-	prompts := []string{}
-	tools, turns := 0, 0
-	lastAsst := ""
-	for _, ln := range strings.Split(string(data), "\n") {
-		if strings.TrimSpace(ln) == "" {
-			continue
-		}
-		var o struct {
-			Type    string `json:"type"`
-			Message struct {
-				Role    string          `json:"role"`
-				Content json.RawMessage `json:"content"`
-			} `json:"message"`
-		}
-		if json.Unmarshal([]byte(ln), &o) != nil {
-			continue
-		}
-		role := o.Message.Role
-		if role == "" {
-			role = o.Type
-		}
-		if role == "user" {
-			var s string
-			if json.Unmarshal(o.Message.Content, &s) == nil {
-				if s = strings.TrimSpace(s); s != "" && !strings.HasPrefix(s, "<") && !strings.HasPrefix(s, "[Request") {
-					prompts = append(prompts, firstN(s, 120))
-				}
-			}
-		} else if role == "assistant" {
-			turns++
-			var blocks []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			}
-			if json.Unmarshal(o.Message.Content, &blocks) == nil {
-				for _, b := range blocks {
-					if b.Type == "tool_use" {
-						tools++
-					} else if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
-						lastAsst = firstN(strings.TrimSpace(b.Text), 200)
-					}
-				}
-			}
-		}
-	}
-	if len(prompts) > 5 {
-		prompts = prompts[len(prompts)-5:]
-	}
-	resp["jsonl"] = newest
-	resp["session"] = strings.TrimSuffix(filepath.Base(newest), ".jsonl")
-	resp["updated"] = newestT.UTC().Format(time.RFC3339)
-	resp["turns"] = turns
-	resp["tool_uses"] = tools
-	resp["recent_prompts"] = prompts
-	resp["last_said"] = lastAsst
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
-}
-
-// handleFocus (#22a) — FOCUSED ATTENTION, not a chat summary. /tmuxsummary gives
-// the observations (Tycho); this assembles a packet a MIND reads to derive the
-// laws (Kepler): the pane's own words+acts PLUS the dynamic research-programme
-// scaffold (Lakatos/Kuhn). The collector is a witness, not a mind — so it does
-// NOT write the reading; it hands the material and the lens to whoever will.
-// The instruction is deliberately "read the NATURE OF THE WORDS", never
-// "summarise": the reading must be dynamic to what this pane is actually doing.
-// GET /attention?pane=%N. Witness-only: reading never drives the pane.
-func (c *collector) handleAttention(w http.ResponseWriter, r *http.Request) {
-	pane := r.URL.Query().Get("pane")
-	tb := tmuxBin()
-	if !strings.HasPrefix(pane, "%") || tb == "" {
-		http.Error(w, `{"error":"need pane=%N"}`, http.StatusBadRequest)
-		return
-	}
-	cwdb, err := exec.Command(tb, "display-message", "-p", "-t", pane, "#{pane_current_path}").Output()
-	if err != nil {
-		http.Error(w, `{"error":"no such pane"}`, http.StatusNotFound)
-		return
-	}
-	cwd := strings.TrimSpace(string(cwdb))
-	projDir := os.ExpandEnv("$HOME/.claude/projects/") + strings.ReplaceAll(cwd, "/", "-")
-	newest, newestT := paneJsonl(tb, pane, projDir) // THIS pane's own transcript (same-cwd fix)
-	packet := map[string]any{"pane": pane, "cwd": cwd}
-	if newest == "" {
-		packet["note"] = "no Claude transcript for this pane's cwd — nothing to focus on yet"
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(packet)
-		return
-	}
-	// richer material than /tmuxsummary: the ARC (ordered tool sequence reveals
-	// what it's DOING), fuller prompts, and the last several things it SAID — the
-	// raw vocabulary the reading is derived from.
-	data, _ := os.ReadFile(newest)
-	prompts, saids, toolSeq := []string{}, []string{}, []string{}
-	tools, turns := 0, 0
-	for _, ln := range strings.Split(string(data), "\n") {
-		if strings.TrimSpace(ln) == "" {
-			continue
-		}
-		var o struct {
-			Type    string `json:"type"`
-			Message struct {
-				Role    string          `json:"role"`
-				Content json.RawMessage `json:"content"`
-			} `json:"message"`
-		}
-		if json.Unmarshal([]byte(ln), &o) != nil {
-			continue
-		}
-		role := o.Message.Role
-		if role == "" {
-			role = o.Type
-		}
-		if role == "user" {
-			var s string
-			if json.Unmarshal(o.Message.Content, &s) == nil {
-				if s = strings.TrimSpace(s); s != "" && !strings.HasPrefix(s, "<") && !strings.HasPrefix(s, "[Request") {
-					prompts = append(prompts, firstN(s, 240))
-				}
-			}
-		} else if role == "assistant" {
-			turns++
-			var blocks []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-				Name string `json:"name"`
-			}
-			if json.Unmarshal(o.Message.Content, &blocks) == nil {
-				for _, b := range blocks {
-					if b.Type == "tool_use" {
-						tools++
-						if b.Name != "" {
-							toolSeq = append(toolSeq, b.Name)
-						}
-					} else if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
-						saids = append(saids, firstN(strings.TrimSpace(b.Text), 240))
-					}
-				}
-			}
-		}
-	}
-	tail := func(s []string, n int) []string {
-		if len(s) > n {
-			return s[len(s)-n:]
-		}
-		return s
-	}
-	packet["jsonl"] = newest
-	packet["session"] = strings.TrimSuffix(filepath.Base(newest), ".jsonl")
-	packet["updated"] = newestT.UTC().Format(time.RFC3339)
-	packet["material"] = map[string]any{
-		"turns": turns, "tool_uses": tools,
-		"recent_prompts": tail(prompts, 10),
-		"recent_said":    tail(saids, 6),
-		"tool_arc":       tail(toolSeq, 40), // the ORDER of acts — what it's been doing, not just how much
-	}
-	// The lens is the deliverable's spine: a mind reads the material ABOVE through
-	// THIS frame, filling each slot from the pane's own words+acts.
-	packet["reading"] = map[string]any{
-		"lens":        "research-programme (Lakatos/Kuhn) — dynamic, derived from the nature of the words this pane used",
-		"instruction": "Do NOT summarise the conversation. Read THIS pane's own prompts, statements, and the ORDER of its acts, and articulate its research programme: what it treats as unfalsifiable vs. adjustable, whether it is predicting-then-verifying or only patching, what it is driving toward, and — most important — what its own words reveal it is NOT yet attending to.",
-		"scaffold": []string{
-			"hard_core — the commitments this pane will not abandon (visible in what it never questions)",
-			"protective_belt — the auxiliary moves it makes to defend the core (the fixes, the reframings)",
-			"progressive_or_degenerating — is it predicting novel facts then verifying them, or only absorbing anomalies after the fact?",
-			"projected_result — what outcome the trajectory of its acts is aimed at",
-			"anomalies_unattended — what the words surface but the pane has not turned to (the frontier it is ignoring)",
-		},
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(packet)
-}
-
-// ── #35 FIX #30: NATIVE tmux CHANNEL (control mode) ─────────────────────────
-// The #30 anomaly proved watch-then-publish (the 1.5s poll) is NOT the CHANNEL
-// atom. tmux control mode (-C) IS: a held bidirectional client to which tmux
-// PUSHES %output/%window-* frames unsolicited. This holds that client and
-// publishes those frames into 8's feed as native tmux.output/tmux.changed — the
-// atom realized off-browser, not emulated.
-var tmuxChMu sync.Mutex
-var tmuxChOn = map[string]bool{}
-
-func (c *collector) tmuxControlChannel(socketName, target string) {
-	key := socketName + "/" + target
-	tmuxChMu.Lock()
-	if tmuxChOn[key] {
-		tmuxChMu.Unlock()
-		return
-	}
-	tmuxChOn[key] = true
-	tmuxChMu.Unlock()
-	defer func() { tmuxChMu.Lock(); delete(tmuxChOn, key); tmuxChMu.Unlock() }()
-
-	tb := tmuxBin()
-	if tb == "" {
-		return
-	}
-	args := []string{}
-	if socketName != "" {
-		args = append(args, "-L", socketName)
-	}
-	args = append(args, "-C", "attach", "-t", target)
-	cmd := exec.Command(tb, args...)
-	stdin, err := cmd.StdinPipe() // held open so the control client stays attached
-	if err != nil {
-		return
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return
-	}
-	if err := cmd.Start(); err != nil {
-		return
-	}
-	defer cmd.Process.Kill()
-	defer stdin.Close()
-	sc := bufio.NewScanner(stdout)
-	sc.Buffer(make([]byte, 1<<20), 1<<20)
-	for sc.Scan() {
-		line := sc.Text()
-		switch {
-		case strings.HasPrefix(line, "%output "):
-			rest := line[len("%output "):]
-			pane, data := rest, ""
-			if sp := strings.IndexByte(rest, ' '); sp >= 0 {
-				pane, data = rest[:sp], rest[sp+1:]
-			}
-			db, _ := json.Marshal(data)
-			c.publish(fmt.Sprintf(`{"session":"tmux","origin":"COLLECTOR","physics":"channel","frame":{"method":"tmux.output","params":{"pane":%q,"data":%s,"native":true}}}`, pane, string(db)))
-		case strings.HasPrefix(line, "%window-add"), strings.HasPrefix(line, "%window-close"),
-			strings.HasPrefix(line, "%window-renamed"), strings.HasPrefix(line, "%session-window-changed"),
-			strings.HasPrefix(line, "%layout-change"), strings.HasPrefix(line, "%unlinked-window"):
-			evt := strings.Fields(line)[0]
-			c.publish(fmt.Sprintf(`{"session":"tmux","origin":"COLLECTOR","physics":"channel","frame":{"method":"tmux.changed","params":{"native":true,"evt":%q}}}`, evt))
-		}
-	}
-}
-
-// handleTmuxChannel starts the native channel. GATED: refuses the LIVE default
-// server (a -C client perturbs the working tmux 8 lives in) unless
-// EIGHT_TMUX_CHANNEL_LIVE=1. Pass ?socket=<name> to prove on a dedicated server.
-func (c *collector) handleTmuxChannel(w http.ResponseWriter, r *http.Request) {
-	sock := r.URL.Query().Get("socket")
-	sess := r.URL.Query().Get("session")
-	if sess == "" {
-		sess = "0"
-	}
-	if sock == "" && os.Getenv("EIGHT_TMUX_CHANNEL_LIVE") != "1" {
-		http.Error(w, `{"error":"refusing a control client on the LIVE tmux server (would perturb it). Pass ?socket=<name> for a dedicated server, or set EIGHT_TMUX_CHANNEL_LIVE=1 to opt in."}`, http.StatusForbidden)
-		return
-	}
-	go c.tmuxControlChannel(sock, sess)
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"started":true,"socket":%q,"session":%q,"native_channel":true}`, sock, sess)
-}
-
-// ── NVIM — the editor seat, over msgpack-rpc WITHOUT a msgpack codec ─────────
-// nvim's own binary is the msgpack client: `nvim --server <sock> --remote-expr`
-// evaluates vimscript against a running nvim over its socket, and `--remote-send`
-// types into it. So 8 speaks the editor's held CHANNEL through the same shell-out
-// pattern as tmux/sqlite3 — stdlib-only, no dependency. Buffers are this seat's
-// tabs; a buffer's lines are its frame; :buffer N (switch) is its control verb.
-func nvimBin() string {
-	for _, p := range []string{"/opt/homebrew/bin/nvim", "/usr/local/bin/nvim", "/usr/bin/nvim"} {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	if p, err := exec.LookPath("nvim"); err == nil {
-		return p
-	}
-	return ""
-}
-
-// nvimSock finds the first REACHABLE nvim server socket. Platform-agnostic: nvim
-// puts sockets under $TMPDIR/nvim.$USER/*/ (macOS) or $XDG_RUNTIME_DIR (Linux);
-// $NVIM_8_SOCK overrides. Empty when nvim is absent or no server runs — the seat
-// simply doesn't appear.
-func nvimSock() string {
-	nb := nvimBin()
-	if nb == "" {
-		return ""
-	}
-	var cands []string
-	if s := os.Getenv("NVIM_8_SOCK"); s != "" {
-		cands = append(cands, s)
-	}
-	roots := []string{os.TempDir(), os.Getenv("XDG_RUNTIME_DIR"), "/tmp"}
-	user := os.Getenv("USER")
-	for _, root := range roots {
-		if root == "" {
-			continue
-		}
-		for _, pat := range []string{
-			filepath.Join(root, "nvim."+user, "*", "nvim.*"),
-			filepath.Join(root, "nvim.*"),
-			filepath.Join(root, "nvimsocket"),
-		} {
-			if m, _ := filepath.Glob(pat); len(m) > 0 {
-				cands = append(cands, m...)
-			}
-		}
-	}
-	for _, s := range cands {
-		if fi, err := os.Stat(s); err != nil || fi.Mode()&os.ModeSocket == 0 {
-			continue
-		}
-		// reachable = it answers a trivial expr fast
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		out, err := exec.CommandContext(ctx, nb, "--server", s, "--remote-expr", "1").Output()
-		cancel()
-		if err == nil && strings.TrimSpace(string(out)) == "1" {
-			return s
-		}
-	}
-	return ""
-}
-
-type nvimBufRec struct {
-	Nr      int    `json:"nr"`
-	Name    string `json:"name"`
-	Lines   int    `json:"lines"`
-	Changed int    `json:"changed"`
-	Active  bool   `json:"active"`
-}
-
-func nvimBufs() []nvimBufRec {
-	sock := nvimSock()
-	nb := nvimBin()
-	if sock == "" || nb == "" {
-		return nil
-	}
-	expr := `json_encode(map(getbufinfo({"buflisted":1}), {i,b -> {"nr":b.bufnr,"name":fnamemodify(b.name,":t"),"lines":b.linecount,"changed":b.changed,"active":b.bufnr==bufnr("")}}))`
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, nb, "--server", sock, "--remote-expr", expr).Output()
-	if err != nil {
-		return nil
-	}
-	var bufs []nvimBufRec
-	json.Unmarshal(out, &bufs)
-	return bufs
-}
-
-// handleNvimBuf returns a buffer's lines — the editor seat's frame (afferent).
-// GET /nvimbuf?buf=N. Capped at 500 lines so a huge buffer stays a card.
-func (c *collector) handleNvimBuf(w http.ResponseWriter, r *http.Request) {
-	buf, _ := strconv.Atoi(r.URL.Query().Get("buf"))
-	sock, nb := nvimSock(), nvimBin()
-	if buf <= 0 || sock == "" || nb == "" {
-		http.Error(w, `{"error":"need buf=N and a running nvim"}`, http.StatusBadRequest)
-		return
-	}
-	expr := fmt.Sprintf(`join(getbufline(%d, 1, 500), "\n")`, buf)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, nb, "--server", sock, "--remote-expr", expr).Output()
-	if err != nil {
-		http.Error(w, `{"error":"read failed"}`, http.StatusBadGateway)
-		return
-	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Write(out)
-}
-
-// handleNvimOpen — the editor seat's CONTROL verb (seen ⇒ controllable): switch
-// the active buffer. GET /nvimopen?buf=N. The paired sense-change is visible —
-// the ACTIVE buffer moves, which the next frame/enumerate reports.
-func (c *collector) handleNvimOpen(w http.ResponseWriter, r *http.Request) {
-	buf, _ := strconv.Atoi(r.URL.Query().Get("buf"))
-	sock, nb := nvimSock(), nvimBin()
-	if buf <= 0 || sock == "" || nb == "" {
-		http.Error(w, `{"error":"need buf=N and a running nvim"}`, http.StatusBadRequest)
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	exec.CommandContext(ctx, nb, "--server", sock, "--remote-expr", fmt.Sprintf(`execute("buffer %d")`, buf)).Run()
-	c.publish(fmt.Sprintf(`{"session":"nvim","origin":"COLLECTOR","frame":{"method":"nvim.buffer","params":{"buf":%d}}}`, buf))
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"opened":%d}`, buf)
-}
-
-// handleTmuxSend — the tmux seat's CONTROL verb (seen ⇒ controllable, the seat
-// contract's third leg). GET /tmuxsend?pane=%25N&keys=...&enter=1 → send-keys -l
-// (literal). Witnessed: publishes a tmux.send frame to the feed.
-func (c *collector) handleTmuxSend(w http.ResponseWriter, r *http.Request) {
-	pane, keys := r.URL.Query().Get("pane"), r.URL.Query().Get("keys")
-	ok := strings.HasPrefix(pane, "%") && len(pane) > 1
-	for _, ch := range pane[1:] {
-		if ch < '0' || ch > '9' {
-			ok = false
-			break
-		}
-	}
-	tb := tmuxBin()
-	if !ok || tb == "" || keys == "" {
-		http.Error(w, `{"error":"need pane=%N and keys="}`, http.StatusBadRequest)
-		return
-	}
-	if err := exec.Command(tb, "send-keys", "-t", pane, "-l", keys).Run(); err != nil {
-		http.Error(w, `{"error":"send failed"}`, http.StatusBadGateway)
-		return
-	}
-	if r.URL.Query().Get("enter") == "1" {
-		exec.Command(tb, "send-keys", "-t", pane, "Enter").Run()
-	}
-	c.publish(fmt.Sprintf(`{"session":"tmux","origin":"COLLECTOR","frame":{"method":"tmux.send","params":{"pane":%q,"keys":%q}}}`, pane, keys))
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"sent":%q}`, pane)
-}
-
-// ── DAEMONS — the host's background minds, 8's own body included ─────────────
-// Browsers and tmux are NOT part of the four-body system; they are SURFACES it
-// witnesses via the seat contract: {enumerate, frame, control}. Daemons are one
-// more kind: enumerate = pgrep, frame = ps line + log tail, control = signals
-// (not yet wired — an honest seat-contract gap).
-type daemonSpec struct {
-	name, pat, log string
-	protected      bool // the reviver: the system may not saw off the branch that catches it
-}
-
-var daemonSpecs = []daemonSpec{
-	{"collector", "collector/collector -listen", "/tmp/collector-8.log", false},
-	{"broker-fox", "channel -ws", "/tmp/broker-8.log", false},
-	{"geckodriver", "geckodriver --port", "/tmp/geckodriver.log", false},
-	{"cockpit-vite", "vite", "", false},
-	{"watchdog", "scripts/watchdog.sh", "/tmp/watchdog-8.log", true},
-	{"pilot", "pilot -daemon", "", false},
-	{"ollama", "ollama serve", "", false},
-	{"tailscaled", "tailscaled", "", false},
-	{"claude-deck", "claude-deck", "", false},
-	// HOST INFRA the witness SEES but the system does NOT own (office-private,
-	// provider/auth-bound — must never ship in the single binary; witnessable,
-	// not absorbable — the eight.db-vs-tunnel boundary, 2026-08-07 work #8):
-	{"adaptive-tunnel", "AdaptiveDesktop.app.*adaptive connect", "$HOME/.lt-tunnels/adaptive-supervisor.log", false},
-	{"dbeaver", "DBeaver.app", "", false},
-}
-
-type daemonRec struct{ Name, Pid, Info string }
-
-func daemonList() []daemonRec {
-	var out []daemonRec
-	for _, d := range daemonSpecs {
-		pb, err := exec.Command("pgrep", "-o", "-f", d.pat).Output()
-		if err != nil {
-			continue
-		}
-		pids := strings.Fields(strings.TrimSpace(string(pb)))
-		if len(pids) == 0 {
-			continue
-		}
-		info := ""
-		if ib, e := exec.Command("ps", "-o", "rss=,etime=", "-p", pids[0]).Output(); e == nil {
-			if f := strings.Fields(string(ib)); len(f) >= 2 {
-				if kb, _ := strconv.Atoi(f[0]); kb > 0 {
-					info = fmt.Sprintf("%dMB · up %s", kb/1024, f[1])
-				}
-			}
-		}
-		out = append(out, daemonRec{d.name, pids[0], info})
-	}
-	return out
-}
-
-// tailFile returns the last n lines of a file, reading at most 16KB from its end.
-func tailFile(p string, n int) string {
-	f, err := os.Open(p)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return ""
-	}
-	var off int64
-	if st.Size() > 16384 {
-		off = st.Size() - 16384
-	}
-	buf := make([]byte, st.Size()-off)
-	f.ReadAt(buf, off)
-	lines := strings.Split(string(buf), "\n")
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	return strings.Join(lines, "\n")
-}
-
-// handleDaemonSignal — the daemons seat's CONTROL verb (seen ⇒ controllable,
-// third leg of the seat contract). GET /daemonsignal?d=<name>&sig=TERM|HUP|KILL
-// &by=<who>. The pid is resolved SERVER-SIDE from the spec pattern — a caller
-// names a daemon, never a pid. TERM to a supervised daemon = restart (its
-// reviver brings it back). The watchdog is PROTECTED from TERM/KILL: it is the
-// reviver. Self-signal (the collector) responds first, dies 400ms later — the
-// witness kills itself through itself and is reborn by the watchdog.
-func (c *collector) handleDaemonSignal(w http.ResponseWriter, r *http.Request) {
-	name, sig, by := r.URL.Query().Get("d"), r.URL.Query().Get("sig"), r.URL.Query().Get("by")
-	if sig == "" {
-		sig = "TERM"
-	}
-	if by == "" {
-		by = "undeclared"
-	}
-	if sig != "TERM" && sig != "HUP" && sig != "KILL" {
-		http.Error(w, `{"error":"sig must be TERM|HUP|KILL"}`, http.StatusBadRequest)
-		return
-	}
-	for _, d := range daemonSpecs {
-		if d.name != name {
-			continue
-		}
-		if d.protected && sig != "HUP" {
-			http.Error(w, `{"error":"`+name+` is PROTECTED — it is the reviver; killing it leaves nothing to catch the others. HUP is allowed."}`, http.StatusForbidden)
-			return
-		}
-		var pid string
-		if d.name == "collector" {
-			pid = strconv.Itoa(os.Getpid()) // I resolve MYSELF by identity, never by pattern —
-			// pgrep -f once matched a probe SHELL whose cmdline merely CONTAINED the
-			// pattern, and the verb killed the observer (2026-08-07, exit 144).
-		} else {
-			pb, err := exec.Command("pgrep", "-o", "-f", d.pat).Output()
-			pids := strings.Fields(strings.TrimSpace(string(pb)))
-			if err != nil || len(pids) == 0 {
-				http.Error(w, `{"error":"not running"}`, http.StatusNotFound)
-				return
-			}
-			pid = pids[0]
-		}
-		self := pid == strconv.Itoa(os.Getpid())
-		c.publish(fmt.Sprintf(`{"session":"daemons","origin":"COLLECTOR","frame":{"method":"daemon.signal","params":{"daemon":%q,"pid":%s,"sig":%q,"by":%q,"self":%v}}}`, name, pid, sig, by, self))
-		if self { // respond first, die after — the reviver brings the witness back
-			go func() {
-				time.Sleep(400 * time.Millisecond)
-				exec.Command("kill", "-"+sig, pid).Run()
-			}()
-		} else if e := exec.Command("kill", "-"+sig, pid).Run(); e != nil {
-			http.Error(w, `{"error":"signal failed"}`, http.StatusBadGateway)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"daemon":%q,"pid":%s,"sig":%q,"self":%v}`, name, pid, sig, self)
-		return
-	}
-	http.Error(w, `{"error":"unknown daemon"}`, http.StatusNotFound)
-}
-
-// handleDaemonFrame — a daemon's "frame": its ps line + the tail of its log.
-func (c *collector) handleDaemonFrame(w http.ResponseWriter, r *http.Request) {
-	name := r.URL.Query().Get("d")
-	for _, d := range daemonSpecs {
-		if d.name != name {
-			continue
-		}
-		var b strings.Builder
-		if pb, err := exec.Command("pgrep", "-o", "-f", d.pat).Output(); err == nil {
-			if pids := strings.Fields(strings.TrimSpace(string(pb))); len(pids) > 0 {
-				if ib, e := exec.Command("ps", "-o", "pid=,rss=,etime=,command=", "-p", pids[0]).Output(); e == nil {
-					b.WriteString(strings.TrimSpace(string(ib)) + "\n")
-				}
-			}
-		}
-		if d.log != "" {
-			b.WriteString("\n── log ──\n" + tailFile(os.ExpandEnv(d.log), 24))
-		}
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		io.WriteString(w, b.String())
-		return
-	}
-	http.Error(w, `{"error":"unknown daemon"}`, http.StatusNotFound)
-}
-
-// ── EXPERIRI: the stopwatch — the witness's calibration instrument ────────────
-// "Realtime" is invisible on a static page but SELF-EVIDENT on a clock: point 8
-// at a surface whose content IS time, and staleness becomes a readable number
-// (displayed − true). Served by the collector itself so the one binary carries
-// its own falsification instrument. Operational definition under test:
-// to OBSERVE = to hold a frame whose staleness is bounded and KNOWN.
-const stopwatchHTML = `<!doctype html><html><head><meta charset="utf-8"><title>experiri · stopwatch</title><style>body{margin:0;background:#000;color:#39ff14;font-family:ui-monospace,Menlo,monospace;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh}#wall{font-size:11vw;font-weight:700;letter-spacing:.04em}#el{font-size:4.5vw;color:#9ece6a;opacity:.85}#note{font-size:1.5vw;color:#666;margin-top:3vh;max-width:80vw;text-align:center}</style></head><body><div id="wall"></div><div id="el"></div><div id="note">experiri · compare these digits AS SEEN THROUGH 8 against the true clock at capture — the difference IS the witness's staleness</div><script>const t0=performance.now();const p=(n,w)=>String(n).padStart(w,"0");function tick(){const d=new Date();wall.textContent=p(d.getHours(),2)+":"+p(d.getMinutes(),2)+":"+p(d.getSeconds(),2)+"."+p(d.getMilliseconds(),3);const e=performance.now()-t0,s=Math.floor(e/1000);el.textContent="elapsed "+p(Math.floor(s/60),2)+":"+p(s%60,2)+"."+p(Math.floor(e%1000),3);}tick();setInterval(tick,16)</script></body></html>`
-
 func (c *collector) handleStopwatch(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	io.WriteString(w, stopwatchHTML)
@@ -3141,7 +2411,9 @@ func (c *collector) handleStopwatch(w http.ResponseWriter, r *http.Request) {
 // idempotently each sync (DROP/CREATE), so it can never desync into a second
 // authority DBeaver would trust wrongly. Built by shelling the sqlite3 binary,
 // so 8 stays stdlib-only (like tmux/pgrep/ps) and DBeaver opens a real file:
-//   dbeaver → SQLite → ~/.8/eight.db  (tables: surfaces, events, work, benches)
+//
+//	dbeaver → SQLite → ~/.8/eight.db  (tables: surfaces, events, work, benches)
+//
 // One db, four surface-kinds and every act, ready for data modelling.
 func eightDB() string { return os.ExpandEnv("$HOME/.8/eight.db") }
 
@@ -3158,8 +2430,68 @@ func (c *collector) syncDB() (map[string]int, error) {
 	b.WriteString("PRAGMA journal_mode=WAL;\nBEGIN;\n")
 	b.WriteString(`DROP TABLE IF EXISTS surfaces; CREATE TABLE surfaces(uid INTEGER PRIMARY KEY, ctx TEXT, session TEXT, url TEXT, opened_by TEXT, why TEXT, first_seen TEXT, last_seen TEXT, status TEXT, closed_at TEXT);` + "\n")
 	b.WriteString(`DROP TABLE IF EXISTS events; CREATE TABLE events(id INTEGER PRIMARY KEY, ts TEXT, physics TEXT, session TEXT, method TEXT, url TEXT, status INTEGER, latency_us INTEGER, resp_bytes INTEGER, replayable INTEGER);` + "\n")
-	b.WriteString(`DROP TABLE IF EXISTS work; CREATE TABLE work(id INTEGER PRIMARY KEY, text TEXT, status TEXT, by_who TEXT, ts TEXT);` + "\n")
+	// #431: the RELATIONS ride along — assignee/prio/flipped_by were dropped by
+	// the projection, so /sql could report how-much-is-undone but never WHO owns
+	// it; the distribution of work across minds is exactly what "how ready are
+	// we" asks, and the witness omitted it.
+	// origin_pane carries a live pane id (%N) — declared as a FOREIGN KEY to
+	// panes(pane_id) so the pane-hub relation is visible (DBeaver draws it, /sql
+	// joins on it). Enforcement stays off (no PRAGMA foreign_keys), so historical
+	// rows with no origin (NULL) are fine.
+	b.WriteString(`DROP TABLE IF EXISTS work; CREATE TABLE work(id INTEGER PRIMARY KEY, text TEXT, status TEXT, by_who TEXT, ts TEXT, assignee TEXT, prio INTEGER, flipped_by TEXT, by_canon TEXT, origin_pane TEXT, FOREIGN KEY(origin_pane) REFERENCES panes(pane_id));` + "\n")
 	b.WriteString(`DROP TABLE IF EXISTS benches; CREATE TABLE benches(id INTEGER, ts TEXT, tag TEXT, session TEXT, n INTEGER, equiv_p50 REAL, equiv_p99 REAL, byte_ratio REAL);` + "\n")
+
+	// #437: identity DERIVED live (no roster file) — names are self-declared.
+	// panes+windows ← live tmux (#436: rows were frozen at 2026-08-13 — the
+	// witness had stopped writing what it sees; no source code even wrote these
+	// tables). GUARD: only rewrite when tmux answers non-empty — eight.db.panes
+	// doubles as restore-8.sh's source, and last-good must survive a dead tmux.
+	// role now carries the CANONICAL name (it wrongly held the tmux title).
+	if tb := tmuxBin(); tb != "" {
+		pout, _ := exec.Command(tb, "list-panes", "-a", "-F", "#{session_name}|#{window_index}|#{pane_index}|#{pane_id}|#{pane_pid}|#{pane_current_path}|#{pane_current_command}|#{pane_title}").Output()
+		var plines []string
+		for _, ln := range strings.Split(strings.TrimSpace(string(pout)), "\n") {
+			if strings.TrimSpace(ln) != "" {
+				plines = append(plines, ln)
+			}
+		}
+		if len(plines) > 0 {
+			// pane_id is UNIQUE so it can be a FOREIGN KEY target; spawned_by is a
+			// self-reference (which pane spawned this one) — both make the pane-hub
+			// relation visible in the diagram.
+			b.WriteString(`DROP TABLE IF EXISTS panes; CREATE TABLE panes(session TEXT, win INTEGER, pane INTEGER, pane_id TEXT PRIMARY KEY, claude_uuid TEXT, cwd TEXT, title TEXT, label TEXT, role TEXT, bypass INTEGER DEFAULT 1, cmd TEXT, updated_at TEXT, canonical_name TEXT, jsonl_path TEXT, spawned_by TEXT, FOREIGN KEY(spawned_by) REFERENCES panes(pane_id));` + "\n")
+			uu := paneUUIDs()
+			pnow := time.Now().UTC().Format(time.RFC3339)
+			for _, ln := range plines {
+				f := strings.SplitN(ln, "|", 8)
+				if len(f) != 8 {
+					continue
+				}
+				uuid := uu[f[4]]
+				name, _ := nameForUUID(uuid) // self-declared; "" when undeclared — honest
+				jsonl := jsonlForUUID(uuid)  // discovered by search, never assumed
+				spawnedBy := ""              // #pane-hub: the self-declared parent edge
+				declMu.Lock()
+				if d, ok := declared[uuid]; ok {
+					spawnedBy = d.SpawnedBy
+				}
+				declMu.Unlock()
+				b.WriteString(fmt.Sprintf("INSERT INTO panes VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s,%s,%s);\n",
+					sqlQ(f[0]), f[1], f[2], sqlQ(f[3]), sqlQ(uuid), sqlQ(f[5]), sqlQ(f[7]), sqlQ(f[7]), sqlQ(name), sqlQ(f[6]), sqlQ(pnow), sqlQ(name), sqlQ(jsonl), sqlQ(spawnedBy)))
+				counts["panes"]++
+			}
+			wout, _ := exec.Command(tb, "list-windows", "-a", "-F", "#{session_name}|#{window_index}|#{window_name}|#{window_layout}").Output()
+			b.WriteString(`DROP TABLE IF EXISTS windows; CREATE TABLE windows(session TEXT, win INTEGER, name TEXT, layout TEXT, updated_at TEXT, PRIMARY KEY(session,win));` + "\n")
+			for _, ln := range strings.Split(strings.TrimSpace(string(wout)), "\n") {
+				f := strings.SplitN(ln, "|", 4)
+				if len(f) != 4 || strings.TrimSpace(ln) == "" {
+					continue
+				}
+				b.WriteString(fmt.Sprintf("INSERT INTO windows VALUES(%s,%s,%s,%s,%s);\n", sqlQ(f[0]), f[1], sqlQ(f[2]), sqlQ(f[3]), sqlQ(pnow)))
+				counts["windows"]++
+			}
+		}
+	}
 
 	// surfaces ← manifest.json (a list of surface world-lines)
 	if data, err := os.ReadFile(os.ExpandEnv("$HOME/.8/manifest.json")); err == nil {
@@ -3202,12 +2534,31 @@ func (c *collector) syncDB() (map[string]int, error) {
 			counts["events"]++
 		}
 	}
-	// work ← work.json
+	// work ← work.json. Lock-free BY DESIGN (#402): writes are atomic
+	// temp+rename now, so this can never see a torn file — only a slightly
+	// stale snapshot, which is exactly what an export wants.
 	if data, err := os.ReadFile(workFile()); err == nil {
 		var items []workItem
 		if json.Unmarshal(data, &items) == nil {
 			for _, it := range items {
-				b.WriteString(fmt.Sprintf("INSERT INTO work VALUES(%d,%s,%s,%s,%s);\n", it.ID, sqlQ(it.Text), sqlQ(it.Status), sqlQ(it.By), sqlQ(it.TS)))
+				canon := foldLabel(it.By)
+				origin := "" // #pane-hub: author label -> uuid -> LIVE pane (allocation is sibling-scoped, not dumb)
+				if isPaneID(it.By) {
+					origin = it.By // the author label IS a pane id — it is the origin pane, no declaration needed
+				} else if u := declaredUUID(it.By); u != "" {
+					origin = paneForUUID(u)
+				} else if u := roleUUID(strings.TrimPrefix(it.By, "validator-")); u != "" {
+					// #855 tail: roles.json is the DURABLE declaration layer — live
+					// declarations are wiped by every collector restart (the #854(4)
+					// amnesia), but the family's names are standing marks on disk.
+					// validator-philo/validator-pmf fold to their role names.
+					origin = paneForUUID(u)
+				}
+				originSQL := "NULL" // no origin -> NULL, not '' (FK-clean, and honest about "unknown")
+				if origin != "" {
+					originSQL = sqlQ(origin)
+				}
+				b.WriteString(fmt.Sprintf("INSERT INTO work VALUES(%d,%s,%s,%s,%s,%s,%d,%s,%s,%s);\n", it.ID, sqlQ(it.Text), sqlQ(it.Status), sqlQ(it.By), sqlQ(it.TS), sqlQ(it.Assignee), it.Prio, sqlQ(it.FlippedBy), sqlQ(canon), originSQL))
 				counts["work"]++
 			}
 		}
@@ -3237,6 +2588,10 @@ func (c *collector) syncDB() (map[string]int, error) {
 		}
 	}
 	b.WriteString("COMMIT;\n")
+	// Checkpoint the WAL into the main db file so any reader that lags on the WAL
+	// (e.g. DBeaver) sees the current schema, and the WAL doesn't grow unbounded
+	// under the 30s DROP/CREATE churn.
+	b.WriteString("PRAGMA wal_checkpoint(TRUNCATE);\n")
 
 	cmd := exec.Command("sqlite3", eightDB())
 	cmd.Stdin = strings.NewReader(b.String())
@@ -3261,363 +2616,6 @@ func (c *collector) handleDB(w http.ResponseWriter, r *http.Request) {
 	c.publish(fmt.Sprintf(`{"session":"db","origin":"COLLECTOR","frame":{"method":"db.sync","params":{"surfaces":%d,"events":%d,"work":%d,"benches":%d}}}`, counts["surfaces"], counts["events"], counts["work"], counts["benches"]))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"db": eightDB(), "counts": counts, "open_with": "DBeaver → SQLite → " + eightDB()})
-}
-
-// ── WORK — the shared task surface ───────────────────────────────────────────
-// The operator writes work INTO the witness (top-right widget); agents read it
-// FROM the witness before starting their own (the queue an agent checks FIRST).
-// Persisted ~/.8/work.json; every add/status change is published to the feed.
-type workItem struct {
-	ID       int64   `json:"id"`
-	Text     string  `json:"text"`
-	Status   string  `json:"status"` // todo → doing → done
-	By       string  `json:"by"`
-	TS       string  `json:"ts"`
-	Deps     []int64 `json:"deps,omitempty"`     // ids this task waits on — the PLAN's edges (a DAG)
-	Prio     int64   `json:"prio,omitempty"`     // higher = picked sooner; the operator/agent adjusts the queue
-	Assignee string  `json:"assignee,omitempty"` // a specific tmux pane (e.g. %13) — assign work to another Claude's pane
-}
-
-func workFile() string { return os.ExpandEnv("$HOME/.8/work.json") }
-
-func firstN(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
-}
-
-// PLAYLIST — a persisted flag: when on, completing a task auto-pulls the next
-// unblocked todo and summons it (run the queue hands-free, like a playlist).
-func playlistFile() string { return os.ExpandEnv("$HOME/.8/playlist.on") }
-func playlistOn() bool     { _, err := os.Stat(playlistFile()); return err == nil }
-
-func (c *collector) handlePlaylist(w http.ResponseWriter, r *http.Request) {
-	if v := r.URL.Query().Get("on"); v != "" {
-		os.MkdirAll(os.ExpandEnv("$HOME/.8"), 0o755)
-		if v == "1" {
-			os.WriteFile(playlistFile(), []byte("on"), 0o644)
-			// starting the playlist: pull the first track now
-			var items []workItem
-			if b, e := os.ReadFile(workFile()); e == nil {
-				json.Unmarshal(b, &items)
-			}
-			if !anyDoing(items) {
-				if idx := pickNext(items); idx >= 0 {
-					items[idx].Status = "doing"
-					items[idx].TS = time.Now().UTC().Format(time.RFC3339)
-					if b, e := json.MarshalIndent(items, "", " "); e == nil {
-						os.WriteFile(workFile(), b, 0o644)
-					}
-					c.summon(items[idx], "▶ playlist started")
-				}
-			}
-		} else {
-			os.Remove(playlistFile())
-		}
-	}
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"playlist":%v}`, playlistOn())
-}
-
-func anyDoing(items []workItem) bool {
-	for _, it := range items {
-		if it.Status == "doing" {
-			return true
-		}
-	}
-	return false
-}
-
-// pickNext — the QUEUE PICKER (a CALL over the plan): the next UNBLOCKED todo
-// (all deps done), ordered by prio desc then id asc. Returns index or -1. This
-// is "get pending items one by one" — a worker loops pick→do→done→pick.
-// isRecord marks queue items that are DOCUMENTATION (a verdict/finding/act), not
-// actionable work — the picker skips them so the playlist only summons real
-// tasks (BUILD/FIX/verify/ANOMALY-to-attend), instead of churning verdicts.
-func isRecord(text string) bool {
-	t := strings.TrimSpace(text)
-	for _, p := range []string{"FINDING", "ACT (", "AUDIT", "GUARD"} {
-		if strings.HasPrefix(t, p) {
-			return true
-		}
-	}
-	return false
-}
-
-func pickNext(items []workItem) int {
-	done := map[int64]bool{}
-	for _, it := range items {
-		if it.Status == "done" {
-			done[it.ID] = true
-		}
-	}
-	best := -1
-	for i := range items {
-		if items[i].Status != "todo" {
-			continue
-		}
-		if isRecord(items[i].Text) { // records are documentation, never summoned
-			continue
-		}
-		blocked := false
-		for _, d := range items[i].Deps {
-			if !done[d] {
-				blocked = true
-				break
-			}
-		}
-		if blocked {
-			continue
-		}
-		if best == -1 || items[i].Prio > items[best].Prio ||
-			(items[i].Prio == items[best].Prio && items[i].ID < items[best].ID) {
-			best = i
-		}
-	}
-	return best
-}
-
-// summon delivers a task INTO a tmux pane — the plan prompting the agent. The
-// task's own Assignee pane wins (assign work to ANOTHER Claude's pane); else the
-// default worker.json. Used by manual flip, auto-advance, and the picker.
-func (c *collector) summon(item workItem, reason string) {
-	pane := item.Assignee
-	if pane == "" {
-		if wb, err := os.ReadFile(os.ExpandEnv("$HOME/.8/worker.json")); err == nil {
-			var wk struct{ Pane, Agent string }
-			if json.Unmarshal(wb, &wk) == nil {
-				pane = wk.Pane
-			}
-		}
-	}
-	tb := tmuxBin()
-	if pane == "" || tb == "" {
-		return
-	}
-	msg := fmt.Sprintf("[8-plan #%d -> doing] %s -- %s; the plan: curl -s 127.0.0.1:7070/work", item.ID, item.Text, reason)
-	exec.Command(tb, "send-keys", "-t", pane, "-l", msg).Run()
-	// SETTLE BEFORE ENTER (2026-08-11): send-keys returns once keys are QUEUED,
-	// not once the TUI has INGESTED them. For a long paste the Enter beat the
-	// ingest and submitted empty/partial — then the text landed and just sat in
-	// the prompt (#16 never fired). Fix: wait for the TUI to absorb the paste
-	// (delay scales with length), THEN Enter; a backup Enter after another beat
-	// catches a still-settling ingest. A second Enter is safe — Claude Code
-	// ignores an empty submit, so it can't double-post.
-	settle := 700*time.Millisecond + time.Duration(len(msg)/4)*time.Millisecond
-	if settle > 4000*time.Millisecond {
-		settle = 4000 * time.Millisecond
-	}
-	go func() {
-		time.Sleep(settle)
-		exec.Command(tb, "send-keys", "-t", pane, "Enter").Run()
-		time.Sleep(500 * time.Millisecond)
-		exec.Command(tb, "send-keys", "-t", pane, "Enter").Run()
-	}()
-	c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.summon","params":{"id":%d,"pane":%q,"reason":%q}}}`, item.ID, pane, reason))
-}
-
-// handleWorkNext — GET /work/next[?claim=<agent>&assignee=<pane>] returns the
-// next unblocked todo (the picker). With ?claim it flips that item to doing,
-// records who, optionally assigns a pane, and summons — so an idle worker pulls
-// its next task in one call. Without claim it just peeks.
-func (c *collector) handleWorkNext(w http.ResponseWriter, r *http.Request) {
-	c.tmu.Lock()
-	var items []workItem
-	if b, err := os.ReadFile(workFile()); err == nil {
-		json.Unmarshal(b, &items)
-	}
-	idx := pickNext(items)
-	claim := r.URL.Query().Get("claim")
-	var picked *workItem
-	if idx >= 0 {
-		if claim != "" {
-			items[idx].Status = "doing"
-			items[idx].By = claim
-			items[idx].TS = time.Now().UTC().Format(time.RFC3339)
-			if a := r.URL.Query().Get("assignee"); a != "" {
-				items[idx].Assignee = a
-			}
-			if b, e := json.MarshalIndent(items, "", " "); e == nil {
-				os.WriteFile(workFile(), b, 0o644)
-			}
-		}
-		it := items[idx]
-		picked = &it
-	}
-	c.tmu.Unlock()
-	if picked != nil && claim != "" {
-		c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.claim","params":{"id":%d,"by":%q}}}`, picked.ID, claim))
-		c.summon(*picked, "picked from the queue by "+claim)
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"next": picked, "remaining_todo": func() int {
-		n := 0
-		for _, it := range items {
-			if it.Status == "todo" {
-				n++
-			}
-		}
-		return n
-	}()})
-}
-
-// advancePlan — THE HABIT LOOP: after a task completes, promote every todo whose
-// deps are ALL done to "doing" and summon it. A blocked task (an unmet dep) does
-// NOT fire — that's the falsifiable invariant. Returns the promoted items.
-func advanceUnblocked(items []workItem, now string) []int {
-	done := map[int64]bool{}
-	for _, it := range items {
-		if it.Status == "done" {
-			done[it.ID] = true
-		}
-	}
-	promoted := []int{}
-	for i := range items {
-		if items[i].Status != "todo" {
-			continue
-		}
-		blocked := false
-		for _, d := range items[i].Deps {
-			if !done[d] {
-				blocked = true // an unmet dependency — stays todo (the invariant)
-				break
-			}
-		}
-		if !blocked && len(items[i].Deps) > 0 { // only auto-advance items that HAVE a plan-edge
-			items[i].Status = "doing"
-			items[i].TS = now
-			promoted = append(promoted, i)
-		}
-	}
-	return promoted
-}
-
-func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
-	c.tmu.Lock()
-	defer c.tmu.Unlock()
-	var items []workItem
-	if b, err := os.ReadFile(workFile()); err == nil {
-		json.Unmarshal(b, &items)
-	}
-	if r.Method == http.MethodPost {
-		var p struct {
-			ID       int64   `json:"id"`
-			Text     string  `json:"text"`
-			Status   string  `json:"status"`
-			By       string  `json:"by"`
-			Deps     []int64 `json:"deps"`
-			Prio     *int64  `json:"prio"`     // pointer: present-but-0 is a real reorder
-			Assignee string  `json:"assignee"` // route this task to a specific tmux pane
-		}
-		json.NewDecoder(r.Body).Decode(&p)
-		now := time.Now().UTC().Format(time.RFC3339)
-		if p.Text != "" && p.ID == 0 { // add (optionally with plan-edges: deps, prio, assignee)
-			var max int64
-			for _, it := range items {
-				if it.ID > max {
-					max = it.ID
-				}
-			}
-			if p.By == "" {
-				p.By = "operator"
-			}
-			ni := workItem{ID: max + 1, Text: p.Text, Status: "todo", By: p.By, TS: now, Deps: p.Deps, Assignee: p.Assignee}
-			if isRecord(p.Text) { // a FINDING/ACT/AUDIT/GUARD is a record, born done — it lands on the surface but is never summoned as work
-				ni.Status = "done"
-			}
-			if p.Prio != nil {
-				ni.Prio = *p.Prio
-			}
-			items = append(items, ni)
-			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.add","params":{"text":%q,"by":%q,"deps":%v}}}`, p.Text, p.By, p.Deps))
-		} else if p.ID > 0 && (p.Prio != nil || p.Assignee != "") && p.Status == "" { // ADJUST THE QUEUE (reorder / reassign) — operator or agent
-			for i := range items {
-				if items[i].ID == p.ID {
-					if p.Prio != nil {
-						items[i].Prio = *p.Prio
-					}
-					if p.Assignee != "" {
-						items[i].Assignee = p.Assignee
-					}
-					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.reorder","params":{"id":%d,"prio":%d,"assignee":%q}}}`, items[i].ID, items[i].Prio, items[i].Assignee))
-				}
-			}
-		} else if p.ID > 0 && p.Status != "" { // status change
-			for i := range items {
-				if items[i].ID == p.ID {
-					items[i].Status = p.Status
-					items[i].TS = now
-					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":%q}}}`, p.ID, p.Status))
-					// Manual flip-to-doing by the OPERATOR still summons (the 2-way
-					// surface); agent-driven flips don't self-summon.
-					if p.Status == "doing" && (p.By == "" || p.By == "operator") {
-						c.summon(items[i], "assigned via the cockpit")
-					}
-				}
-			}
-			// THE HABIT LOOP: completing a task auto-advances the plan — every todo
-			// whose deps are now ALL done flips to doing and SUMMONS the worker on
-			// tmux. A task with an unmet dep does NOT fire (the falsifiable invariant).
-			// This is the plan driving the agent, not Anthropic's task tool: it lives
-			// in the witness, on the feed, and prompts through the real tmux seat.
-			if p.Status == "done" {
-				// AUTO-PROPAGATION (2026-08-11): a completed claim is not DONE until it
-				// has spawned its own falsification — the queue must not drain to empty
-				// (Rishi's point). Completing a SUBSTANTIVE task auto-seeds one bounded
-				// "[verify]" follow-up. Bounded: a verify/guard/finding task does NOT
-				// spawn another (prefix guard), so each real task yields exactly one
-				// verification, never a flood or a loop.
-				var justDone *workItem
-				for i := range items {
-					if items[i].ID == p.ID {
-						justDone = &items[i]
-					}
-				}
-				if justDone != nil {
-					t := justDone.Text
-					meta := strings.HasPrefix(t, "[verify") || strings.HasPrefix(t, "GUARD") || strings.HasPrefix(t, "FINDING") || strings.HasPrefix(t, "AUDIT")
-					if !meta {
-						var max int64
-						for _, it := range items {
-							if it.ID > max {
-								max = it.ID
-							}
-						}
-						vtext := fmt.Sprintf("[verify #%d] falsify/verify that '%s' actually holds — independently, with evidence; find where it breaks.", justDone.ID, firstN(t, 90))
-						items = append(items, workItem{ID: max + 1, Text: vtext, Status: "todo", By: "auto", TS: now, Prio: 2})
-						c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.spawn","params":{"of":%d,"verify":%d}}}`, justDone.ID, max+1))
-					}
-				}
-				advanced := advanceUnblocked(items, now)
-				for _, idx := range advanced {
-					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":"doing"}}}`, items[idx].ID))
-					c.summon(items[idx], fmt.Sprintf("auto-advanced: dep #%d done", p.ID))
-				}
-				// PLAYLIST MODE: run the queue one-by-one like a playlist. When ON and
-				// nothing dep-advanced, pull the NEXT unblocked todo (prio order) and
-				// summon it — pick→do→done→pick, hands-free. New tasks added mid-play
-				// just join the queue and get picked in turn.
-				// WIP=1: only pull the next when NOTHING is already doing. Without this
-				// gate, rapid completions each pulled a fresh task, flooding the queue
-				// with dozens of concurrent "doing" — the playlist must SERIALIZE.
-				if len(advanced) == 0 && playlistOn() && !anyDoing(items) {
-					if idx := pickNext(items); idx >= 0 {
-						items[idx].Status = "doing"
-						items[idx].TS = now
-						c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.status","params":{"id":%d,"status":"doing"}}}`, items[idx].ID))
-						c.summon(items[idx], "▶ playlist: next in queue")
-					}
-				}
-			}
-		}
-		os.MkdirAll(os.ExpandEnv("$HOME/.8"), 0o755)
-		if b, err := json.MarshalIndent(items, "", " "); err == nil {
-			os.WriteFile(workFile(), b, 0o644)
-		}
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"work": items})
 }
 
 // handleClaim — an agent LEASES a tab it is actively using. POST /claim
@@ -3679,12 +2677,13 @@ func (c *collector) handleWake(w http.ResponseWriter, r *http.Request) {
 // handleMatrix — the SURFACES × SENSES coverage matrix: the map of the unfound.
 // Rows are the live surface-kinds (seats); columns are the senses/verbs. The
 // point is the DIFFERENCE between empty cells:
-//   live    — probed just now, works (carries a count/proof)
-//   yes     — built and declared
-//   na      — structurally inapplicable (pixels of a text seat)
-//   unfound — PLAUSIBLE but not built: a sense this surface COULD expose and
-//             doesn't — where something can stand seen-able-but-unseen. Each is
-//             a candidate work item; these cells ARE the map.
+//
+//	live    — probed just now, works (carries a count/proof)
+//	yes     — built and declared
+//	na      — structurally inapplicable (pixels of a text seat)
+//	unfound — PLAUSIBLE but not built: a sense this surface COULD expose and
+//	          doesn't — where something can stand seen-able-but-unseen. Each is
+//	          a candidate work item; these cells ARE the map.
 func (c *collector) handleMatrix(w http.ResponseWriter, r *http.Request) {
 	cols := []string{"enumerate", "frame·pixels", "frame·text", "symbol·eval", "control", "events·push", "memory·ledger"}
 	type cell struct {
@@ -3713,7 +2712,7 @@ func (c *collector) handleMatrix(w http.ResponseWriter, r *http.Request) {
 	tmuxN, nvimN, dmnN := len(tmuxPanes()), len(nvimBufs()), len(daemonList())
 	rows := []row{}
 	live := map[string]bool{}
-	for _, b := range c.brokers {
+	for _, b := range c.brokerList() {
 		live[b.id] = true
 	}
 	if live["fox"] {
@@ -3846,7 +2845,11 @@ func (c *collector) handleDedup(w http.ResponseWriter, r *http.Request) {
 			byURL[rec.URL] = append(byURL[rec.URL], rec)
 		}
 	}
-	type cand struct{ URL, Ctx, ClaimedBy string; Claimed bool; Kept bool }
+	type cand struct {
+		URL, Ctx, ClaimedBy string
+		Claimed             bool
+		Kept                bool
+	}
 	var out []cand
 	var toClose []string
 	for url, recs := range byURL {
@@ -3948,13 +2951,14 @@ func rewriteRegistry(calls []sessionRec) {
 }
 
 type sessionRec struct {
-	ID      string `json:"id"`
-	Hub     string `json:"hub"`
-	Kind    string `json:"kind"`             // local | cloud
-	Physics string `json:"physics"`          // call | channel
-	Stream  string `json:"stream,omitempty"` // live MJPEG source URL, if any
-	Status  string `json:"status,omitempty"` // live | disconnected (computed at /sessions time, not persisted)
-	Created string `json:"created_at,omitempty"`
+	ID       string `json:"id"`
+	Hub      string `json:"hub"`
+	Kind     string `json:"kind"`               // local | cloud
+	Physics  string `json:"physics"`            // call | channel
+	Stream   string `json:"stream,omitempty"`   // live MJPEG source URL, if any
+	Status   string `json:"status,omitempty"`   // live | disconnected (computed at /sessions time, not persisted)
+	Upstream string `json:"upstream,omitempty"` // channel seats: the held socket's origin (redacted) — the node⨝seat join key (#1147)
+	Created  string `json:"created_at,omitempty"`
 }
 
 func registerSession(rec sessionRec) {
@@ -3998,6 +3002,16 @@ func lookupSession(id string) *sessionRec {
 // repo's `loopback` command. The result is WITNESSED into the feed like any op,
 // so the WIRE pane's adapter rows are genuinely fireable — no faking a
 // transport the browser cannot originate; the adapter originates it and 8 sees.
+// adaptersRoot is the adapters checkout/install root: EIGHT_ADAPTERS when
+// set, else the dev-checkout default beside this repo (release-readiness
+// #1111a / 8-review NEEDS-FALLBACK #8-#9 — no path is bound to one machine).
+func adaptersRoot() string {
+	if v := os.Getenv("EIGHT_ADAPTERS"); v != "" {
+		return v
+	}
+	return os.ExpandEnv("$HOME/Desktop/repos/adapters")
+}
+
 func (c *collector) handleAdapterFire(w http.ResponseWriter, r *http.Request) {
 	t := r.URL.Query().Get("t")
 	switch t {
@@ -4006,7 +3020,7 @@ func (c *collector) handleAdapterFire(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `t must be grpc|mqtt|webrtc|unix`, http.StatusBadRequest)
 		return
 	}
-	bin := os.ExpandEnv("$HOME/Desktop/repos/adapters/loopback")
+	bin := filepath.Join(adaptersRoot(), "loopback")
 	if _, err := os.Stat(bin); err != nil {
 		http.Error(w, "adapters loopback binary not found at "+bin+" — build with: (cd adapters && go build -o loopback ./cmd/loopback)", http.StatusServiceUnavailable)
 		return
@@ -4082,8 +3096,8 @@ func (c *collector) handleAttach(w http.ResponseWriter, r *http.Request) {
 // (always channel sessions) plus everything in the shared registry file.
 func (c *collector) handleSessions(w http.ResponseWriter, r *http.Request) {
 	byID := map[string]sessionRec{}
-	for _, b := range c.brokers {
-		rec := sessionRec{ID: b.id, Hub: b.base, Kind: "local", Physics: "channel"}
+	for _, b := range c.brokerList() {
+		rec := sessionRec{ID: b.id, Hub: b.base, Kind: "local", Physics: "channel", Upstream: c.brokerFactFor(b).Upstream}
 		if b.id != "fox" {
 			rec.Stream = "cdp" // non-fox channel brokers are CDP screencast-capable
 		}
@@ -4695,12 +3709,67 @@ func (c *collector) handleStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *collector) handleHealth(w http.ResponseWriter, r *http.Request) {
-	ids := make([]string, len(c.brokers))
-	for i, b := range c.brokers {
+	brokers := c.brokerList()
+	ids := make([]string, len(brokers))
+	for i, b := range brokers {
 		ids[i] = b.id
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"alive": true, "sessions": ids})
+}
+
+// handleType types a string into the focused element of a context via REAL
+// per-key BiDi input. Trusted key events are the only thing React/ProseMirror
+// honor - synthetic DOM insert/paste and clipboard writes are all rejected.
+// ?context=<ctx>, text in the body; ?clear=1 selects-all+deletes first; ?enter=1
+// submits (Enter). The real-keystroke organ the wire needs to drive any tab (plasma).
+func (c *collector) handleType(w http.ResponseWriter, r *http.Request) {
+	ctx := r.URL.Query().Get("context")
+	raw, _ := io.ReadAll(r.Body)
+	text := string(raw)
+	if ctx == "" || text == "" {
+		http.Error(w, `{"error":"need ?context=<ctx> and a text body"}`, http.StatusBadRequest)
+		return
+	}
+	const meta, backspace, enter = "\ue03d", "\ue003", "\ue007" // Cmd, Backspace, Enter
+	var acts []map[string]any
+	key := func(v string) {
+		acts = append(acts, map[string]any{"type": "keyDown", "value": v}, map[string]any{"type": "keyUp", "value": v})
+	}
+	if r.URL.Query().Get("clear") == "1" {
+		acts = append(acts,
+			map[string]any{"type": "keyDown", "value": meta},
+			map[string]any{"type": "keyDown", "value": "a"},
+			map[string]any{"type": "keyUp", "value": "a"},
+			map[string]any{"type": "keyUp", "value": meta})
+		key(backspace)
+	}
+	for _, ru := range text {
+		key(string(ru))
+	}
+	if r.URL.Query().Get("enter") == "1" {
+		key(enter)
+	}
+	cmd := map[string]any{"method": "input.performActions", "params": map[string]any{
+		"context": ctx, "actions": []any{map[string]any{"type": "key", "id": "kbd", "actions": acts}}}}
+	body, _ := json.Marshal(cmd)
+	brokers := c.brokerList()
+	br := brokers[0]
+	for _, x := range brokers {
+		if x.id == "fox" {
+			br = x
+			break
+		}
+	}
+	resp, err := c.client.Post(br.base+"/command", "application/json", bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(resp.Body)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(rb)
 }
 
 // stat is a latency distribution, microseconds. round2 keeps the JSON readable.
@@ -5114,14 +4183,38 @@ func seriesDir() string {
 func seriesPath(name string) string {
 	return seriesDir() + "/" + strings.ReplaceAll(name, "/", "_") + ".json"
 }
+
+// seriesContractVersion stamps every recorded series with the wire contract's
+// version, so a future replayer can identify the format a trace was written in
+// (D1: this is the cheap half of the contract's value — drift-identifiability —
+// without adopting the Frame type or importing the contract package). It tracks
+// http-mcp contract.Version, currently v0.0.2; 8 deliberately does not import the
+// contract (the no-arrow decoupling), so bump this in lockstep at the release cut.
+const seriesContractVersion = "v0.0.2"
+
+// seriesFile is the on-disk series envelope: the contract version + the frames.
+type seriesFile struct {
+	Contract string   `json:"contract"`
+	Frames   []reqRec `json:"frames"`
+}
+
 func writeSeries(name string, frames []reqRec) error {
-	b, _ := json.MarshalIndent(frames, "", " ")
+	b, _ := json.MarshalIndent(seriesFile{Contract: seriesContractVersion, Frames: frames}, "", " ")
 	return os.WriteFile(seriesPath(name), b, 0o644)
 }
 func readSeries(name string) ([]reqRec, error) {
 	b, err := os.ReadFile(seriesPath(name))
 	if err != nil {
 		return nil, err
+	}
+	// tolerant read: the current format is the {contract, frames} envelope; a
+	// legacy series is a bare [reqRec] array. Disambiguate on the first token.
+	if t := bytes.TrimSpace(b); len(t) > 0 && t[0] == '{' {
+		var sf seriesFile
+		if err := json.Unmarshal(b, &sf); err != nil {
+			return nil, err
+		}
+		return sf.Frames, nil
 	}
 	var f []reqRec
 	return f, json.Unmarshal(b, &f)
@@ -5379,8 +4472,9 @@ func cors(allow map[string]bool, h http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Add("Vary", "Origin")
 		}
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-8-Token, Authorization")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-8-Token, X-8-Actor, Authorization")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Expose-Headers", "X-8-Witness, X-8-Ledger, X-8-Ledger-Id, X-8-DMs, X-8-Physics, X-8-Replayable, X-8-Focus-Seq, X-8-Focus-Context")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -5390,16 +4484,27 @@ func cors(allow map[string]bool, h http.Handler) http.Handler {
 }
 
 func main() {
+	if len(os.Args) > 1 { // #279: bring-up + supervision, folded into the one binary
+		switch os.Args[1] {
+		case "up":
+			runUp()
+			return
+		case "watch":
+			runWatch()
+			return
+		}
+	}
 	listen := flag.String("listen", ":7070", "HTTP address the cockpit reaches the collector on")
 	spec := flag.String("brokers", "", "comma list of session=brokerURL (e.g. fox=http://127.0.0.1:4445)")
 	gecko := flag.String("gecko", "", "geckodriver session base (http://127.0.0.1:4444/session/<id>) — enables /procinfo per-tab mem/CPU")
-	fxdriver := flag.String("fxdriver", os.ExpandEnv("$HOME/Desktop/repos/adapters/browser/firefox-stream.js"), "path to the Firefox capture driver (adapters/browser/firefox-stream.js)")
-	fxshot := flag.String("fxshot", os.ExpandEnv("$HOME/Desktop/repos/adapters/browser/firefox-drawshot.js"), "path to the Firefox leak-free still driver (adapters/browser/firefox-drawshot.js)")
+	fxdriver := flag.String("fxdriver", filepath.Join(adaptersRoot(), "browser", "firefox-stream.js"), "path to the Firefox capture driver (EIGHT_ADAPTERS overrides the root)")
+	fxshot := flag.String("fxshot", filepath.Join(adaptersRoot(), "browser", "firefox-drawshot.js"), "path to the Firefox leak-free still driver (EIGHT_ADAPTERS overrides the root)")
 	sessionFile := flag.String("session-file", os.ExpandEnv("$HOME/.8/gecko.json"), "file where up.sh publishes the current geckodriver SID; the collector re-reads it to auto-recover the session after a Firefox recycle")
 	apertureMB := flag.Int("aperture-mb", 3000, "soft parent+children memory threshold (MB): above this the FAIR aperture parks the heaviest non-focused tab (gBrowser.discardBrowser — memory freed, tab identity preserved, reloads on focus). INVARIANT: no tab is ever closed. 0 disables. Watchdog 4500 full-recycle stays as the backstop.")
 	token := flag.String("token", os.Getenv("EIGHT_TOKEN"), "shared secret required on every endpoint via X-8-Token/Bearer (empty = auth off, local-dev default)")
 	origins := flag.String("origins", os.Getenv("EIGHT_ORIGINS"), "comma CORS origin allowlist, e.g. http://localhost:8088 (empty = *, local-dev)")
 	flag.Parse()
+	persistBootArgs() // #347: record the wired argv so `up` boots and `watch` revives NON-bare
 
 	var brokers []broker
 	for _, part := range strings.Split(*spec, ",") {
@@ -5413,7 +4518,11 @@ func main() {
 		brokers = append(brokers, broker{id: strings.TrimSpace(id), base: strings.TrimSpace(base)})
 	}
 	if len(brokers) == 0 {
-		log.Fatal("collector: -brokers is required (session=url,session=url,...)")
+		// WITNESS-ONLY boot: a browserless host (a headless VM, a witness-only node)
+		// still serves the db, the wire, and every /endpoint — it just observes no
+		// browser. up.go already treats "no firefox -> collector-only" as a valid boot;
+		// this makes the collector agree instead of fataling, so 8 is portable to ANY host.
+		log.Println("collector: no -brokers — WITNESS-ONLY boot (db + wire + endpoints; no browser observation on this host). A browser host adds brokers via `collector up`.")
 	}
 
 	c := newCollector(brokers)
@@ -5443,8 +4552,10 @@ func main() {
 	// says Firefox is ready, then start them STAGGERED so no wave of requests hits it.
 	go func() {
 		c.waitReady()
-		for _, b := range c.brokers {
+		c.adoptChannelSeats() // #1147: re-hold brokers a previous collector attached (they outlive it)
+		for _, b := range c.brokerList() {
 			go c.pump(ctx, b)
+			go c.pollCDPManifest(ctx, b) // CDP seats: fold their tabs into the manifest (pump owns fox's /events only)
 			time.Sleep(100 * time.Millisecond)
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -5453,6 +4564,10 @@ func main() {
 		go c.memoryAperture(*apertureMB) // self-regulate parent memory (heap-minimize at the soft threshold)
 		go c.reconcileLoop()             // keep the tab manifest true even when no cockpit is watching
 		go c.seatWatchLoop()             // #11: PUSH change events for every seat (the CHANNEL atom, realized)
+		go c.paneWitnessLoop()           // #277: witness pane appearance (first_seen + pane.appeared/vanished)
+		go c.staleLoop()                 // #472b: revert 6h-silent doing items — the WIP lane self-heals
+		go c.epochLoop()                 // #645: the operator-epoch clock — ledger locked to operator-time
+		go c.innerHostLoop()             // #850: poll docker stats + colima list off the request path
 		go func() {                      // project eight.db every 30s so DBeaver always sees fresh data
 			if _, err := exec.LookPath("sqlite3"); err != nil {
 				return
@@ -5483,9 +4598,13 @@ func main() {
 	mux.HandleFunc("/fxstats", c.handleFxStats)
 	mux.HandleFunc("/fxdiag", c.handleFxDiag)
 	mux.HandleFunc("/sessions", c.handleSessions)
-	mux.HandleFunc("/attach", c.handleAttach) // connect any provider's live session (CALL) at runtime
+	mux.HandleFunc("/nodes", c.handleNodes)               // #1147: browser-node registry, node⨝seat JOINED here (file + docker + held brokers)
+	mux.HandleFunc("/nodes/attach", c.handleNodesAttach)  // #1147: hold an unjoined node's cdp_url with a fresh channel broker
+	mux.HandleFunc("/attach", c.handleAttach)             // connect any provider's live session (CALL) at runtime
 	mux.HandleFunc("/adapters/fire", c.handleAdapterFire) // fire a real adapter loopback (grpc|mqtt|webrtc|unix), witnessed
 	mux.HandleFunc("/source", c.handleSource)
+	mux.HandleFunc("/read", c.handleRead)             // #643: read an OPEN tab; create only on explicit intent
+	mux.HandleFunc("/screencast", c.handleScreencast) // #655: native BiDi screencast RECORDING (FF>=154; probe-gated)
 	mux.HandleFunc("/act", c.handleAct)
 	mux.HandleFunc("/stream", c.handleStream)
 	mux.HandleFunc("/bench", c.handleBench)
@@ -5523,30 +4642,50 @@ func main() {
 `)
 	})
 	mux.HandleFunc("/health", c.handleHealth)
-	mux.HandleFunc("/park", c.handlePark)               // manually park a tab (#7, symmetric with /wake)
-	mux.HandleFunc("/wake", c.handleWake)               // un-park a parked tab (#7 click-to-wake)
-	mux.HandleFunc("/matrix", c.handleMatrix)           // surfaces × senses coverage — the map of the unfound
-	mux.HandleFunc("/claim", c.handleClaim)             // an agent leases a tab (verify/falsify: is anyone using it?)
-	mux.HandleFunc("/dedup", c.handleDedup)             // same-URL duplicates; close the unclaimed ones
+	mux.HandleFunc("/park", c.handlePark)         // manually park a tab (#7, symmetric with /wake)
+	mux.HandleFunc("/wake", c.handleWake)         // un-park a parked tab (#7 click-to-wake)
+	mux.HandleFunc("/matrix", c.handleMatrix)     // surfaces × senses coverage — the map of the unfound
+	mux.HandleFunc("/claim", c.handleClaim)       // an agent leases a tab (verify/falsify: is anyone using it?)
+	mux.HandleFunc("/dedup", c.handleDedup)       // same-URL duplicates; close the unclaimed ones
 	mux.HandleFunc("/manifest", c.handleManifest) // durable tab manifest: how-many/what/where/who/why/when
 	mux.HandleFunc("/tmuxpane", c.handleTmuxPane)
-	mux.HandleFunc("/tmuxsummary", c.handleTmuxSummary) // a tmux pane's visible text — the agents' surface frame
-	mux.HandleFunc("/attention", c.handleAttention)     // #22a the research-programme READING packet (Lakatos/Kuhn), witness-only
-	mux.HandleFunc("/tmuxchannel", c.handleTmuxChannel) // #35 native tmux CHANNEL (control-mode push), gated off the live server
-	mux.HandleFunc("/tmuxsend", c.handleTmuxSend) // the tmux seat's CONTROL verb (seen ⇒ controllable)
-	mux.HandleFunc("/nvimbuf", c.handleNvimBuf)   // an nvim buffer's lines — the editor seat's frame
-	mux.HandleFunc("/nvimopen", c.handleNvimOpen) // the editor seat's CONTROL verb (:buffer N)
-	mux.HandleFunc("/daemonframe", c.handleDaemonFrame) // a daemon's frame: ps line + log tail
+	mux.HandleFunc("/type", c.handleType)
+	mux.HandleFunc("/collector/hostres", c.handleHostRes) // this host's cpu/mem/load/uptime, for cross-host observability
+	mux.HandleFunc("/hostres", c.handleHostRes)           // short alias
+	mux.HandleFunc("/tmuxsummary", c.handleTmuxSummary)   // a tmux pane's visible text — the agents' surface frame
+	mux.HandleFunc("/attention", c.handleAttention)       // #22a the research-programme READING packet (Lakatos/Kuhn), witness-only
+	mux.HandleFunc("/tmuxchannel", c.handleTmuxChannel)   // #35 native tmux CHANNEL (control-mode push), gated off the live server
+	mux.HandleFunc("/tmuxsend", c.handleTmuxSend)         // the tmux seat's CONTROL verb (seen ⇒ controllable)
+	mux.HandleFunc("/nvimbuf", c.handleNvimBuf)           // an nvim buffer's lines — the editor seat's frame
+	mux.HandleFunc("/nvimopen", c.handleNvimOpen)         // the editor seat's CONTROL verb (:buffer N)
+	mux.HandleFunc("/daemonframe", c.handleDaemonFrame)   // a daemon's frame: ps line + log tail
 	mux.HandleFunc("/daemonsignal", c.handleDaemonSignal) // the daemons seat's CONTROL verb (watchdog protected)
+	mux.HandleFunc("/identity", c.handleIdentity)         // #437: live identity — GET derives, POST declares
+	mux.HandleFunc("/container", c.handleContainer)       // #850: inner-host — docker stats + colima list
+	mux.HandleFunc("/peers", c.handlePeers)               // #886: federation rendezvous — push register/heartbeat
 	mux.HandleFunc("/db", c.handleDB)                     // project the scattered stores into ~/.8/eight.db for DBeaver
-	mux.HandleFunc("/stopwatch", c.handleStopwatch)     // experiri: the witness's staleness made readable
+	mux.HandleFunc("/stopwatch", c.handleStopwatch)       // experiri: the witness's staleness made readable
 	mux.HandleFunc("/work", c.handleWork)
 	mux.HandleFunc("/work/next", c.handleWorkNext)
 	mux.HandleFunc("/work/playlist", c.handlePlaylist)
+	mux.HandleFunc("/work/by-pane", c.handleWorkByPane) // distributed ledger keyed on PANE NUMBERS: per pane doing-now vs next (work_bypane.go)
+	mux.HandleFunc("/panes", c.handlePanes)
+	mux.HandleFunc("/lineage", c.handleLineage)
+	mux.HandleFunc("/inbox", c.handleInbox)
+	mux.HandleFunc("/panes/inspect", c.handlePaneInspect)
+	mux.HandleFunc("/panes/usage", c.handlePaneUsage)
+	mux.HandleFunc("/panes/tap", c.handlePaneTap) // make an inspected pane a request/response sensor (budget.go)
+	mux.HandleFunc("/budget", c.handleBudget)
+	mux.HandleFunc("/budget/poke", c.handleBudgetPoke) // fire a trivial call to renew the rate-limit headers (budget.go)
+	mux.HandleFunc("/mind", c.handleMind)
+	mux.HandleFunc("/compose", c.handleCompose)
+	mux.HandleFunc("/delegate", c.handleDelegate)    // cheap work in a fresh claude -p context, with billed cost (compose.go)      // vertical-scaling knob: mint a session at a CHOSEN context (compose.go)            // identity contract: seat=address, name=identity, uuid/%N/pid=bindings (mind.go)        // the unified rate limit, read from tapped responses; gates the playlist // the session's measured token weight, turn by turn (inspect.go) // evaluate inside a pane's live process via its BUN_INSPECT socket (inspect.go)          // the mind pulls its offers and decides take|decline (inbox.go)      // %N per tmux boot -> uuid; quarantined stale rows (lineage.go)          // #277 witnessed pane roster (first_seen per pane)
+	mux.HandleFunc("/panes/send", c.handlePanesSend) // type one prompt into selected panes / all live claude at once — the operator+agent fan-out nerve
+	mux.HandleFunc("/sql", c.handleSQL)              // #280 the DB primitive: a CALL dialect over eight.db (modernc, witnessed; #315)
 	mux.HandleFunc("/watch", c.handleWatch)
-	mux.HandleFunc("/timeline", c.handleTimeline)       // #13 the interleaved cross-substrate timeline
-	mux.HandleFunc("/provenance", c.handleProvenance)   // #29 actor→atom→surface flow (declared X-8-Actor)
-	mux.HandleFunc("/witnessed", c.handleWitnessed)     // #70 sink: cmd/wire POSTs observed MITM calls → 8 ledger (creds redacted)               // #12 change-detector: push tab.changed for a watched tab // run the queue hands-free, one-by-one like a playlist     // the queue PICKER — next unblocked todo, one by one               // the shared task surface — operator writes, agents check FIRST
+	mux.HandleFunc("/timeline", c.handleTimeline)     // #13 the interleaved cross-substrate timeline
+	mux.HandleFunc("/provenance", c.handleProvenance) // #29 actor→atom→surface flow (declared X-8-Actor)
+	mux.HandleFunc("/witnessed", c.handleWitnessed)   // #70 sink: cmd/wire POSTs observed MITM calls → 8 ledger (creds redacted)               // #12 change-detector: push tab.changed for a watched tab // run the queue hands-free, one-by-one like a playlist     // the queue PICKER — next unblocked todo, one by one               // the shared task surface — operator writes, agents check FIRST
 
 	allow := map[string]bool{}
 	for _, o := range strings.Split(*origins, ",") {
@@ -5568,7 +4707,7 @@ func main() {
 	// in use' and leave a ~3s gap until the watchdog revived it. Retry the bind for
 	// ~3s first; the old process's TIME_WAIT clears well within that, so deploys are
 	// seamless instead of a blip. (The audit's closest-to-broken finding.)
-	handler := cors(allow, auth(*token, mux))
+	handler := cors(allow, auth(*token, witnessEvery(mux))) // #616: receipts on everything
 	var ln net.Listener
 	var lerr error
 	for i := 0; i < 30; i++ {

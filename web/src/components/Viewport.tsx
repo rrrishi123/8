@@ -197,7 +197,7 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
     ? `${BASE}/stream?session=${encodeURIComponent(session)}${ctx ? `&context=${encodeURIComponent(ctx)}` : ''}&fps=${effFps}${lodq}`
     : '';
   useEffect(() => {
-    if (!session) return;
+    if (!session || isText) return; // text seats (tmux/daemons/nvim) render via /text, never /shot
     let alive = true;
     const cq = ctx ? `&context=${encodeURIComponent(ctx)}` : '';
     // FIREFOX stills go through /drawshot (drawSnapshot->JPEG), NOT /shot. BiDi
@@ -262,7 +262,7 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
       : (persistent ? 5000 : Math.max(600, Math.round(1000 / effFps)));
     const id = window.setInterval(tick, period);
     return () => { alive = false; clearInterval(id); };
-  }, [session, ctx, streaming, persistent, effFps, lodW, fx, fxNeedle, live]);
+  }, [session, isText, ctx, streaming, persistent, effFps, lodW, fx, fxNeedle, live]);
   // FIGMA/FIGJAM behaviour: when a seat is off-screen we stop FETCHING (the poll
   // effect gates on `streaming`, the live stream unmounts) — but we keep showing
   // its LAST frame frozen, so panning the board shows what's there, not blanks.

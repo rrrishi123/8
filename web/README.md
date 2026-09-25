@@ -1,14 +1,15 @@
 # web — the cockpit frontend
 
-React in the **Wire** design system — 8's own, *not* Kosaten (Kosaten is a
-separate, personal universe). Originated from a Claude Design prototype built on
-Kosaten's tokens, re-based onto Wire when lifted here.
+React in the **Wire** design system — 8's own. Originated from a Claude Design
+prototype built on a separate private design system's tokens, re-based onto Wire
+when lifted here. The design system is a swappable seam (a portable lego) — Wire
+is one; drop in any.
 
 When importing the prototype here:
 
 1. **Strip Claude Design's srcmap instrumentation** — the editor metadata
    wrapper (~144KB, not app logic). Keep the React app; re-base its tokens onto
-   **Wire** (the prototype shipped Kosaten's CSS — that's the design-system seam to swap).
+   **Wire** (the prototype shipped a private design system's CSS — that's the design-system seam to swap: portable, drop in any).
 2. **Wire the data layer to the collector:**
    - afferent: subscribe to `GET /feed` (SSE) for the merged call + frame stream
    - efferent: `POST /run?session=ID` and `POST /broadcast` to act on the wire

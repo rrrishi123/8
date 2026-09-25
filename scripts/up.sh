@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# STATUS (#320/#347, 2026-08-14): SUPERSEDED by `collector up` for the bodies — since #347
+# the binary boots the collector WIRED (argv persisted to ~/.8/boot.json by serve mode,
+# discovery fallback) and the seat via the pack. What remains script-only: the vite
+# cockpit (:8088) and this host's office-firefox specifics. Fresh host -> `collector up`.
 # up.sh — bring the whole 8 wire up in one shot. Idempotent: reuses anything
 # already listening; only (re)starts what's down.
 #
@@ -11,7 +15,7 @@
 #               Cloudflare et al. don't block the automated session (which would
 #               also block the saved login from loading).
 
-# single-reviver mkdir-lock (port of omarchy start-auto fix): manual runs and the
+# single-reviver mkdir-lock (port of a Linux host start-auto fix): manual runs and the
 # watchdog's revive raced each other (tab restore collapsed to 2/12 tabs, 2026-07-24).
 # mkdir-lock is pid-owned, EXIT-trapped, dead-owner stolen; flock is unusable here
 # (spawned daemons inherit the fd and hold it forever).
@@ -32,9 +36,22 @@ trap 'rm -rf "$_LOCKDIR"' EXIT
 
 set -uo pipefail
 
-REPO=/Users/rishirajs/Desktop/repos
-PROFILE=/Users/rishirajs/.ltqa-firefox-deepseek
-BROWSERPACK="$REPO/adapters/browser/browser"
+# Portability (peer review, v0.0.2): env-overridable with DERIVED fallbacks —
+# REPO from this script's own location (never an inscribed home); PROFILE
+# defaults to the CLEAN pack profile. A host with a special seat (this mac's
+# logged-in office profile) overrides via ~/.8/up.env — the override lives on
+# the HOST, its name never ships in the repo (the office/IP boundary).
+[ -f "$HOME/.8/up.env" ] && . "$HOME/.8/up.env"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${EIGHT_REPO:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+PROFILE="${EIGHT_FF_PROFILE:-$HOME/.8/firefox-profile}"
+PROFILE_MARK="$(basename "$PROFILE")"
+# adapters root mirrors the collector's adaptersRoot(): EIGHT_ADAPTERS when set,
+# else the sibling checkout. The browser pack is built by adapters/build.sh
+# into .bin/ (the in-tree browser/browser binary is untracked and gone on a
+# fresh clone).
+ADAPTERS="${EIGHT_ADAPTERS:-$REPO/adapters}"
+BROWSERPACK="$ADAPTERS/.bin/browser"
 CHANNEL="$REPO/http-mcp/.bin/channel"
 COLLECTOR="$REPO/8/collector/collector"
 WEB="$REPO/8/web"
@@ -58,7 +75,7 @@ unset MOZ_HEADLESS
 #      Reuse a live seat; only summon a fresh one when the current one is gone.
 SEAT="$HOME/.8/gecko.json"
 WS=""; SID=""
-if up 4444 && [ -s "$SEAT" ] && pgrep -f "firefox.*ltqa-firefox-deepseek" >/dev/null; then
+if up 4444 && [ -s "$SEAT" ] && pgrep -f "firefox.*$PROFILE_MARK" >/dev/null; then
   WS=$(jq -r '.ws // empty' "$SEAT"); SID=$(jq -r '.session_id // empty' "$SEAT")
 fi
 if [ -n "$WS" ]; then
@@ -209,3 +226,15 @@ if ! pgrep -f "scripts/watchdog.sh" >/dev/null 2>&1; then
 else
   echo "watchdog:   already running"
 fi
+
+# 10. federation heartbeats — this host AND the inner colima VM beat the rendezvous
+# so they appear on the portal (#886 is push-based: stop beating -> age out after
+# 90s). Without these /peers is empty and NO host shows. Idempotent via peer-beat's
+# per-host singleton lock; the watchdog keeps them alive after this. (omarchy beats
+# to mac's tailscale ip and is started by fleet-deploy, not here.)
+for spec in "mac:" "colima:HOSTRES_CMD=$REPO/8/scripts/colima-hostres.sh"; do
+  ph="${spec%%:*}"; extra="${spec#*:}"; lock="/tmp/8-peerbeat.$ph.lockdir"
+  if [ -d "$lock" ] && kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null; then echo "peer-beat:  $ph already beating"; continue; fi
+  ( cd "$REPO/8" && env PEER_HOST="$ph" $extra nohup bash scripts/peer-beat.sh >"/tmp/peer-beat-$ph.log" 2>&1 & )
+  echo "peer-beat:  $ph -> portal federation"
+done

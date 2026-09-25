@@ -6,6 +6,9 @@ import { SessionRail } from './components/SessionRail';
 import { Interaction } from './components/Interaction';
 import { SessionStream } from './components/SessionStream';
 import { Resources } from './components/Resources';
+import { PaneCockpit } from './components/PaneCockpit';
+import { PaneLive } from './components/PaneLive';
+import { BudgetHud } from './components/BudgetHud';
 import { Bench } from './components/Bench';
 import { Splitter, SideStack, useLocal } from './components/Dock';
 import { ThemePicker } from './components/ThemePicker';
@@ -166,6 +169,8 @@ export default function App() {
             { id: 'viewport', title: 'viewport', node: <Viewport session={sessions.find((s) => s.physics === 'channel')?.id || null} /> },
             { id: 'inspector', title: 'inspector', node: <Inspector row={selected} /> },
             { id: 'curl', title: 'compose', node: <PasteCurl /> },
+            { id: 'panes', title: 'panes · send', node: <PaneCockpit /> },
+            { id: 'pane-live', title: 'pane · live', node: <PaneLive /> },
           ]} />
         </div>
           </>
@@ -176,6 +181,7 @@ export default function App() {
       <header className="statusline">
         <span className="mode">NORMAL</span>
         <span className="brand">8</span>
+        <BudgetHud />
         <span className={live ? 'live' : 'dead'}>{live ? '● LIVE' : '○ OFFLINE'}</span>
         <span>SESSIONS {sessions.length ? sessions.map((s) => s.id).join(', ') : '—'}</span>
         <span>CAPTURE {rows.length}</span>
