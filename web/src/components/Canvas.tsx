@@ -55,6 +55,10 @@ const hostOf = (u: string) => { try { return new URL(u).host.replace(/^www\./, '
 // Every clamp (wheel, bird's-eye) reads THESE so nothing caps zoom-in early.
 const Z_MIN = 0.02, Z_MAX = 12;
 const clampZ = (z: number) => Math.max(Z_MIN, Math.min(Z_MAX, z));
+// how long the pointer must REST inside a card body before the wheel scrolls the
+// card instead of the canvas — a quick pass-through always scrolls the map, so
+// you never get stuck unable to scroll over a card.
+const CARD_DWELL_MS = 350;
 
 export function Canvas({ session, focusKey }: { session: string | null; focusKey?: string }) {
   const wrap = useRef<HTMLDivElement>(null);
@@ -380,9 +384,23 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     let wheelTimer: number | undefined;
     let dragging = false;    // a pointer pan is in progress -> wheel/pinch is ignored
     let lastWheel = 0;       // a wheel/pinch just fired -> a drag can't start on top of it
+    // DWELL: track which scrollable card body the pointer rests in and since when,
+    // so the wheel routes to the card by INTENT (rest), not mere overlap.
+    let hoverEl: Element | null = null, hoverSince = 0;
+    const onHover = (ev: PointerEvent) => {
+      const s = (ev.target as HTMLElement).closest('.card-b.scroll, .vp-text, .vp-tmux, .vp-interactive, .rec-bar');
+      if (s !== hoverEl) { hoverEl = s; hoverSince = ev.timeStamp; }
+    };
+    el.addEventListener('pointermove', onHover, { passive: true });
     const onWheel = (e: WheelEvent) => {
-      // each card/panel body scrolls ITSELF, not the map; only the world pans/zooms.
-      if ((e.target as HTMLElement).closest('.card-b.scroll, .vp-text, .vp-tmux, .vp-interactive, .rec-bar, .minimap, .persp-bar, .cards-menu')) return;
+      const t = e.target as HTMLElement;
+      // fixed chrome (minimap, perspective bar, cards menu) owns its own wheel.
+      if (t.closest('.minimap, .persp-bar, .cards-menu')) return;
+      // a card body scrolls ITSELF only after the pointer has RESTED in it past
+      // CARD_DWELL_MS; otherwise the canvas scrolls (the default) — so you're
+      // never stuck unable to scroll the map over a card.
+      const card = t.closest('.card-b.scroll, .vp-text, .vp-tmux, .vp-interactive, .rec-bar');
+      if (card && card === hoverEl && e.timeStamp - hoverSince > CARD_DWELL_MS) return;
       e.preventDefault();
       if (dragging) return;  // never zoom/pan by wheel while the pointer is dragging
       lastWheel = e.timeStamp;
@@ -418,7 +436,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     el.addEventListener('pointerdown', onDown);
-    return () => { el.removeEventListener('wheel', onWheel); el.removeEventListener('pointerdown', onDown); if (wheelTimer) clearTimeout(wheelTimer); };
+    return () => { el.removeEventListener('wheel', onWheel); el.removeEventListener('pointerdown', onDown); el.removeEventListener('pointermove', onHover); if (wheelTimer) clearTimeout(wheelTimer); };
   }, [setCam]);
 
   const persp = {
