@@ -53,6 +53,7 @@ const hostOf = (u: string) => { try { return new URL(u).host.replace(/^www\./, '
 
 export function Canvas({ session, focusKey }: { session: string | null; focusKey?: string }) {
   const wrap = useRef<HTMLDivElement>(null);
+  const worldEl = useRef<HTMLDivElement>(null); // the pannable world — transform written DIRECTLY during a gesture (no per-frame re-render)
   const [cam, setCam] = useLocal<{ x: number; y: number; z: number }>('cam', { x: 60, y: 30, z: 0.42 });
   const [seats, setSeats] = useState<Seat[]>([]);
   const [tabsBy, setTabsBy] = useState<Record<string, Tab[]>>({});
@@ -362,28 +363,46 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
 
   useEffect(() => {
     const el = wrap.current; if (!el) return;
+    // A gesture writes the world transform DIRECTLY (no React re-render per frame —
+    // that re-rendered the whole heavy tree every wheel/pointermove and froze the
+    // UI). setCam is called ONCE when the gesture settles, to persist + let
+    // cam-dependent logic (LOD, minimap) catch up. Same trick useDrag uses.
+    const applyCam = (c: { x: number; y: number; z: number }) => {
+      if (worldEl.current) worldEl.current.style.transform = `translate(${c.x}px,${c.y}px) scale(${c.z})`;
+    };
+    let wheelTimer: number | undefined;
     const onWheel = (e: WheelEvent) => {
       // each card/panel body scrolls ITSELF, not the map; only the world pans/zooms.
       if ((e.target as HTMLElement).closest('.card-b.scroll, .vp-text, .vp-tmux, .vp-interactive, .rec-bar, .minimap, .persp-bar, .cards-menu')) return;
       e.preventDefault();
+      const c = camRef.current;
+      let next: { x: number; y: number; z: number };
       if (e.ctrlKey || e.metaKey) {
         const r = (e.currentTarget as HTMLElement); const mx = e.clientX - r.offsetLeft, my = e.clientY - r.offsetTop;
-        setCam((c) => { const nz = Math.max(0.06, Math.min(3, c.z * (e.deltaY < 0 ? 1.06 : 0.94))); const k = nz / c.z; return { z: nz, x: mx - (mx - c.x) * k, y: my - (my - c.y) * k }; });
+        const nz = Math.max(0.06, Math.min(3, c.z * (e.deltaY < 0 ? 1.06 : 0.94))); const k = nz / c.z;
+        next = { z: nz, x: mx - (mx - c.x) * k, y: my - (my - c.y) * k };
       } else {
-        setCam((c) => ({ ...c, x: c.x - e.deltaX, y: c.y - e.deltaY }));
+        next = { ...c, x: c.x - e.deltaX, y: c.y - e.deltaY };
       }
+      camRef.current = next; applyCam(next);                       // smooth: DOM only, no re-render
+      if (wheelTimer) clearTimeout(wheelTimer);
+      wheelTimer = window.setTimeout(() => setCam(camRef.current), 140); // persist once the scroll settles
     };
     const onDown = (e: PointerEvent) => {
       if ((e.target as HTMLElement).closest('button, input, select, textarea, a, .card-b.scroll, .card-acts, .seeing-tabs, .tab-pick, .series-row, .rec-btn, .curl-in, .persp-bar, .deck-head, .cap-card, .vp-interactive, .cards-menu')) return;
       el.style.cursor = 'grabbing';
       let lx = e.clientX, ly = e.clientY;
-      const move = (ev: PointerEvent) => { setCam((c) => ({ ...c, x: c.x + (ev.clientX - lx), y: c.y + (ev.clientY - ly) })); lx = ev.clientX; ly = ev.clientY; };
-      const up = () => { el.style.cursor = ''; window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+      let cur = { ...camRef.current };                             // closure-local: a mid-gesture re-render can't clobber it
+      const move = (ev: PointerEvent) => {
+        cur = { ...cur, x: cur.x + (ev.clientX - lx), y: cur.y + (ev.clientY - ly) };
+        lx = ev.clientX; ly = ev.clientY; camRef.current = cur; applyCam(cur); // DOM only, no re-render
+      };
+      const up = () => { el.style.cursor = ''; window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); setCam(cur); }; // commit once
       window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     el.addEventListener('pointerdown', onDown);
-    return () => { el.removeEventListener('wheel', onWheel); el.removeEventListener('pointerdown', onDown); };
+    return () => { el.removeEventListener('wheel', onWheel); el.removeEventListener('pointerdown', onDown); if (wheelTimer) clearTimeout(wheelTimer); };
   }, [setCam]);
 
   const persp = {
@@ -407,7 +426,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   let mounted = 0, ghosts = 0;
   return (
     <div className="canvas-wrap" ref={wrap}>
-      <div className="world" style={{ transform: `translate(${cam.x}px,${cam.y}px) scale(${cam.z})` }}>
+      <div className="world" ref={worldEl} style={{ transform: `translate(${cam.x}px,${cam.y}px) scale(${cam.z})` }}>
         {/* lane heads — name · count · fan/stack · + tab · zoom */}
         {world.lanes.map((L) => {
           const l = L.lane; const seat = seatOfLane(l.key);
