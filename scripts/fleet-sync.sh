@@ -40,5 +40,16 @@ for r in $REPOS; do
   # rebuild through the canonical build (same one CI uses)
   if [ -x "$d/build.sh" ]; then ( cd "$d" && ./build.sh >/dev/null 2>&1 ) && say "  rebuilt" || say "  build FAILED"; fi
 done
+
+# Rebuilt binaries do NOT run until the service is bounced. This is OPT-IN
+# (RESTART=1) and default-off on purpose: bouncing the collector is bouncing the
+# witness, and collector-restart verifies /health returns or shouts RED. A plain
+# sync leaves the running process alone.
+if [ "$DRY" = 0 ] && [ "${RESTART:-0}" = 1 ]; then
+  rs="$ROOT/8/scripts/collector-restart.sh"
+  if [ -x "$rs" ]; then say "RESTART=1 -> bouncing collector to the new binary"; "$rs" || echo "  collector-restart reported failure (see above)"
+  else say "RESTART=1 but $rs missing/not-executable — skipped"; fi
+fi
+
 [ $DRY = 1 ] && echo "== dry-run only — nothing changed =="
 exit 0   # per-repo issues are reported+skipped individually; the smoke gate catches real breakage
