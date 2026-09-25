@@ -64,18 +64,32 @@ function utilOf(b) { if (!b) return null; const x = b.five_h_util ?? b.budget?.f
 function esc(s){ return String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])); }
 
 async function pollHost(h) {
-  const [hp, budget, nodes] = await Promise.all([ health(h.base), get(h.base,'/budget'), get(h.base,'/nodes') ]);
+  const [hp, budget, nodes, hr] = await Promise.all([ health(h.base), get(h.base,'/budget'), get(h.base,'/nodes'), get(h.base,'/hostres') ]);
   const up = !!(hp && hp.alive !== false);
   const seats = (hp?.sessions) || (nodes?.nodes || []).map(n => n.seat || n.id);
   const containers = (nodes?.nodes || []).filter(n => n.mode === 'container').map(n => n.id);
   const util = utilOf(budget);
   const usageUnfed = budget && budget.budget === null;
-  return { h, up, seats, containers, util, usageUnfed, rate: hp?._rate };
+  return { h, up, seats, containers, util, usageUnfed, rate: hp?._rate, hr };
+}
+function pctBar(pct, midAt=70, hiAt=90) {
+  const cls = pct >= hiAt ? 'hi' : pct >= midAt ? 'mid' : '';
+  return `<div class="bar"><i class="${cls}" style="width:${Math.min(100,Math.max(0,pct))}%"></i></div>`;
 }
 function usageCell(s) {
   if (s.util == null) return `<span class="off">${s.usageUnfed ? 'no sensor (untapped pane)' : '—'}</span>`;
   const pct = Math.round(s.util*100), cls = s.util >= CEIL ? 'hi' : s.util >= CEIL*0.7 ? 'mid' : '';
   return `${pct}% ${s.util>=CEIL?'· OVER GATE':''}<div class="bar"><i class="${cls}" style="width:${Math.min(100,pct)}%"></i></div>`;
+}
+function cpuRow(hr) {
+  if (!hr || !hr.cpus) return '';
+  const pct = Math.round((hr.load1 / hr.cpus) * 100);
+  return `<div class="row"><span class="k">cpu load</span><span class="v">${hr.load1.toFixed(2)} / ${hr.cpus} cores · ${pct}%${pct>=100?' · OVERLOADED':''}${pctBar(pct)}</span></div>`;
+}
+function memRow(hr) {
+  if (!hr || !hr.mem_total_mb) return '';
+  const pct = Math.round((hr.mem_used_mb / hr.mem_total_mb) * 100);
+  return `<div class="row"><span class="k">memory</span><span class="v">${(hr.mem_used_mb/1024).toFixed(1)} / ${(hr.mem_total_mb/1024).toFixed(0)} GB · ${pct}%${pctBar(pct)}</span></div>`;
 }
 function card(s) {
   const seats = s.seats && s.seats.length ? esc(s.seats.join(', ')) : '<span class="off">none</span>';
@@ -83,11 +97,13 @@ function card(s) {
   if (!s.up) warns.push('unreachable over the wire');
   if (s.usageUnfed) warns.push('Claude usage invisible — pane needs BUN_INSPECT + /panes/tap');
   if (s.util != null && s.util >= CEIL) warns.push('over the 50% gate — an action rule would throttle here');
+  if (s.hr && s.hr.cpus && s.hr.load1 >= s.hr.cpus) warns.push(`cpu OVERLOADED (load ${s.hr.load1.toFixed(1)} > ${s.hr.cpus} cores) — a throttle rule would fire here`);
   return `<div class="host">
     <h2><span class="dot ${s.up?'up':'down'}"></span>${esc(s.h.name)}<span class="kind">${esc(s.h.kind)}</span></h2>
     <div class="row"><span class="k">8 collector</span><span class="v">${s.up?'live':'<span class=off>down</span>'}</span></div>
     <div class="row"><span class="k">Claude 5h usage</span><span class="v">${usageCell(s)}</span></div>
     <div class="row"><span class="k">wire activity</span><span class="v">${s.rate == null ? '<span class=k>·</span>' : s.rate.toFixed(1) + ' acts/s'}</span></div>
+    ${cpuRow(s.hr)}${memRow(s.hr)}
     <div class="row"><span class="k">seats</span><span class="v seats">${seats}</span></div>
     <div class="row"><span class="k">containers</span><span class="v">${s.containers.length?esc(s.containers.join(', ')):'<span class=k>—</span>'}</span></div>
     ${warns.map(w=>`<div class="warn">⚠ ${esc(w)}</div>`).join('')}
@@ -99,8 +115,8 @@ async function tick() {
   const upN = states.filter(s=>s.up).length;
   document.getElementById('sub').textContent = `${upN}/${HOSTS.length} hosts reachable · updated ${new Date().toLocaleTimeString()}`;
   document.getElementById('foot').innerHTML =
-    'observe-half, live. gaps by design: omarchy usage null (untapped), container usage is account-side, no host cpu/mem yet, registries not federated. ' +
-    'the missing act-half = throttle a host whose 5h usage crosses 50%.';
+    'observe-half, live: reachability · Claude usage · wire activity · host cpu/mem. remaining gaps: omarchy usage null (untapped pane), container usage is account-side, registries not federated into the canvas. ' +
+    'the missing ACT-half = throttle a host that crosses a line (50% usage, or cpu overload).';
 }
 tick(); setInterval(tick, 3000);
 </script>
