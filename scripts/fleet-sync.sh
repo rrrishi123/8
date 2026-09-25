@@ -41,3 +41,4 @@ for r in $REPOS; do
   if [ -x "$d/build.sh" ]; then ( cd "$d" && ./build.sh >/dev/null 2>&1 ) && say "  rebuilt" || say "  build FAILED"; fi
 done
 [ $DRY = 1 ] && echo "== dry-run only — nothing changed =="
+exit 0   # per-repo issues are reported+skipped individually; the smoke gate catches real breakage

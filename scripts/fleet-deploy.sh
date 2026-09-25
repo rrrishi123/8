@@ -28,8 +28,19 @@ one() { # host-spec
     if [ $DRY = 1 ]; then echo "[$tag] would: ssh -> fleet-sync + system-smoke @ $rroot"; return; fi
     # probe the ssh door first so a re-auth wall is a clean report, not a hang
     if ! ssh -o BatchMode=yes -o ConnectTimeout=8 "$userhost" true 2>/dev/null; then rd "[$tag] ssh unreachable (Tailscale re-auth?) — skipped"; return; fi
-    out=$(ssh -o BatchMode=yes -o ConnectTimeout=12 "$userhost" \
-       "cd $rroot/8 && ROOT=$rroot ./scripts/fleet-sync.sh 2>&1 && ROOT=$rroot ./scripts/system-smoke.sh 2>&1"); rc=$?
+    # BOOTSTRAP: the host may not have the scripts yet. Fetch upstream and extract
+    # them from FETCH_HEAD into /tmp (no working-tree change) so a first deploy
+    # works, then run the sync (which brings in everything) + the smoke gate.
+    out=$(ssh -o BatchMode=yes -o ConnectTimeout=12 "$userhost" bash -s <<BOOT 2>&1
+set -e
+cd "$rroot/8"
+git fetch -q origin ${UPSTREAM:-release/v0.0.2}
+git show FETCH_HEAD:scripts/fleet-sync.sh   > /tmp/fleet-sync.sh
+git show FETCH_HEAD:scripts/system-smoke.sh > /tmp/system-smoke.sh
+ROOT="$rroot" bash /tmp/fleet-sync.sh
+ROOT="$rroot" bash /tmp/system-smoke.sh
+BOOT
+); rc=$?
   fi
   if [ $rc = 0 ] && printf '%s' "$out" | grep -q 'SMOKE GREEN'; then sc "[$tag] deployed + smoke GREEN"
   else rd "[$tag] FAILED (rc=$rc) — services NOT bounced"; printf '%s\n' "$out" | grep -iE 'FAIL|RED|conflict|error' | head -3 | sed "s/^/    /"; fi
