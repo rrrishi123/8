@@ -13,7 +13,11 @@
 #
 #   ./e2e-smoke.sh            # build, run, assert, tear down; green/red exit
 set -uo pipefail
-ROOT="${ROOT:-$HOME/Desktop/repos}"; [ -d "$ROOT/8/.git" ] || ROOT="$HOME/Work"
+# ROOT is the dir that HOLDS the four repos. Derive it from THIS script's own
+# location (8/scripts/e2e-smoke.sh) so the test runs on any host / in CI, not
+# only the operator's ~/Desktop/repos or ~/Work. Env ROOT still overrides.
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"   # .../8/scripts
+ROOT="${ROOT:-$(cd "$SELF_DIR/../.." && pwd)}"                 # dir holding 8, http-mcp, ...
 PORT="${PORT:-7099}"
 COL="$ROOT/8/collector"
 fail=0; note(){ printf '  %s\n' "$*"; }

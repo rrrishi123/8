@@ -6,7 +6,10 @@
 #
 #   ROOT=~/Desktop/repos ./system-smoke.sh
 set -uo pipefail
-ROOT="${ROOT:-$HOME/Desktop/repos}"
+# ROOT holds the four repos; derive it from THIS script's location (8/scripts/)
+# so the smoke runs on any host / in CI, not only the operator's home layout.
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+ROOT="${ROOT:-$(cd "$SELF_DIR/../.." && pwd)}"
 fail=0; note() { printf '  %s\n' "$*"; }
 red()  { printf '\033[31m%s\033[0m\n' "$*"; fail=1; }
 grn()  { printf '\033[32m%s\033[0m\n' "$*"; }
