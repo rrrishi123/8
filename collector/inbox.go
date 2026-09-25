@@ -139,9 +139,28 @@ func paneIdle(pane string) bool {
 	if err != nil {
 		return false
 	}
-	state, _ := classifyScreen(string(out), "claude") // #897: capped/stuck are not idle either
-	return state == "idle"
+	if state, _ := classifyScreen(string(out), "claude"); state != "idle" { // #897: capped/stuck are not idle either
+		return false
+	}
+	// TYPING GUARD: "idle" means Claude isn't generating — but the operator may be
+	// mid-keystroke at that idle prompt, and one snapshot can't tell typing from
+	// calm. So sample again after a short beat; if the pane changed, someone is
+	// writing into it — defer, never inject on top of them. Only idle AND
+	// unchanged across the interval is safe to type into. A pane that stays busy
+	// simply isn't sent to this cycle; the caller retries once it settles.
+	first := string(out)
+	time.Sleep(paneTypingProbe)
+	out2, err := tmuxOut(tb, "capture-pane", "-p", "-t", pane)
+	if err != nil || string(out2) != first {
+		return false
+	}
+	return true
 }
+
+// paneTypingProbe is the beat between the two capture-pane samples paneIdle uses
+// to tell an operator typing at the prompt from a truly-quiet pane. Long enough
+// to straddle normal inter-keystroke gaps, short enough not to stall a summon.
+var paneTypingProbe = 900 * time.Millisecond
 
 // offer — enqueue the item into the mind's inbox; the item stays todo. Returns
 // false only when the assignee cannot be resolved to any mind or pane.
