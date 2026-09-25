@@ -35,7 +35,7 @@ else red "8/web: tsc FAIL"; fi
 
 # --- version-literal lockstep (the drift guard, as a gate) ---
 echo "-- version lockstep --"
-lit() { git -C "$ROOT/$1" show "release/v0.0.2:$2" 2>/dev/null | grep -cE "$3"; }
+lit() { grep -cE "$3" "$ROOT/$1/$2" 2>/dev/null; }   # read the CHECKED-OUT file (HEAD) — works on release/v0.0.2 or a private kosaten branch that merged it
 c=$(lit http-mcp contract/contract.go 'Version = "v0.0.2"')
 a=$(lit adapters trace/trace.go 'Version = "v0.0.2"')
 p=$(lit pilot main.go 'fallbackVersion = "v0.0.2"')
@@ -45,6 +45,6 @@ if [ "$c$a$p$s$v" = "11111" ]; then grn "lockstep ok (4x v0.0.2 + install.sh v0.
 
 # --- composed tips (the release object) ---
 echo "-- composed release --"
-for r in http-mcp 8 pilot adapters; do note "$r $(git -C "$ROOT/$r" rev-parse --short release/v0.0.2)"; done
+for r in http-mcp 8 pilot adapters; do note "$r $(git -C "$ROOT/$r" rev-parse --short HEAD) [$(git -C "$ROOT/$r" rev-parse --abbrev-ref HEAD)]"; done
 
 [ "$fail" = 0 ] && { grn "== SMOKE GREEN: release coheres as one object =="; exit 0; } || { red "== SMOKE RED =="; exit 1; }
