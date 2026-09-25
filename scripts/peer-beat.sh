@@ -33,7 +33,23 @@ while :; do
   if [ -n "${HOSTRES_CMD:-}" ]; then hr=$(eval "$HOSTRES_CMD" 2>/dev/null)
   else hr=$(curl -s -m 4 "$SELF/hostres" 2>/dev/null); fi
   [ -n "$hr" ] || hr='{}'
-  body=$(printf '{"host":"%s","actor":"peer-beat","hostres":%s}' "$HOST" "$hr")
+  # BUDGET: carry this host's collective usage-left in the heartbeat, so /peers is
+  # the ONE place that shows every host+provider's 5h/7d limits — the number that
+  # decides who can be given work. Each host reports its OWN account (omarchy's is
+  # a different Claude account than mac's; codex is a separate provider).
+  if [ "${SKIP_BUDGET:-0}" = 1 ]; then bud='{}'   # host with no Claude account of its OWN that we sense (e.g. colima = browser seats + a cloud Claude read elsewhere)
+  else
+  bud=$(curl -s -m 4 "$SELF/budget" 2>/dev/null | python3 -c "import json,sys
+try:
+ d=json.load(sys.stdin); b=d.get('budget',{}); w=b.get('windows',{})
+ o={'claude_5h':w.get('5h',{}).get('utilization'),'claude_7d':w.get('7d',{}).get('utilization'),'claude_gated':b.get('gated')}
+ cx=d.get('providers',{}).get('codex',{}); cw=cx.get('windows',{})
+ o['codex_5h']=cw.get('5h',{}).get('utilization'); o['codex_7d']=cw.get('7d',{}).get('utilization')
+ print(json.dumps(o))
+except Exception: print('{}')" 2>/dev/null)
+  [ -n "$bud" ] || bud='{}'
+  fi
+  body=$(printf '{"host":"%s","actor":"peer-beat","hostres":%s,"extra":{"budget":%s}}' "$HOST" "$hr" "$bud")
   curl -s -m 6 "$RENDEZVOUS/peers" -H 'Content-Type: application/json' -H "X-8-Actor: peer-beat/$HOST" -d "$body" >/dev/null 2>&1 \
     || echo "[peer-beat $(date +%H:%M:%S)] beat to $RENDEZVOUS FAILED (unreachable?)"
   sleep "$INTERVAL"
