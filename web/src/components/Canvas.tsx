@@ -50,6 +50,11 @@ const KIND_TITLE: Record<string, string> = {
 };
 
 const hostOf = (u: string) => { try { return new URL(u).host.replace(/^www\./, ''); } catch { return u || 'tab'; } };
+// zoom bounds — Figma-grade so the wheel/pinch feels endless: deep enough to
+// read a single tile huge (Z_MAX) and far enough to fit the whole world (Z_MIN).
+// Every clamp (wheel, bird's-eye) reads THESE so nothing caps zoom-in early.
+const Z_MIN = 0.02, Z_MAX = 12;
+const clampZ = (z: number) => Math.max(Z_MIN, Math.min(Z_MAX, z));
 
 export function Canvas({ session, focusKey }: { session: string | null; focusKey?: string }) {
   const wrap = useRef<HTMLDivElement>(null);
@@ -387,7 +392,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
         // zoom to the cursor — anchor on the element's SCREEN rect (offsetLeft drifts
         // when an ancestor is positioned; getBoundingClientRect is the true origin).
         const r = el.getBoundingClientRect(); const mx = e.clientX - r.left, my = e.clientY - r.top;
-        const nz = Math.max(0.06, Math.min(3, c.z * (e.deltaY < 0 ? 1.06 : 0.94))); const k = nz / c.z;
+        const nz = clampZ(c.z * (e.deltaY < 0 ? 1.06 : 0.94)); const k = nz / c.z;
         next = { z: nz, x: mx - (mx - c.x) * k, y: my - (my - c.y) * k };
       } else {
         next = { ...c, x: c.x - e.deltaX, y: c.y - e.deltaY };
@@ -419,7 +424,10 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   const persp = {
     p1: () => { const r = rectsRef.current[heroKey]; if (r) goto(r, 0.9); },
     p2: () => goto({ x: GRID.x0, y: GRID.y0, w: world.w - GRID.x0, h: Math.min(world.h - GRID.y0, 1200) }, 0.45),
-    bird: () => { const w = vpRef.current.w || 1200, h = vpRef.current.h || 800; const z = Math.max(0.06, Math.min(0.3, Math.min(w / world.w, h / world.h) * 0.92)); goto({ x: 0, y: 0, w: world.w, h: world.h }, z); },
+    // bird's-eye = a GENUINE fit-to-world (never a fixed band): fit the whole
+    // world with a small margin, clamped only to never zoom PAST 1:1 for an
+    // overview. From here the wheel zooms in seamlessly all the way to Z_MAX.
+    bird: () => { const w = vpRef.current.w || 1200, h = vpRef.current.h || 800; const z = Math.max(Z_MIN, Math.min(1, Math.min(w / world.w, h / world.h) * 0.92)); goto({ x: 0, y: 0, w: world.w, h: world.h }, z); },
   };
   const cycleLevel = () => { const order: ('auto' | Level)[] = ['auto', ...LEVELS]; setLevelPick(order[(order.indexOf(levelPick) + 1) % order.length]); };
   const showCard = (key: string) => { setHidden((h) => ({ ...h, [key]: false })); window.setTimeout(() => { const r = rectsRef.current[key]; if (r) goto(r, 0.8); }, 60); };
