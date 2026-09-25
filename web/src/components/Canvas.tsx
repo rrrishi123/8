@@ -370,15 +370,23 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     const applyCam = (c: { x: number; y: number; z: number }) => {
       if (worldEl.current) worldEl.current.style.transform = `translate(${c.x}px,${c.y}px) scale(${c.z})`;
     };
+    // GESTURE DISAMBIGUATION (the Figma/tldraw pattern): pan-drag and wheel/pinch
+    // are mutually exclusive, so a trackpad zoom never fights a click-hold-drag.
     let wheelTimer: number | undefined;
+    let dragging = false;    // a pointer pan is in progress -> wheel/pinch is ignored
+    let lastWheel = 0;       // a wheel/pinch just fired -> a drag can't start on top of it
     const onWheel = (e: WheelEvent) => {
       // each card/panel body scrolls ITSELF, not the map; only the world pans/zooms.
       if ((e.target as HTMLElement).closest('.card-b.scroll, .vp-text, .vp-tmux, .vp-interactive, .rec-bar, .minimap, .persp-bar, .cards-menu')) return;
       e.preventDefault();
+      if (dragging) return;  // never zoom/pan by wheel while the pointer is dragging
+      lastWheel = e.timeStamp;
       const c = camRef.current;
       let next: { x: number; y: number; z: number };
       if (e.ctrlKey || e.metaKey) {
-        const r = (e.currentTarget as HTMLElement); const mx = e.clientX - r.offsetLeft, my = e.clientY - r.offsetTop;
+        // zoom to the cursor — anchor on the element's SCREEN rect (offsetLeft drifts
+        // when an ancestor is positioned; getBoundingClientRect is the true origin).
+        const r = el.getBoundingClientRect(); const mx = e.clientX - r.left, my = e.clientY - r.top;
         const nz = Math.max(0.06, Math.min(3, c.z * (e.deltaY < 0 ? 1.06 : 0.94))); const k = nz / c.z;
         next = { z: nz, x: mx - (mx - c.x) * k, y: my - (my - c.y) * k };
       } else {
@@ -390,6 +398,9 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     };
     const onDown = (e: PointerEvent) => {
       if ((e.target as HTMLElement).closest('button, input, select, textarea, a, .card-b.scroll, .card-acts, .seeing-tabs, .tab-pick, .series-row, .rec-btn, .curl-in, .persp-bar, .deck-head, .cap-card, .vp-interactive, .cards-menu')) return;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;     // only the primary button pans
+      if (e.timeStamp - lastWheel < 120) return;                  // a trackpad zoom just fired — don't also start a pan
+      dragging = true;
       el.style.cursor = 'grabbing';
       let lx = e.clientX, ly = e.clientY;
       let cur = { ...camRef.current };                             // closure-local: a mid-gesture re-render can't clobber it
@@ -397,7 +408,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
         cur = { ...cur, x: cur.x + (ev.clientX - lx), y: cur.y + (ev.clientY - ly) };
         lx = ev.clientX; ly = ev.clientY; camRef.current = cur; applyCam(cur); // DOM only, no re-render
       };
-      const up = () => { el.style.cursor = ''; window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); setCam(cur); }; // commit once
+      const up = () => { dragging = false; el.style.cursor = ''; window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); setCam(cur); }; // commit once
       window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
