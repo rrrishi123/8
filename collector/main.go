@@ -1673,8 +1673,11 @@ func (c *collector) handleShot(w http.ResponseWriter, r *http.Request) {
 	var sr []byte
 	var err error
 	if c.cdpSeat(*b) {
-		// CDP: quality is 0..100; the held page socket needs no context.
-		sr, err = c.command(b, `{"method":"Page.captureScreenshot","params":{"format":"jpeg","quality":50}}`)
+		// CDP: a page-level socket captures its viewport directly; a browser-level
+		// seat (a /nodes/attach seat holds /devtools/browser/…) has no page in scope,
+		// so cdpShot falls back to enumerating targets and capturing one via a
+		// flat-mode session (B4). ctx, if set, selects the target by id.
+		sr, err = c.cdpShot(b, ctx)
 	} else {
 		if ctx == "" {
 			tr, terr := c.command(b, `{"method":"browsingContext.getTree","params":{}}`)
@@ -2013,6 +2016,87 @@ func (c *collector) cdpSeat(b broker) bool {
 	// /sessions uses (handleSessions ~L3003): the fox seat is BiDi, every other
 	// browser broker is a chrome-family CDP seat.
 	return b.id != "fox"
+}
+
+// cdpShot captures one frame from a CDP seat, page-level or browser-level (B4).
+// A page-level socket (/devtools/page/…) screenshots its own viewport directly.
+// A browser-level socket (a /nodes/attach seat holds /devtools/browser/…) has no
+// page in scope, so a direct capture returns empty; we then enumerate targets,
+// attach to a page with a FLAT-MODE session (which needs the channel's sessionId
+// passthrough), capture that, and detach. ctx, if set, selects a target by id;
+// else the first real (non-devtools) page. It degrades safely: any failure — an
+// old channel that drops sessionId, no page, an attach error — returns the direct
+// (empty) result rather than an error, so a page-level seat is unaffected and a
+// browser-level seat is no worse than before the fix.
+func (c *collector) cdpShot(b *broker, ctx string) ([]byte, error) {
+	direct, err := c.command(b, `{"method":"Page.captureScreenshot","params":{"format":"jpeg","quality":50}}`)
+	if err != nil || cdpHasData(direct) {
+		return direct, err // page-level seat (or a hard error) — unchanged
+	}
+	tr, terr := c.command(b, `{"method":"Target.getTargets"}`)
+	if terr != nil {
+		return direct, nil
+	}
+	var t struct {
+		Result struct {
+			TargetInfos []struct {
+				TargetID string `json:"targetId"`
+				Type     string `json:"type"`
+				URL      string `json:"url"`
+			} `json:"targetInfos"`
+		} `json:"result"`
+	}
+	json.Unmarshal(tr, &t)
+	target := ""
+	for _, ti := range t.Result.TargetInfos {
+		if ti.Type != "page" {
+			continue
+		}
+		if ctx != "" {
+			if ti.TargetID == ctx {
+				target = ti.TargetID
+				break
+			}
+			continue
+		}
+		if ti.URL != "" && !strings.HasPrefix(ti.URL, "devtools://") {
+			target = ti.TargetID
+			break
+		}
+	}
+	if target == "" {
+		return direct, nil
+	}
+	ar, aerr := c.command(b, `{"method":"Target.attachToTarget","params":{"targetId":"`+target+`","flatten":true}}`)
+	if aerr != nil {
+		return direct, nil
+	}
+	var a struct {
+		Result struct {
+			SessionID string `json:"sessionId"`
+		} `json:"result"`
+	}
+	json.Unmarshal(ar, &a)
+	if a.Result.SessionID == "" {
+		return direct, nil
+	}
+	shot, serr := c.command(b, `{"sessionId":"`+a.Result.SessionID+`","method":"Page.captureScreenshot","params":{"format":"jpeg","quality":50}}`)
+	c.command(b, `{"method":"Target.detachFromTarget","params":{"sessionId":"`+a.Result.SessionID+`"}}`) // best-effort
+	if serr != nil || !cdpHasData(shot) {
+		return direct, nil // old channel drops sessionId, or capture failed — no worse than before
+	}
+	return shot, nil
+}
+
+// cdpHasData reports whether a CDP screenshot response carries a non-empty frame.
+func cdpHasData(sr []byte) bool {
+	var s struct {
+		Result struct {
+			Data string `json:"data"`
+		} `json:"result"`
+	}
+	json.Unmarshal(sr, &s)
+	return s.Result.Data != ""
 }
 
 // pollCDPManifest folds a CDP (chrome-family) seat's tabs into the durable
