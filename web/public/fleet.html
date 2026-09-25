@@ -109,9 +109,28 @@ function card(s) {
     ${warns.map(w=>`<div class="warn">⚠ ${esc(w)}</div>`).join('')}
   </div>`;
 }
+// The inner host: the colima VM + its containers, via the mac's /container
+// (docker stats + colima list). Not an 8 of its own — the claude-web sandbox
+// runs elsewhere (account-side) — but its container CPU/mem IS visible here.
+async function innerCard() {
+  const c = await get('http://127.0.0.1:7070/container');
+  if (!c || (!c.docker_ok && !(c.vms||[]).length)) return '';
+  const vm = (c.vms || [])[0];
+  const rows = (c.containers || []).sort((a,b)=>parseFloat(b.cpu)-parseFloat(a.cpu)).slice(0,6).map(ct => {
+    const cpu = parseFloat(ct.cpu)||0, mem = parseFloat(ct.mem_pc)||0;
+    return `<div class="row"><span class="k seats">${esc(ct.name)}</span><span class="v">cpu ${ct.cpu} · mem ${mem.toFixed(0)}%</span></div>`;
+  }).join('');
+  return `<div class="host">
+    <h2><span class="dot ${c.colima_ok?'up':'down'}"></span>inner · colima<span class="kind">container host</span></h2>
+    <div class="row"><span class="k">vm</span><span class="v">${vm?`${esc(vm.status)} · ${esc(vm.arch)} · ${esc(vm.cpus)} cpu · ${esc(vm.memory)} · ${esc(vm.runtime)}`:'<span class=off>none</span>'}</span></div>
+    <div class="row"><span class="k">containers (by cpu)</span><span class="v">${(c.containers||[]).length}</span></div>
+    ${rows}
+    <div class="warn">⚠ claude-web sandbox usage is account-side, not visible here — only its container's cpu/mem is</div>
+  </div>`;
+}
 async function tick() {
-  const states = await Promise.all(HOSTS.map(pollHost));
-  document.getElementById('grid').innerHTML = states.map(card).join('');
+  const [states, inner] = await Promise.all([ Promise.all(HOSTS.map(pollHost)), innerCard() ]);
+  document.getElementById('grid').innerHTML = states.map(card).join('') + inner;
   const upN = states.filter(s=>s.up).length;
   document.getElementById('sub').textContent = `${upN}/${HOSTS.length} hosts reachable · updated ${new Date().toLocaleTimeString()}`;
   document.getElementById('foot').innerHTML =
