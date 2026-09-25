@@ -128,16 +128,38 @@ async function innerCard() {
     <div class="warn">⚠ claude-web sandbox usage is account-side, not visible here — only its container's cpu/mem is</div>
   </div>`;
 }
-async function tick() {
-  const [states, inner] = await Promise.all([ Promise.all(HOSTS.map(pollHost)), innerCard() ]);
-  document.getElementById('grid').innerHTML = states.map(card).join('') + inner;
-  const upN = states.filter(s=>s.up).length;
-  document.getElementById('sub').textContent = `${upN}/${HOSTS.length} hosts reachable · updated ${new Date().toLocaleTimeString()}`;
-  document.getElementById('foot').innerHTML =
-    'observe-half, live: reachability · Claude usage · wire activity · host cpu/mem. remaining gaps: omarchy usage null (untapped pane), container usage is account-side, registries not federated into the canvas. ' +
-    'the missing ACT-half = throttle a host that crosses a line (50% usage, or cpu overload).';
+// ADAPTIVE APERTURE (the 8 Resource-Manager pattern, applied to this observer so
+// it doesn't add the load it measures): the poll interval WIDENS under host load
+// and NARROWS when idle; the expensive /container (docker stats) sensor is
+// rate-limited to 1-in-3 ticks and cached between; and polling PAUSES when the
+// tab is unwatched. Observation that regulates its own cost — not withdrawal.
+let apertureMs = 3000, tickN = 0, timer, lastInner = '';
+function apertureFor(states) {
+  let maxLoad = 0;
+  for (const s of states) if (s.hr && s.hr.cpus) maxLoad = Math.max(maxLoad, s.hr.load1 / s.hr.cpus);
+  if (maxLoad >= 1.0) return { ms: 9000, note: `aperture NARROW · a host is overloaded (${Math.round(maxLoad*100)}%) — backing off` };
+  if (maxLoad >= 0.7) return { ms: 5000, note: `aperture · host load ${Math.round(maxLoad*100)}% — easing` };
+  if (maxLoad < 0.4)  return { ms: 2500, note: `aperture WIDE · headroom (load ${Math.round(maxLoad*100)}%)` };
+  return { ms: 3500, note: `aperture · load ${Math.round(maxLoad*100)}%` };
 }
-tick(); setInterval(tick, 3000);
+async function tick() {
+  if (document.hidden) { schedule(4000); return; }              // don't sense when nobody's watching
+  tickN++;
+  const pollInner = tickN % 3 === 1;                            // docker stats is heavy -> rate-limit to 1/3
+  const [states, inner] = await Promise.all([ Promise.all(HOSTS.map(pollHost)), pollInner ? innerCard() : Promise.resolve(lastInner) ]);
+  if (pollInner) lastInner = inner;
+  document.getElementById('grid').innerHTML = states.map(card).join('') + lastInner;
+  const upN = states.filter(s => s.up).length;
+  const ap = apertureFor(states); apertureMs = ap.ms;
+  document.getElementById('sub').textContent = `${upN}/${HOSTS.length} hosts reachable · ${ap.note} · updated ${new Date().toLocaleTimeString()}`;
+  document.getElementById('foot').innerHTML =
+    'observe-half with an adaptive aperture: poll interval widens under host load, narrows on headroom; docker-stats rate-limited 1/3; pauses when unwatched. ' +
+    'the missing ACT-half = throttle a host that crosses a line (50% usage, or cpu overload).';
+  schedule(apertureMs);
+}
+function schedule(ms) { clearTimeout(timer); timer = window.setTimeout(tick, ms); }
+document.addEventListener('visibilitychange', () => { if (!document.hidden) schedule(200); });
+tick();
 </script>
 </body>
 </html>
