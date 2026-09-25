@@ -29,7 +29,9 @@ arm pilot    .
 arm 8        collector
 
 # --- web arm (8/web) ---
-if ( cd "$ROOT/8/web" && npx tsc --noEmit >/dev/null 2>&1 ); then grn "8/web: tsc ok"; else red "8/web: tsc FAIL"; fi
+if ! command -v npx >/dev/null 2>&1; then note "8/web: skipped (no npx on PATH — Go arms are the release gate)"
+elif ( cd "$ROOT/8/web" && npx tsc --noEmit >/dev/null 2>&1 ); then grn "8/web: tsc ok"
+else red "8/web: tsc FAIL"; fi
 
 # --- version-literal lockstep (the drift guard, as a gate) ---
 echo "-- version lockstep --"
