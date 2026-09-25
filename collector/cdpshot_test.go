@@ -88,4 +88,57 @@ func TestCdpShot(t *testing.T) {
 	if touchedTargets {
 		t.Errorf("page-seat: cdpShot must not enumerate targets when direct capture works")
 	}
+
+	// ── pinned ctx with TWO tabs: must capture the REQUESTED target, never the
+	// held page (the B4 bug: /shot?context=T1 and =T2 returned identical images
+	// because the browser-level capture returns the active page regardless). With
+	// a ctx pinned, cdpShot must SKIP the held-page shortcut and attach to that
+	// exact target. ──
+	directCalled, attachedTarget := false, ""
+	twoTab := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Method    string `json:"method"`
+			SessionID string `json:"sessionId"`
+			Params    struct {
+				TargetID string `json:"targetId"`
+			} `json:"params"`
+		}
+		json.NewDecoder(r.Body).Decode(&in)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case in.Method == "Page.captureScreenshot" && in.SessionID == "":
+			directCalled = true // taking this frame for a pinned ctx would be the bug
+			w.Write([]byte(`{"id":1,"result":{"data":"HELDPAGEFRAME"}}`))
+		case in.Method == "Target.getTargets":
+			w.Write([]byte(`{"id":1,"result":{"targetInfos":[` +
+				`{"targetId":"T1","type":"page","url":"https://claude.ai/code/one"},` +
+				`{"targetId":"T2","type":"page","url":"https://claude.ai/code/two"}]}}`))
+		case in.Method == "Target.attachToTarget":
+			attachedTarget = in.Params.TargetID
+			w.Write([]byte(`{"id":1,"result":{"sessionId":"S-` + in.Params.TargetID + `"}}`))
+		case in.Method == "Page.captureScreenshot" && in.SessionID == "S-T2":
+			w.Write([]byte(`{"id":1,"result":{"data":"T2FRAME"}}`))
+		case in.Method == "Target.detachFromTarget":
+			w.Write([]byte(`{"id":1,"result":{}}`))
+		default:
+			w.Write([]byte(`{"id":1,"result":{"data":"WRONGFRAME"}}`))
+		}
+	}))
+	defer twoTab.Close()
+
+	c3 := newCollector([]broker{{id: "cdp", base: twoTab.URL}})
+	b3 := broker{id: "cdp", base: twoTab.URL}
+	sr3, err := c3.cdpShot(&b3, "T2")
+	if err != nil {
+		t.Fatalf("pinned-ctx cdpShot err: %v", err)
+	}
+	if directCalled {
+		t.Errorf("pinned ctx: cdpShot must NOT take the browser-level held-page capture")
+	}
+	if attachedTarget != "T2" {
+		t.Errorf("pinned ctx: expected attach to T2, attached to %q", attachedTarget)
+	}
+	if !strings.Contains(string(sr3), "T2FRAME") || strings.Contains(string(sr3), "HELDPAGEFRAME") {
+		t.Errorf("pinned ctx: expected T2's own frame, got %s", sr3)
+	}
 }

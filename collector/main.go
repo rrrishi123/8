@@ -2029,9 +2029,18 @@ func (c *collector) cdpSeat(b broker) bool {
 // (empty) result rather than an error, so a page-level seat is unaffected and a
 // browser-level seat is no worse than before the fix.
 func (c *collector) cdpShot(b *broker, ctx string) ([]byte, error) {
-	direct, err := c.command(b, `{"method":"Page.captureScreenshot","params":{"format":"jpeg","quality":50}}`)
-	if err != nil || cdpHasData(direct) {
-		return direct, err // page-level seat (or a hard error) — unchanged
+	// The browser-level capture (no sessionId) always returns the HELD/active page,
+	// regardless of ctx — so when a specific target is pinned, taking it would make
+	// two tabs yield byte-identical images (the B4 gap the cowork found). Only take
+	// the page-level shortcut when NO ctx is pinned; a pinned ctx always goes through
+	// the per-target attach below so each tab captures itself.
+	var direct []byte
+	if ctx == "" {
+		var err error
+		direct, err = c.command(b, `{"method":"Page.captureScreenshot","params":{"format":"jpeg","quality":50}}`)
+		if err != nil || cdpHasData(direct) {
+			return direct, err // single-seat / held page (or a hard error) — unchanged
+		}
 	}
 	tr, terr := c.command(b, `{"method":"Target.getTargets"}`)
 	if terr != nil {
