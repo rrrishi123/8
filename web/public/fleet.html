@@ -40,8 +40,8 @@ const HOSTS = [
 ];
 const CEIL = 0.5; // the <50% action gate
 
-async function get(base, path) {
-  const c = new AbortController(); const t = setTimeout(() => c.abort(), 3500);
+async function get(base, path, ms = 3500) {
+  const c = new AbortController(); const t = setTimeout(() => c.abort(), ms);
   try { const r = await fetch(base + path, { signal: c.signal, cache: 'no-store' }); clearTimeout(t); return r.ok ? await r.json() : null; }
   catch { clearTimeout(t); return null; }
 }
@@ -113,7 +113,7 @@ function card(s) {
 // (docker stats + colima list). Not an 8 of its own — the claude-web sandbox
 // runs elsewhere (account-side) — but its container CPU/mem IS visible here.
 async function innerCard() {
-  const c = await get('http://127.0.0.1:7070/container');
+  const c = await get('http://127.0.0.1:7070', '/container', 9000); // docker stats is slow, esp. under load
   if (!c || (!c.docker_ok && !(c.vms||[]).length)) return '';
   const vm = (c.vms || [])[0];
   const rows = (c.containers || []).sort((a,b)=>parseFloat(b.cpu)-parseFloat(a.cpu)).slice(0,6).map(ct => {
