@@ -45,17 +45,32 @@ async function get(base, path) {
   try { const r = await fetch(base + path, { signal: c.signal, cache: 'no-store' }); clearTimeout(t); return r.ok ? await r.json() : null; }
   catch { clearTimeout(t); return null; }
 }
+// /health, returning the X-8-Ledger-Id header too (exposed via CORS) — its delta
+// between polls is the host's wire-activity rate (acts on its 8, per interval).
+const _led = {}; // base -> { id, t }
+async function health(base) {
+  const c = new AbortController(); const t = setTimeout(() => c.abort(), 3500);
+  try {
+    const r = await fetch(base + '/health', { signal: c.signal, cache: 'no-store' }); clearTimeout(t);
+    if (!r.ok) return { alive: false };
+    const j = await r.json(); const id = Number(r.headers.get('X-8-Ledger-Id')); const now = Date.now();
+    let rate = null; const p = _led[base];
+    if (p && Number.isFinite(id) && now > p.t) rate = Math.max(0, (id - p.id) / ((now - p.t) / 1000));
+    if (Number.isFinite(id)) _led[base] = { id, t: now };
+    return { ...j, _ledger: id, _rate: rate };
+  } catch { clearTimeout(t); return { alive: false }; }
+}
 function utilOf(b) { if (!b) return null; const x = b.five_h_util ?? b.budget?.five_h_util; return (x === undefined) ? null : x; }
 function esc(s){ return String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])); }
 
 async function pollHost(h) {
-  const [health, budget, nodes] = await Promise.all([ get(h.base,'/health'), get(h.base,'/budget'), get(h.base,'/nodes') ]);
-  const up = !!(health && health.alive !== false);
-  const seats = (health?.sessions) || (nodes?.nodes || []).map(n => n.seat || n.id);
+  const [hp, budget, nodes] = await Promise.all([ health(h.base), get(h.base,'/budget'), get(h.base,'/nodes') ]);
+  const up = !!(hp && hp.alive !== false);
+  const seats = (hp?.sessions) || (nodes?.nodes || []).map(n => n.seat || n.id);
   const containers = (nodes?.nodes || []).filter(n => n.mode === 'container').map(n => n.id);
   const util = utilOf(budget);
   const usageUnfed = budget && budget.budget === null;
-  return { h, up, seats, containers, util, usageUnfed };
+  return { h, up, seats, containers, util, usageUnfed, rate: hp?._rate };
 }
 function usageCell(s) {
   if (s.util == null) return `<span class="off">${s.usageUnfed ? 'no sensor (untapped pane)' : '—'}</span>`;
@@ -72,6 +87,7 @@ function card(s) {
     <h2><span class="dot ${s.up?'up':'down'}"></span>${esc(s.h.name)}<span class="kind">${esc(s.h.kind)}</span></h2>
     <div class="row"><span class="k">8 collector</span><span class="v">${s.up?'live':'<span class=off>down</span>'}</span></div>
     <div class="row"><span class="k">Claude 5h usage</span><span class="v">${usageCell(s)}</span></div>
+    <div class="row"><span class="k">wire activity</span><span class="v">${s.rate == null ? '<span class=k>·</span>' : s.rate.toFixed(1) + ' acts/s'}</span></div>
     <div class="row"><span class="k">seats</span><span class="v seats">${seats}</span></div>
     <div class="row"><span class="k">containers</span><span class="v">${s.containers.length?esc(s.containers.join(', ')):'<span class=k>—</span>'}</span></div>
     ${warns.map(w=>`<div class="warn">⚠ ${esc(w)}</div>`).join('')}
