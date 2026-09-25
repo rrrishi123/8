@@ -25,9 +25,14 @@ if ! mkdir "$LOCK" 2>/dev/null; then
 fi
 echo $$ >"$LOCK/pid"; trap 'rm -rf "$LOCK"' EXIT
 
-echo "[peer-beat] $HOST -> $RENDEZVOUS/peers every ${INTERVAL}s"
+# HOSTRES source: a peer WITH its own collector uses $SELF/hostres; a peer that
+# has none (e.g. the colima VM / a container host) sets HOSTRES_CMD to a command
+# whose stdout is the hostres JSON, so it still shows load/mem on the portal.
+echo "[peer-beat] $HOST -> $RENDEZVOUS/peers every ${INTERVAL}s${HOSTRES_CMD:+ (hostres via cmd)}"
 while :; do
-  hr=$(curl -s -m 4 "$SELF/hostres" 2>/dev/null); [ -n "$hr" ] || hr='{}'
+  if [ -n "${HOSTRES_CMD:-}" ]; then hr=$(eval "$HOSTRES_CMD" 2>/dev/null)
+  else hr=$(curl -s -m 4 "$SELF/hostres" 2>/dev/null); fi
+  [ -n "$hr" ] || hr='{}'
   body=$(printf '{"host":"%s","actor":"peer-beat","hostres":%s}' "$HOST" "$hr")
   curl -s -m 6 "$RENDEZVOUS/peers" -H 'Content-Type: application/json' -H "X-8-Actor: peer-beat/$HOST" -d "$body" >/dev/null 2>&1 \
     || echo "[peer-beat $(date +%H:%M:%S)] beat to $RENDEZVOUS FAILED (unreachable?)"

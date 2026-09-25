@@ -226,3 +226,15 @@ if ! pgrep -f "scripts/watchdog.sh" >/dev/null 2>&1; then
 else
   echo "watchdog:   already running"
 fi
+
+# 10. federation heartbeats — this host AND the inner colima VM beat the rendezvous
+# so they appear on the portal (#886 is push-based: stop beating -> age out after
+# 90s). Without these /peers is empty and NO host shows. Idempotent via peer-beat's
+# per-host singleton lock; the watchdog keeps them alive after this. (omarchy beats
+# to mac's tailscale ip and is started by fleet-deploy, not here.)
+for spec in "mac:" "colima:HOSTRES_CMD=$REPO/8/scripts/colima-hostres.sh"; do
+  ph="${spec%%:*}"; extra="${spec#*:}"; lock="/tmp/8-peerbeat.$ph.lockdir"
+  if [ -d "$lock" ] && kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null; then echo "peer-beat:  $ph already beating"; continue; fi
+  ( cd "$REPO/8" && env PEER_HOST="$ph" $extra nohup bash scripts/peer-beat.sh >"/tmp/peer-beat-$ph.log" 2>&1 & )
+  echo "peer-beat:  $ph -> portal federation"
+done

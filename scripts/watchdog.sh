@@ -133,5 +133,15 @@ while true; do
   # session now holds. %N re-mints on a tmux SERVER restart and blanks @mind; this
   # restores visible identity within a tick, independent of the collector's sync.
   [ -x "$HOME/.8/heal-names.sh" ] && bash "$HOME/.8/heal-names.sh" >/dev/null 2>&1
+
+  # PEER-BEAT liveness — keep this host's federation heartbeats alive so the
+  # portal never loses a node to a crashed beat (same per-host singleton lock the
+  # beat holds). cwd here is the 8 repo root (cd at top).
+  for spec in "mac:" "colima:HOSTRES_CMD=$(pwd)/scripts/colima-hostres.sh"; do
+    ph="${spec%%:*}"; extra="${spec#*:}"; lock="/tmp/8-peerbeat.$ph.lockdir"
+    if [ -d "$lock" ] && kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null; then continue; fi
+    echo "[watchdog $(date +%H:%M:%S)] peer-beat $ph down -> reviving"
+    ( env PEER_HOST="$ph" $extra nohup bash scripts/peer-beat.sh >"/tmp/peer-beat-$ph.log" 2>&1 & )
+  done
   sleep 15
 done
