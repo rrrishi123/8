@@ -57,6 +57,13 @@ COLLECTOR="$REPO/8/collector/collector"
 WEB="$REPO/8/web"
 BROKER=http://127.0.0.1:4445/command
 
+# Fresh boots use one CDP engine. The legacy office Firefox profile, tab
+# restoration and watchdog below remain an explicit EIGHT_ENGINE=firefox mode.
+if [ "${EIGHT_ENGINE:-chrome}" != firefox ]; then
+  EIGHT_REPO="$REPO" bash "$SCRIPT_DIR/up-cdp.sh"
+  exit $?
+fi
+
 up()   { lsof -ti :"$1" >/dev/null 2>&1; }
 wait_up() { for _ in $(seq 1 40); do up "$1" && return 0; sleep 0.3; done; return 1; }
 cmd()  { curl -s -m "${2:-15}" "$BROKER" -H 'Content-Type: application/json' -d "$1"; }

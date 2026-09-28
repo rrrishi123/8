@@ -76,9 +76,6 @@ type collector struct {
 	subs    map[int]chan string
 	nextSub int64
 
-	fmu    sync.Mutex
-	frames map[string]chan []byte // sessionID -> latest CDP screencast JPEG (latest-wins)
-
 	lmu    sync.Mutex
 	ledger []reqRec // full request/response records — 8's witness ledger (replayable)
 	lseq   int64
@@ -86,11 +83,12 @@ type collector struct {
 	// TAB MANIFEST — the durable answer to how-many / what / where / who / why / when
 	// for every tab. Reconciled against getTree by a background loop (so it stays true
 	// even when the cockpit is backgrounded/throttled). Persisted to ~/.8/manifest.json.
-	tmu            sync.Mutex
-	manifest       map[string]*tabRec // context-id -> record
-	tabseq         int64
-	pendOpen       []pendAttr // an agent declares intent before opening; the next-born tab claims it (provenance)
-	manifestSeeded bool       // first reconcile after (re)start captures already-open tabs as "unknown" — the witness didn't see them born, so it must NOT claim "human"
+	tmu             sync.Mutex
+	manifest        map[string]*tabRec // context-id -> record
+	tabseq          int64
+	pendOpen        []pendAttr // an agent declares intent before opening; the next-born tab claims it (provenance)
+	manifestSeeded  bool       // first reconcile after (re)start captures already-open tabs as "unknown" — the witness didn't see them born, so it must NOT claim "human"
+	manifestOmitted uint64     // observations refused when all bounded slots are live
 
 	wmu     sync.Mutex        // #12 change-detector: a tab you WATCH pushes tab.changed on DOM shift
 	watched map[string]string // ctx -> last DOM signature (opt-in; only watched tabs are read)
@@ -139,12 +137,13 @@ type collector struct {
 // fxStream is one Firefox tab's live WebM relay: the init segment (first cluster,
 // re-sent to every new /fxstream consumer so MSE can decode) + the live subscribers.
 type fxStream struct {
-	mu     sync.Mutex
-	init   []byte
-	subs   map[int]chan []byte
-	nextID int
-	chunks int
-	bytes  int
+	mu        sync.Mutex
+	init      []byte
+	subs      map[int]chan []byte
+	nextID    int
+	chunks    int
+	bytes     int
+	lastChunk time.Time
 }
 
 func (c *collector) setFocus(session, context string) {
@@ -242,7 +241,7 @@ func (c *collector) handleFocus(w http.ResponseWriter, r *http.Request) {
 }
 
 func newCollector(brokers []broker) *collector {
-	return &collector{brokers: brokers, client: &http.Client{}, geckoClient: &http.Client{Timeout: 25 * time.Second}, subs: map[int]chan string{}, frames: map[string]chan []byte{}, dprCache: map[string]float64{}, vpCache: map[string][2]float64{}, fxRecv: map[string]*fxStream{}, manifest: map[string]*tabRec{}, panesSeen: map[string]string{}}
+	return &collector{brokers: brokers, client: &http.Client{}, geckoClient: &http.Client{Timeout: 25 * time.Second}, subs: map[int]chan string{}, dprCache: map[string]float64{}, vpCache: map[string][2]float64{}, fxRecv: map[string]*fxStream{}, manifest: map[string]*tabRec{}, panesSeen: map[string]string{}}
 }
 
 // chanDPR is a tab's devicePixelRatio (cached per context). The /stream screenshot
@@ -713,7 +712,15 @@ func (c *collector) handleFxChunk(w http.ResponseWriter, r *http.Request) {
 	if sid == "" {
 		sid = "fox"
 	}
-	buf, _ := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+	if len(sid) > maxSurfaceIDBytes {
+		http.Error(w, "session id too long", http.StatusBadRequest)
+		return
+	}
+	buf, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxFxChunkBytes))
+	if err != nil {
+		http.Error(w, "WebM chunk too large or unreadable", http.StatusRequestEntityTooLarge)
+		return
+	}
 	if len(buf) == 0 {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -724,20 +731,31 @@ func (c *collector) handleFxChunk(w http.ResponseWriter, r *http.Request) {
 	}
 	s := c.fxRecv[sid]
 	if s == nil {
+		c.pruneFxStreamsLocked(time.Now())
+		if len(c.fxRecv) >= maxFxStreams {
+			c.fxMu.Unlock()
+			http.Error(w, "Firefox relay session limit reached", http.StatusTooManyRequests)
+			return
+		}
 		s = &fxStream{subs: map[int]chan []byte{}}
 		c.fxRecv[sid] = s
 	}
-	c.fxMu.Unlock()
 	s.mu.Lock()
+	c.fxMu.Unlock()
+	s.lastChunk = time.Now()
 	if s.init == nil {
 		s.init = append([]byte(nil), buf...) // first cluster carries the init segment
 	}
 	s.chunks++
 	s.bytes += len(buf)
-	for _, ch := range s.subs {
+	for id, ch := range s.subs {
 		select {
 		case ch <- buf:
 		default:
+			// WebM clusters depend on preceding clusters. A lagging consumer
+			// must reconnect from init, not silently receive a corrupt gap.
+			close(ch)
+			delete(s.subs, id)
 		}
 	}
 	s.mu.Unlock()
@@ -754,13 +772,19 @@ func (c *collector) handleFxStream(w http.ResponseWriter, r *http.Request) {
 	}
 	c.fxMu.Lock()
 	s := c.fxRecv[sid]
-	c.fxMu.Unlock()
 	if s == nil {
+		c.fxMu.Unlock()
 		http.Error(w, `{"error":"no fx stream for session"}`, http.StatusNotFound)
 		return
 	}
-	ch := make(chan []byte, 64)
 	s.mu.Lock()
+	c.fxMu.Unlock()
+	if len(s.subs) >= maxFxSubscribers {
+		s.mu.Unlock()
+		http.Error(w, "Firefox relay subscriber limit reached", http.StatusTooManyRequests)
+		return
+	}
+	ch := make(chan []byte, maxFxQueueChunks)
 	id := s.nextID
 	s.nextID++
 	s.subs[id] = ch
@@ -770,8 +794,13 @@ func (c *collector) handleFxStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "video/webm")
 	w.Header().Set("Cache-Control", "no-cache")
 	flusher, _ := w.(http.Flusher)
+	control := http.NewResponseController(w)
+	defer control.SetWriteDeadline(time.Time{})
 	if len(init) > 0 {
-		w.Write(init)
+		_ = control.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		if _, err := w.Write(init); err != nil {
+			return
+		}
 		if flusher != nil {
 			flusher.Flush()
 		}
@@ -780,7 +809,11 @@ func (c *collector) handleFxStream(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-		case buf := <-ch:
+		case buf, ok := <-ch:
+			if !ok {
+				return
+			}
+			_ = control.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if _, err := w.Write(buf); err != nil {
 				return
 			}
@@ -817,9 +850,7 @@ func (c *collector) handleFxStart(w http.ResponseWriter, r *http.Request) {
 		sid = "fox"
 	}
 	// reset the relay buffer for a fresh stream (drop the stale init segment)
-	c.fxMu.Lock()
-	delete(c.fxRecv, sid)
-	c.fxMu.Unlock()
+	c.dropFxStream(sid)
 	chunkURL := fmt.Sprintf("http://127.0.0.1:7070/fxchunk?session=%s", sid)
 	c.runChrome(w, driver, []any{chunkURL, needle, fps})
 }
@@ -950,20 +981,8 @@ func (c *collector) addBroker(b broker) bool {
 	return true
 }
 
-// frameChan is a session's latest-screencast-frame channel (buffered 1).
-func (c *collector) frameChan(id string) chan []byte {
-	c.fmu.Lock()
-	defer c.fmu.Unlock()
-	ch, ok := c.frames[id]
-	if !ok {
-		ch = make(chan []byte, 1)
-		c.frames[id] = ch
-	}
-	return ch
-}
-
 // streamCDP is the EFFICIENT stream (Chrome): Page.startScreencast makes Chrome
-// PUSH frames (the pump routes them to frameChan + acks) — capture ONCE, encode
+// PUSH frames (this handler reads and acks them) — capture ONCE, encode
 // continuously, no repeated captureScreenshot. That kills both failure modes of
 // the poll loop: the parent-process leak and the single-BiDi-socket saturation
 // that was false-tripping the watchdog. maxWidth gives LOD natively (Chrome
@@ -1012,12 +1031,11 @@ func (c *collector) streamCDP(w http.ResponseWriter, r *http.Request, b *broker,
 		if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev) != nil || ev.Params.Data == "" {
 			continue
 		}
-		// ack first so Chrome keeps producing while we decode+write this frame
-		go func(id int) {
-			if rp, e := ackClient.Post(b.base+"/command", "application/json", strings.NewReader(fmt.Sprintf(`{"method":"Page.screencastFrameAck","params":{"sessionId":%d}}`, id))); e == nil {
-				rp.Body.Close()
-			}
-		}(ev.Params.SessionID)
+		// Bound outstanding acknowledgements to one, rather than one goroutine
+		// per frame when a broker stalls. Chrome applies its own backpressure.
+		if rp, e := ackClient.Post(b.base+"/command", "application/json", strings.NewReader(fmt.Sprintf(`{"method":"Page.screencastFrameAck","params":{"sessionId":%d}}`, ev.Params.SessionID))); e == nil {
+			rp.Body.Close()
+		}
 		raw, derr := base64.StdEncoding.DecodeString(ev.Params.Data)
 		if derr != nil || len(raw) == 0 {
 			continue
@@ -1624,7 +1642,7 @@ func shrinkTo(b64 string, targetW int) string {
 func lodWidth(r *http.Request) int {
 	if q := r.URL.Query().Get("w"); q != "" {
 		if n, err := strconv.Atoi(q); err == nil && n > 0 {
-			return n
+			return min(n, maxCaptureWidth)
 		}
 	}
 	return 1280
@@ -1672,12 +1690,13 @@ func (c *collector) handleShot(w http.ResponseWriter, r *http.Request) {
 	ctx := r.URL.Query().Get("context")
 	var sr []byte
 	var err error
-	if c.cdpSeat(*b) {
+	isCDP := c.cdpSeat(*b)
+	if isCDP {
 		// CDP: a page-level socket captures its viewport directly; a browser-level
 		// seat (a /nodes/attach seat holds /devtools/browser/…) has no page in scope,
 		// so cdpShot falls back to enumerating targets and capturing one via a
 		// flat-mode session (B4). ctx, if set, selects the target by id.
-		sr, err = c.cdpShot(b, ctx)
+		sr, err = c.cdpShot(b, ctx, lodWidth(r))
 	} else {
 		if ctx == "" {
 			tr, terr := c.command(b, `{"method":"browsingContext.getTree","params":{}}`)
@@ -1729,9 +1748,13 @@ func (c *collector) handleShot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	data := s.Result.Data
+	if !isCDP {
+		data = shrinkTo(data, lodWidth(r))
+	}
 	json.NewEncoder(w).Encode(map[string]any{
 		"context": ctx,
-		"data":    "data:image/jpeg;base64," + shrinkTo(s.Result.Data, lodWidth(r)),
+		"data":    "data:image/jpeg;base64," + data,
 	})
 }
 
@@ -1940,13 +1963,25 @@ func (c *collector) reconcileManifest(session string, tabs []map[string]string) 
 	c.tmu.Lock()
 	live := map[string]bool{}
 	for _, t := range tabs {
+		if ctx := t["context"]; ctx != "" && len(ctx) <= maxSurfaceIDBytes {
+			live[ctx] = true
+		}
+	}
+	for ctx, rec := range c.manifest {
+		if rec.Session == session && !live[ctx] && rec.Status == "live" {
+			rec.Status, rec.ClosedAt = "closed", now
+		}
+	}
+	for _, t := range tabs {
 		ctx := t["context"]
-		if ctx == "" {
+		if ctx == "" || len(ctx) > maxSurfaceIDBytes {
 			continue
 		}
-		live[ctx] = true
 		r := c.manifest[ctx]
 		if r == nil {
+			if !c.makeManifestRoomLocked() {
+				continue
+			}
 			c.tabseq++
 			// HONEST PROVENANCE: the witness only claims an opener it actually witnessed.
 			// - already-open at witness startup  -> "unknown" (it did NOT see them born)
@@ -1974,21 +2009,15 @@ func (c *collector) reconcileManifest(session string, tabs []map[string]string) 
 			r = &tabRec{UID: c.tabseq, Ctx: ctx, Session: session, OpenedBy: by, Why: why, FirstSeen: now, Status: "live"}
 			c.manifest[ctx] = r
 		}
-		r.URL = t["url"]
+		r.URL = firstN(t["url"], maxSurfaceURLBytes)
 		r.LastSeen = now
 		r.Status = "live"
 		r.ClosedAt = ""
 	}
-	for ctx, r := range c.manifest {
-		if r.Session == session && !live[ctx] && r.Status == "live" {
-			r.Status = "closed"
-			r.ClosedAt = now
-		}
-	}
 	c.manifestSeeded = true // startup snapshot done; later-born tabs can be attributed
-	snap := make([]*tabRec, 0, len(c.manifest))
+	snap := make([]tabRec, 0, len(c.manifest))
 	for _, r := range c.manifest {
-		snap = append(snap, r)
+		snap = append(snap, *r)
 	}
 	c.tmu.Unlock()
 	os.MkdirAll(os.ExpandEnv("$HOME/.8"), 0o755)
@@ -2028,23 +2057,27 @@ func (c *collector) cdpSeat(b broker) bool {
 // old channel that drops sessionId, no page, an attach error — returns the direct
 // (empty) result rather than an error, so a page-level seat is unaffected and a
 // browser-level seat is no worse than before the fix.
-func (c *collector) cdpShot(b *broker, ctx string) ([]byte, error) {
+func (c *collector) cdpShot(b *broker, ctx string, width ...int) ([]byte, error) {
+	targetW := 0
+	if len(width) > 0 {
+		targetW = width[0]
+	}
 	// The browser-level capture (no sessionId) always returns the HELD/active page,
 	// regardless of ctx — so when a specific target is pinned, taking it would make
 	// two tabs yield byte-identical images (the B4 gap the cowork found). Only take
 	// the page-level shortcut when NO ctx is pinned; a pinned ctx always goes through
 	// the per-target attach below so each tab captures itself.
 	var direct []byte
+	var directErr error
 	if ctx == "" {
-		var err error
-		direct, err = c.command(b, `{"method":"Page.captureScreenshot","params":{"format":"jpeg","quality":50}}`)
-		if err != nil || cdpHasData(direct) {
-			return direct, err // single-seat / held page (or a hard error) — unchanged
+		direct, directErr = c.cdpCapture(b, "", targetW)
+		if cdpHasData(direct) {
+			return direct, directErr
 		}
 	}
 	tr, terr := c.command(b, `{"method":"Target.getTargets"}`)
 	if terr != nil {
-		return direct, nil
+		return direct, directErr
 	}
 	var t struct {
 		Result struct {
@@ -2074,11 +2107,11 @@ func (c *collector) cdpShot(b *broker, ctx string) ([]byte, error) {
 		}
 	}
 	if target == "" {
-		return direct, nil
+		return direct, directErr
 	}
 	ar, aerr := c.command(b, `{"method":"Target.attachToTarget","params":{"targetId":"`+target+`","flatten":true}}`)
 	if aerr != nil {
-		return direct, nil
+		return direct, directErr
 	}
 	var a struct {
 		Result struct {
@@ -2087,11 +2120,14 @@ func (c *collector) cdpShot(b *broker, ctx string) ([]byte, error) {
 	}
 	json.Unmarshal(ar, &a)
 	if a.Result.SessionID == "" {
-		return direct, nil
+		return direct, directErr
 	}
-	shot, serr := c.command(b, `{"sessionId":"`+a.Result.SessionID+`","method":"Page.captureScreenshot","params":{"format":"jpeg","quality":50}}`)
+	shot, serr := c.cdpCapture(b, a.Result.SessionID, targetW)
 	c.command(b, `{"method":"Target.detachFromTarget","params":{"sessionId":"`+a.Result.SessionID+`"}}`) // best-effort
-	if serr != nil || !cdpHasData(shot) {
+	if serr != nil {
+		return nil, serr
+	}
+	if !cdpHasData(shot) {
 		return direct, nil // old channel drops sessionId, or capture failed — no worse than before
 	}
 	return shot, nil
@@ -2785,8 +2821,8 @@ func claimTokens() (map[string]string, bool) {
 
 func (c *collector) handleClaim(w http.ResponseWriter, r *http.Request) {
 	var p struct{ Ctx, Agent, Token string }
-	json.NewDecoder(r.Body).Decode(&p)
-	if p.Ctx == "" || p.Agent == "" {
+	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&p)
+	if err != nil || p.Ctx == "" || p.Agent == "" || len(p.Ctx) > maxSurfaceIDBytes || len(p.Agent) > 128 {
 		http.Error(w, `{"error":"need {ctx, agent}"}`, http.StatusBadRequest)
 		return
 	}
@@ -2814,6 +2850,11 @@ func (c *collector) handleClaim(w http.ResponseWriter, r *http.Request) {
 	}
 	rec := c.manifest[p.Ctx]
 	if rec == nil {
+		if !c.makeManifestRoomLocked() {
+			c.tmu.Unlock()
+			http.Error(w, "manifest capacity reached", http.StatusTooManyRequests)
+			return
+		}
 		// LAZY CLAIM (2026-08-11): a JUST-created tab (e.g. one the git-broker's
 		// far-end Claude opened) isn't in the manifest yet — the reconcile runs
 		// every 5s, and it keys by chrome bcid while a fresh BiDi ctx is a uuid.
@@ -2826,8 +2867,9 @@ func (c *collector) handleClaim(w http.ResponseWriter, r *http.Request) {
 		c.manifest[p.Ctx] = rec
 	}
 	rec.ClaimedBy, rec.ClaimAt, rec.ClaimVerified = p.Agent, now, verified
+	session := rec.Session
 	c.tmu.Unlock()
-	c.publish(fmt.Sprintf(`{"session":%q,"origin":"COLLECTOR","frame":{"method":"tab.claim","params":{"ctx":%q,"agent":%q,"verified":%v}}}`, rec.Session, p.Ctx, p.Agent, verified))
+	c.publish(fmt.Sprintf(`{"session":%q,"origin":"COLLECTOR","frame":{"method":"tab.claim","params":{"ctx":%q,"agent":%q,"verified":%v}}}`, session, p.Ctx, p.Agent, verified))
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"claimed":%q,"by":%q,"verified":%v}`, p.Ctx, p.Agent, verified)
 }
@@ -2899,11 +2941,19 @@ func (c *collector) handleManifest(w http.ResponseWriter, r *http.Request) {
 			Agent string `json:"agent"`
 			Why   string `json:"why"`
 		}
-		json.NewDecoder(r.Body).Decode(&p)
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&p); err != nil || len(p.Agent) > 128 || len(p.Why) > 2048 {
+			http.Error(w, "invalid or oversized manifest intent", http.StatusBadRequest)
+			return
+		}
 		if p.Agent == "" {
 			p.Agent = "unknown-agent"
 		}
 		c.tmu.Lock()
+		if len(c.pendOpen) >= maxManifestTabs {
+			c.tmu.Unlock()
+			http.Error(w, "pending intent capacity reached", http.StatusTooManyRequests)
+			return
+		}
 		c.pendOpen = append(c.pendOpen, pendAttr{Agent: p.Agent, Why: p.Why, At: time.Now()})
 		c.tmu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
@@ -2911,10 +2961,11 @@ func (c *collector) handleManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.tmu.Lock()
-	snap := make([]*tabRec, 0, len(c.manifest))
+	snap := make([]tabRec, 0, len(c.manifest))
 	for _, rec := range c.manifest {
-		snap = append(snap, rec)
+		snap = append(snap, *rec)
 	}
+	omitted := c.manifestOmitted
 	c.tmu.Unlock()
 	sort.Slice(snap, func(i, j int) bool { return snap[i].UID < snap[j].UID })
 	live := 0
@@ -2924,7 +2975,7 @@ func (c *collector) handleManifest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"total": len(snap), "live": live, "tabs": snap})
+	json.NewEncoder(w).Encode(map[string]any{"total": len(snap), "live": live, "tabs": snap, "capacity": maxManifestTabs, "omitted_observations": omitted})
 }
 
 // the shared session registry — every http-mcp instance (or the collector
@@ -4503,7 +4554,12 @@ func main() {
 	apertureMB := flag.Int("aperture-mb", 3000, "soft parent+children memory threshold (MB): above this the FAIR aperture parks the heaviest non-focused tab (gBrowser.discardBrowser — memory freed, tab identity preserved, reloads on focus). INVARIANT: no tab is ever closed. 0 disables. Watchdog 4500 full-recycle stays as the backstop.")
 	token := flag.String("token", os.Getenv("EIGHT_TOKEN"), "shared secret required on every endpoint via X-8-Token/Bearer (empty = auth off, local-dev default)")
 	origins := flag.String("origins", os.Getenv("EIGHT_ORIGINS"), "comma CORS origin allowlist, e.g. http://localhost:8088 (empty = *, local-dev)")
+	webDir := flag.String("web-dir", os.Getenv("EIGHT_WEB_DIR"), "optional built cockpit directory to serve at / on the collector's port")
 	flag.Parse()
+	peerJoin, err := peerJoinFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
 	persistBootArgs() // #347: record the wired argv so `up` boots and `watch` revives NON-bare
 
 	var brokers []broker
@@ -4582,6 +4638,9 @@ func main() {
 	}()
 
 	mux := http.NewServeMux()
+	if *webDir != "" {
+		mux.Handle("/", http.FileServer(http.Dir(*webDir)))
+	}
 	mux.HandleFunc("/feed", c.handleFeed)
 	mux.HandleFunc("/run", c.handleRun)
 	mux.HandleFunc("/broadcast", c.handleBroadcast)
@@ -4719,6 +4778,10 @@ func main() {
 	}
 	if lerr != nil {
 		log.Fatalf("could not bind %s after ~3s of retries: %v", *listen, lerr)
+	}
+	if peerJoin.endpoint != "" {
+		log.Printf("peer join: %s -> %s (every 30s)", peerJoin.host, peerJoin.endpoint)
+		go c.peerJoinLoop(ctx, peerJoin, 30*time.Second)
 	}
 	log.Fatal(http.Serve(ln, handler))
 }

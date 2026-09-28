@@ -90,16 +90,28 @@ func discoverSubstrate() substrate {
 		}
 	}
 	s.Chrome = lookChrome()
-	// engine selection: firefox is the seat only WITH geckodriver (its driver); a
-	// chrome-family browser drives itself over CDP, so it's a valid seat on its own.
-	// Firefox stays the preferred default; chrome is the fallback when it's absent.
-	switch {
-	case s.Firefox != "" && s.Gecko != "":
-		s.Engine = "firefox"
-	case s.Chrome != "":
-		s.Engine = "chrome"
-	}
+	// Prefer one Chrome/CDP engine: capture at display width in the browser.
+	// Firefox remains available when explicitly selected or Chrome is absent.
+	s.Engine = selectBrowserEngine(s, os.Getenv("EIGHT_ENGINE"))
 	return s
+}
+
+func selectBrowserEngine(s substrate, preferred string) string {
+	if preferred == "firefox" {
+		if s.Firefox != "" && s.Gecko != "" {
+			return "firefox"
+		}
+		return ""
+	}
+	switch {
+	case s.Chrome != "":
+		return "chrome"
+	case preferred == "":
+		if s.Firefox != "" && s.Gecko != "" {
+			return "firefox"
+		}
+	}
+	return ""
 }
 
 func portUp(addr string) bool {
@@ -169,6 +181,13 @@ func runUp() {
 	report("engine", s.Engine)
 
 	self, _ := os.Executable()
+	// A Chrome pack launches only the browser; its broker_hint is a hint, not a
+	// running broker. Hold the CDP channel before discovering collector flags.
+	if s.Engine == "chrome" {
+		if err := prepareCDPSeat(root, s); err != nil {
+			fmt.Printf("  chrome:       %v\n", err)
+		}
+	}
 
 	// BODY 1 — the collector (this binary). Bundled; needs no substrate. Idempotent.
 	cargs := collectorArgs()
@@ -195,8 +214,7 @@ func runUp() {
 	wireUp(root, probeAddr(cargs))
 
 	// BODY 2 — the browser seat. DISCOVERED substrate; absent => dormant, not fatal.
-	// firefox (via geckodriver) is preferred; a chrome-family browser is the
-	// fallback seat where firefox/geckodriver isn't installed (e.g. a container).
+	// Chrome/CDP is preferred; Firefox is opt-in or the available fallback.
 	if s.Engine == "" {
 		fmt.Println("  browser:      DORMANT — no firefox+geckodriver or chrome-family browser; collector-only is a valid boot")
 		return
@@ -325,6 +343,10 @@ func collectorArgs() []string {
 		}
 	}
 	args := []string{"-listen", ":7070"}
+	if os.Getenv("EIGHT_ENGINE") != "firefox" && portUp("127.0.0.1:4446") {
+		args = append(args, "-brokers", "chrome=http://127.0.0.1:4446")
+		return args
+	}
 	if portUp("127.0.0.1:4445") {
 		args = append(args, "-brokers", "fox=http://127.0.0.1:4445")
 	}
