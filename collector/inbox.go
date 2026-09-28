@@ -76,8 +76,10 @@ func saveInbox(key string, offers []offer) {
 	_ = os.Rename(tmp.Name(), inboxPath(key))
 }
 
-// paneUUIDMap — current pane id -> claude session uuid (one tmux call, one ps scan).
-func paneUUIDMap() map[string]string {
+// paneUUIDMap — current pane id -> session uuid (one tmux call, one ps scan).
+// A var (not a plain func) so a test can seed a known pane->uuid binding and
+// exercise the cross-family identity guard without live tmux panes.
+var paneUUIDMap = func() map[string]string {
 	out := map[string]string{}
 	tb := tmuxBin()
 	if tb == "" {

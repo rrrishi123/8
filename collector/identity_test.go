@@ -36,11 +36,29 @@ func TestHandleIdentity_Guard(t *testing.T) {
 		t.Errorf("short uuid: want 400, got %d", got)
 	}
 
-	// THE GUARD: claiming a pane that does not hold this uuid is refused with 409.
-	// %999 holds no live session, so paneUUIDMap()[%999] != uuid — this is the
-	// exact "one family can't claim the other's pane" case.
+	// Seed a KNOWN binding: pane %7 is held by Claude's live session.
+	const claudeUUID = "11111111-2222-3333-4444-555555555555"
+	orig := paneUUIDMap
+	paneUUIDMap = func() map[string]string { return map[string]string{"%7": claudeUUID} }
+	defer func() { paneUUIDMap = orig }()
+
+	// THE CASE THAT MATTERS for two families sharing one witness: Codex, with its
+	// OWN uuid, tries to declare %7 — the pane Claude actually holds. %7 exists,
+	// but its live uuid is Claude's, not Codex's, so it is refused with 409. This
+	// is the row-attribution guarantee: one family cannot claim the other's pane.
+	if got := post(map[string]any{"name": "codex", "uuid": uuid, "pane": "%7"}); got != http.StatusConflict {
+		t.Errorf("codex claiming Claude's live pane (%%7) must be refused with 409, got %d", got)
+	}
+
+	// a pane NOBODY holds is likewise unclaimable (the guard's edge case).
 	if got := post(map[string]any{"name": "impostor", "uuid": uuid, "pane": "%999"}); got != http.StatusConflict {
-		t.Errorf("pane-spoofing must be refused with 409, got %d", got)
+		t.Errorf("claiming an unheld pane must be refused with 409, got %d", got)
+	}
+
+	// the mind that ACTUALLY holds the pane may declare it: Claude declares %7
+	// with the matching uuid -> accepted.
+	if got := post(map[string]any{"name": "claude", "uuid": claudeUUID, "pane": "%7"}); got != http.StatusOK {
+		t.Errorf("the holder declaring its own pane: want 200, got %d", got)
 	}
 
 	// a uuid-only declaration (claims no pane) is accepted — the pane guard only
