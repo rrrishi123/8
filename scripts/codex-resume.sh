@@ -33,6 +33,10 @@ reset_passed(){
   [ -n "$t" ] || return 1
   now=$(date +%s)
   rst=$(date -j -f '%I:%M %p' "$t" +%s 2>/dev/null) || return 1
+  # date -j fills in TODAY, but the advertised time may be from before midnight:
+  # a bare clock time that lands in the future must have been YESTERDAY's reset,
+  # so roll it back a day and read it as the most-recent past occurrence.
+  [ "$rst" -gt "$now" ] && rst=$((rst - 86400))
   [ "$rst" -le "$now" ] && [ $((now - rst)) -le 21600 ]
 }
 
