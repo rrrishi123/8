@@ -72,7 +72,31 @@ func (c *collector) peerHeartbeat(host string) (peer, error) {
 	if err != nil {
 		return peer{}, err
 	}
-	return peer{Host: host, Actor: "peer-join/" + host, HostRes: hr, Manifest: manifest}, nil
+	bud := map[string]any{}
+	if b := c.budgetNow(); b != nil {
+		for _, name := range []string{"5h", "7d"} {
+			if w, ok := b.Windows[name]; ok {
+				bud["claude_"+name] = w.Utilization
+			}
+		}
+		bud["claude_gated"] = b.Gated
+		bud["claude_observed_at"] = b.ObservedAt
+	}
+	if cx, _ := codexReading(); cx != nil {
+		windows, _ := cx["windows"].(map[string]any)
+		for _, name := range []string{"5h", "7d"} {
+			if w, ok := windows[name].(map[string]any); ok {
+				bud["codex_"+name] = w["utilization"]
+			}
+		}
+		bud["codex_gated"] = cx["gated"]
+		bud["codex_observed_at"] = cx["observed_at"]
+	}
+	extra, err := json.Marshal(map[string]any{"budget": bud})
+	if err != nil {
+		return peer{}, err
+	}
+	return peer{Host: host, Actor: "peer-join/" + host, HostRes: hr, Manifest: manifest, Extra: extra}, nil
 }
 
 func sendPeerHeartbeat(ctx context.Context, client *http.Client, cfg peerJoinConfig, p peer) error {

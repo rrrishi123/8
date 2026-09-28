@@ -4784,5 +4784,6 @@ func main() {
 		log.Printf("peer join: %s -> %s (every 30s)", peerJoin.host, peerJoin.endpoint)
 		go c.peerJoinLoop(ctx, peerJoin, 30*time.Second)
 	}
+	go codexBudgetLoop(ctx, time.Minute)
 	log.Fatal(http.Serve(ln, handler))
 }

@@ -214,13 +214,11 @@ func (c *collector) budgetAllows() bool {
 func (c *collector) handleBudget(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	b := c.budgetNow()
-	if b == nil {
-		_ = json.NewEncoder(w).Encode(map[string]any{"budget": nil, "note": "no sensor: tap an inspected pane (GET /panes/tap?pane=%N) so its API responses' anthropic-ratelimit-unified-* headers are logged"})
-		return
-	}
-	names := make([]string, 0, len(b.Windows))
-	for k := range b.Windows {
-		names = append(names, k)
+	names := make([]string, 0)
+	if b != nil {
+		for k := range b.Windows {
+			names = append(names, k)
+		}
 	}
 	sort.Strings(names)
 	age := budgetAgeSeconds(b)
@@ -231,11 +229,11 @@ func (c *collector) handleBudget(w http.ResponseWriter, r *http.Request) {
 	if cx != nil {
 		codexProv = cx
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"budget": b, "windows": names, "playlist_allowed": !b.Gated,
+	_ = json.NewEncoder(w).Encode(map[string]any{"budget": b, "windows": names, "playlist_allowed": b == nil || !b.Gated,
 		"observed_age_s": age, "sensors_armed": tapped,
 		"providers":            map[string]any{"claude": b, "codex": codexProv},
 		"codex_observed_age_s": codexAge,
-		"freshness":            "budget refreshes only on a live /v1/messages call from a tapped pane; an all-idle fleet shows last-known (no consumption either)"})
+		"freshness":            "Claude: tapped responses. Codex: local rollout sensor every 60s, no model call. Observed timestamps remain last-known while idle; manual poke forces a provider request."})
 }
 
 // tapJS — installed inside an inspected pane: logs every API request (headers
@@ -494,9 +492,32 @@ func codexReading() (map[string]any, any) {
 		return nil, nil
 	}
 	var cx map[string]any
-	if json.Unmarshal(b, &cx) != nil {
+	if json.Unmarshal(b, &cx) != nil || cx == nil {
 		return nil, nil
 	}
+	windows, ok := cx["windows"].(map[string]any)
+	if !ok || len(windows) == 0 {
+		return nil, nil
+	}
+	gated := false
+	for _, raw := range windows {
+		if win, ok := raw.(map[string]any); ok {
+			reset, _ := win["reset_at"].(float64)
+			remaining := max(int64(0), int64(reset)-time.Now().Unix())
+			win["reset_in_s"] = remaining
+			util, _ := win["utilization"].(float64)
+			gated = gated || (util >= budgetCap() && (remaining > 0 || reset == 0))
+		}
+	}
+	five, _ := windows["5h"].(map[string]any)
+	util, _ := five["utilization"].(float64)
+	cx["gated"], cx["cap"], cx["five_h_util"] = gated, budgetCap(), util
+	cx["research_ceil"], cx["research_ok"] = researchCeil(), util < researchCeil()
+	cx["phase"] = "research"
+	if util >= researchCeil() {
+		cx["phase"] = "conserve"
+	}
+	cx["observed_age_s"] = codexAge(cx)
 	return cx, codexAge(cx)
 }
 
@@ -537,11 +558,8 @@ func (c *collector) pokeCodex() (bool, string) {
 		note, _ := cx["note"].(string)
 		return false, "no codex rate_limits after poke: " + note
 	}
-	dst := os.ExpandEnv("$HOME/.8/codex-budget.json")
-	if b, e := json.MarshalIndent(cx, "", "  "); e == nil {
-		if e = os.WriteFile(dst+".tmp", b, 0o644); e == nil {
-			_ = os.Rename(dst+".tmp", dst)
-		}
+	if err := persistCodexBudget(cx); err != nil {
+		return false, "persist codex budget: " + err.Error()
 	}
 	afterTS, _ := cx["observed_at"].(string)
 	if afterTS <= beforeTS {

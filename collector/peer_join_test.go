@@ -42,6 +42,7 @@ func TestPeerJoinConfig(t *testing.T) {
 // Exercise the real producer and rendezvous handler over HTTP, including auth,
 // payload fidelity, freshness, retries after a transient 503, and cancellation.
 func TestPeerJoinRoundTripAndRetry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // federation must not scan the operator's real sensor logs
 	const host = `codex-test-"peer`
 	peerMu.Lock()
 	previous := peers

@@ -39,14 +39,16 @@ while :; do
   # a different Claude account than mac's; codex is a separate provider).
   if [ "${SKIP_BUDGET:-0}" = 1 ]; then bud='{}'   # host with no Claude account of its OWN that we sense (e.g. colima = browser seats + a cloud Claude read elsewhere)
   else
-  bud=$(curl -s -m 4 "$SELF/budget" 2>/dev/null | python3 -c "import json,sys
-try:
- d=json.load(sys.stdin); b=d.get('budget',{}); w=b.get('windows',{})
- o={'claude_5h':w.get('5h',{}).get('utilization'),'claude_7d':w.get('7d',{}).get('utilization'),'claude_gated':b.get('gated')}
- cx=d.get('providers',{}).get('codex',{}); cw=cx.get('windows',{})
- o['codex_5h']=cw.get('5h',{}).get('utilization'); o['codex_7d']=cw.get('7d',{}).get('utilization')
- print(json.dumps(o))
-except Exception: print('{}')" 2>/dev/null)
+  # jq preserves null (unknown) providers instead of discarding the OTHER
+  # provider's reading when one has no sensor. It also removes the Python dep.
+  bud=$(curl -s -m 4 "$SELF/budget" 2>/dev/null | jq -c '{
+    claude_5h: .budget.windows["5h"].utilization,
+    claude_7d: .budget.windows["7d"].utilization,
+    claude_gated: .budget.gated, claude_observed_at: .budget.observed_at,
+    codex_5h: .providers.codex.windows["5h"].utilization,
+    codex_7d: .providers.codex.windows["7d"].utilization,
+    codex_gated: .providers.codex.gated, codex_observed_at: .providers.codex.observed_at
+  }' 2>/dev/null)
   [ -n "$bud" ] || bud='{}'
   fi
   body=$(printf '{"host":"%s","actor":"peer-beat","hostres":%s,"extra":{"budget":%s}}' "$HOST" "$hr" "$bud")
