@@ -1408,7 +1408,7 @@ func (c *collector) handlePanesSend(w http.ResponseWriter, r *http.Request) {
 	if req.All || len(targets) == 0 { // unspecified == the whole live claude choir
 		targets = nil
 		for _, p := range tmuxPanes() {
-			if strings.Contains(strings.ToLower(p.Cmd), "claude") {
+			if harnessKind(p.Cmd) != "" {
 				targets = append(targets, p.ID)
 			}
 		}

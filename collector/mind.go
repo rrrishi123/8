@@ -125,7 +125,7 @@ func (c *collector) resolveMinds(heal bool) []mindView {
 	uuidCount := map[string]int{}
 	var mins []mindView
 	for _, p := range tmuxPanes() {
-		if !strings.Contains(p.Cmd, "claude") {
+		if harnessKind(p.Cmd) == "" {
 			continue
 		}
 		pf := procOf(p.ID)

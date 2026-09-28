@@ -136,9 +136,7 @@ func (c *collector) epochLoop() {
 		}
 		ticked := false
 		for _, p := range tmuxPanes() {
-			switch p.Cmd {
-			case "claude.exe", "claude", "node":
-			default:
+			if harnessKind(p.Cmd) == "" {
 				continue
 			}
 			path, _ := paneTranscript(tb, p.ID)
@@ -192,7 +190,7 @@ func (c *collector) epochLoop() {
 						Content json.RawMessage `json:"content"`
 					} `json:"message"`
 				}
-				if json.Unmarshal([]byte(ln), &o) != nil {
+				if json.Unmarshal(observationRecord([]byte(ln)), &o) != nil {
 					continue
 				}
 				if o.Type != "user" && o.Message.Role != "user" {

@@ -51,7 +51,7 @@ func (c *collector) handleTmuxSummary(w http.ResponseWriter, r *http.Request) {
 				Content json.RawMessage `json:"content"`
 			} `json:"message"`
 		}
-		if json.Unmarshal([]byte(ln), &o) != nil {
+		if json.Unmarshal(observationRecord([]byte(ln)), &o) != nil {
 			continue
 		}
 		role := o.Message.Role
@@ -159,7 +159,7 @@ func (c *collector) handleAttention(w http.ResponseWriter, r *http.Request) {
 				Content json.RawMessage `json:"content"`
 			} `json:"message"`
 		}
-		if json.Unmarshal([]byte(ln), &o) != nil {
+		if json.Unmarshal(observationRecord([]byte(ln)), &o) != nil {
 			continue
 		}
 		role := o.Message.Role

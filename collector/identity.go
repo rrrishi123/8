@@ -374,6 +374,10 @@ func jsonlForUUID(uuid string) string {
 	if len(hits) > 0 {
 		return hits[0]
 	}
+	hits, _ = filepath.Glob(filepath.Join(codexHome(), "sessions", "*", "*", "*", "rollout-*-"+uuid+".jsonl"))
+	if len(hits) > 0 {
+		return hits[0]
+	}
 	return ""
 }
 
@@ -470,11 +474,24 @@ func (c *collector) handleIdentity(w http.ResponseWriter, r *http.Request) {
 			Name      string   `json:"name"`
 			Aliases   []string `json:"aliases"`
 			SpawnedBy string   `json:"spawned_by"`
+			Pane      string   `json:"pane"`
 		}
 		if json.NewDecoder(r.Body).Decode(&p) != nil || p.Name == "" || len(p.UUID) < 32 || strings.Count(p.UUID, "-") < 4 {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": "need {uuid (a session uuid), name, aliases?}"})
 			return
+		}
+		if p.Pane != "" {
+			if !isPaneID(p.Pane) || paneUUIDMap()[p.Pane] != p.UUID {
+				http.Error(w, `{"error":"pane does not hold that live session uuid"}`, http.StatusConflict)
+				return
+			}
+			for _, pane := range tmuxPanes() {
+				if pane.ID == p.Pane {
+					_, _ = c.setName(p.Name, pane.Loc, p.UUID, "8")
+					break
+				}
+			}
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
 		declMu.Lock()
@@ -533,12 +550,27 @@ func paneUUIDs() map[string]string {
 	if err != nil {
 		return out
 	}
+	parents := map[string]string{}
+	for _, line := range strings.Split(string(ps), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 3 {
+			parents[f[0]] = f[1]
+		}
+	}
 	for _, line := range strings.Split(string(ps), "\n") {
 		f := strings.Fields(line)
 		if len(f) < 3 {
 			continue
 		}
 		pid, ppid := f[0], f[1]
+		if harnessKind(f[2]) == "codex" {
+			if sid := codexSessionForPID(pid); sid != "" {
+				for p, depth := pid, 0; p != "" && p != "1" && depth < 8; p, depth = parents[p], depth+1 {
+					out[p] = sid
+				}
+			}
+			continue
+		}
 		// 2026-09-15: the CLI's own session file is authoritative — argv's
 		// --resume goes STALE after /clear (the process mints a new session id
 		// but keeps its argv), and a fresh `claude` has no --resume at all.

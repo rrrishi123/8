@@ -69,7 +69,7 @@ func (c *collector) syncPaneNames(now time.Time) {
 	uu := paneUUIDs()
 	for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		f := strings.SplitN(ln, "|", 6)
-		if len(f) != 6 || !strings.Contains(f[2], "claude") {
+		if len(f) != 6 || harnessKind(f[2]) == "" {
 			continue
 		}
 		pane, ppid, mind, by, seat := f[0], f[1], f[3], f[4], f[5]

@@ -78,9 +78,10 @@ func wordsOf(pane string) []string {
 
 // classifyScreen — PURE: the state a screen text implies, and its reset note.
 func classifyScreen(screen, cmd string) (state, resets string) {
-	switch cmd {
-	case "claude.exe", "claude", "node":
-	default:
+	switch harnessKind(cmd) {
+	case "codex":
+		return classifyCodexScreen(screen)
+	case "":
 		return "shell", ""
 	}
 	if m := cappedRe.FindString(screen); m != "" {
@@ -93,6 +94,45 @@ func classifyScreen(screen, cmd string) (state, resets string) {
 		return "working", ""
 	}
 	return "idle", ""
+}
+
+// Codex's active controls are at the bottom. Don't confuse quoted tool output
+// elsewhere in the transcript with a cap or spinner, and treat a nonempty
+// composer as typing even when its contents have stopped changing.
+func classifyCodexScreen(screen string) (string, string) {
+	lines := strings.Split(strings.TrimSpace(screen), "\n")
+	if len(lines) > 16 {
+		lines = lines[len(lines)-16:]
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		lower := strings.ToLower(line)
+		if strings.HasPrefix(line, "• ") && strings.Contains(lower, "esc to interrupt") {
+			return "working", ""
+		}
+	}
+	for _, line := range lines {
+		lower := strings.ToLower(strings.TrimSpace(line))
+		lower = strings.TrimLeft(lower, "•!⚠ ")
+		if strings.HasPrefix(lower, "you've hit your usage limit") || strings.HasPrefix(lower, "you have hit your usage limit") ||
+			strings.HasPrefix(lower, "usage limit reached") || strings.HasPrefix(lower, "rate limit reached") || strings.HasPrefix(lower, "you're out of credits") {
+			return "capped", strings.Join(strings.Fields(resetsRe.FindString(strings.Join(lines, "\n"))), " ")
+		}
+		if strings.HasPrefix(lower, "would you like to") || strings.HasPrefix(lower, "approval required") || strings.HasPrefix(lower, "waiting for approval") {
+			return "waiting", ""
+		}
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(line, "›") {
+			draft := strings.TrimSpace(strings.TrimPrefix(line, "›"))
+			if draft == "" || draft == "Ask Codex to do anything" || draft == "Claim and complete coding tasks" {
+				return "idle", ""
+			}
+			return "typing", ""
+		}
+	}
+	return "unknown", "" // no recognized composer: never safe to inject
 }
 
 // probeTUI — one tick over the given panes: capture, hash, classify, and age.
@@ -167,5 +207,5 @@ func tuiOf(pane string) tuiState {
 // (state "") are allowed: absence of evidence is not a cap.
 func dispatchable(pane string) bool {
 	s := tuiOf(pane).State
-	return s != "capped" && s != "stuck"
+	return s != "capped" && s != "stuck" && s != "typing" && s != "waiting" && s != "unknown"
 }

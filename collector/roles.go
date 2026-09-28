@@ -35,22 +35,10 @@ func paneForUUID(uuid string) string {
 	if uuid == "" {
 		return ""
 	}
-	out, _ := exec.Command("ps", "-eo", "ppid,args").Output()
-	var ppid string
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.Contains(line, "--resume "+uuid) || strings.Contains(line, "--resume="+uuid) {
-			if f := strings.Fields(line); len(f) > 0 {
-				ppid = f[0]
-				break
-			}
-		}
-	}
-	if ppid == "" {
-		return ""
-	}
+	uu := paneUUIDs()
 	po, _ := exec.Command(tmuxBin(), "list-panes", "-a", "-F", "#{pane_id} #{pane_pid}").Output()
 	for _, line := range strings.Split(string(po), "\n") {
-		if f := strings.Fields(line); len(f) == 2 && f[1] == ppid {
+		if f := strings.Fields(line); len(f) == 2 && uu[f[1]] == uuid {
 			return f[0]
 		}
 	}

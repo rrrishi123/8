@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -68,9 +69,7 @@ func probeProcs(now time.Time) {
 			continue
 		}
 		pane, ppid, cmd := f[0], f[1], f[2]
-		switch cmd {
-		case "claude.exe", "claude", "node":
-		default:
+		if harnessKind(cmd) == "" {
 			continue
 		}
 		pf := procFacts{ProbedAt: now.UTC().Format(time.RFC3339)}
@@ -88,11 +87,20 @@ func probeProcs(now time.Time) {
 					pf.RSSMB = kb / 1024
 				}
 			}
-			pf.Inspector = inspectorFor(pf.Pid)
+			if harnessKind(cmd) != "codex" {
+				pf.Inspector = inspectorFor(pf.Pid)
+			}
 		}
 		if u := uu[ppid]; u != "" {
 			if jp := jsonlForUUID(u); jp != "" {
-				pf.CtxTokens, pf.CtxAt = lastUsage(jp)
+				if harnessKind(cmd) == "codex" {
+					turns := codexUsageTurns(jp, 1)
+					if len(turns) > 0 {
+						pf.CtxTokens, pf.CtxAt = turns[0].Context, turns[0].TS
+					}
+				} else {
+					pf.CtxTokens, pf.CtxAt = lastUsage(jp)
+				}
 			}
 		}
 		fresh[pane] = pf
@@ -377,6 +385,9 @@ type usageTurn struct {
 }
 
 func usageTurns(path string, n int) []usageTurn {
+	if strings.HasPrefix(filepath.Base(path), "rollout-") {
+		return codexUsageTurns(path, n)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil

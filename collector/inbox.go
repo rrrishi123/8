@@ -139,7 +139,7 @@ func paneIdle(pane string) bool {
 	if err != nil {
 		return false
 	}
-	if state, _ := classifyScreen(string(out), "claude"); state != "idle" { // #897: capped/stuck are not idle either
+	if state, _ := classifyScreen(string(out), paneKind(pane)); state != "idle" { // typing, waiting, capped and stuck are not idle either
 		return false
 	}
 	// TYPING GUARD: "idle" means Claude isn't generating — but the operator may be

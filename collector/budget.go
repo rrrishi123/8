@@ -272,6 +272,15 @@ const tapJS = `(() => {
 func (c *collector) handlePaneTap(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	pane := r.URL.Query().Get("pane")
+	if paneKind(pane) == "codex" {
+		if err := refreshCodexBudget(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		cx, age := codexReading()
+		_ = json.NewEncoder(w).Encode(map[string]any{"pane": pane, "provider": "codex", "sensor": "collector-native rollout", "budget": cx, "observed_age_s": age})
+		return
+	}
 	wsurl := procOf(pane).Inspector
 	if wsurl == "" {
 		http.Error(w, `{"error":"no inspector for that pane — launch it with BUN_INSPECT=ws://127.0.0.1:<port>/dbg"}`, 404)

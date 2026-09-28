@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -105,36 +104,12 @@ func (c *collector) handlePanes(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	uu := paneUUIDs()
-	type codexMind struct{ SessionID, Jsonl string }
-	codexByPane := map[string]codexMind{}
-	if b, err := os.ReadFile(os.ExpandEnv("$HOME/.8/codex-minds.json")); err == nil {
-		var raw map[string]struct {
-			SessionID string `json:"session_id"`
-			Jsonl     string `json:"jsonl"`
-		}
-		if json.Unmarshal(b, &raw) == nil {
-			for k, v := range raw {
-				codexByPane[k] = codexMind{v.SessionID, v.Jsonl}
-			}
-		}
-	}
 	out := []paneView{}
 	for _, p := range tmuxPanes() {
 		uuid := uu[pidOf[p.ID]]
 		name, _ := nameForUUID(uuid)
 		jsonl := jsonlForUUID(uuid)
-		harness := ""
-		if uuid != "" {
-			harness = "claude-code"
-		}
-		if cm, ok := codexByPane[p.ID]; ok && uuid == "" {
-			harness = "codex"
-			uuid = cm.SessionID
-			jsonl = cm.Jsonl
-			if name == "" {
-				name = "codex"
-			}
-		}
+		harness := harnessKind(p.Cmd)
 		t := tuiOf(p.ID)
 		pf := procOf(p.ID)
 		out = append(out, paneView{p.ID, p.Loc, p.Cmd, p.Title, seen[p.ID], name, uuid, jsonl, t.State, t.SameForS, t.Resets, t.ProbedAt,

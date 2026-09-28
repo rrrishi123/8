@@ -293,22 +293,17 @@ func paneAlive(pane string) bool {
 	}
 	for _, p := range tmuxPanes() {
 		if p.ID == pane {
-			switch p.Cmd {
-			case "claude.exe", "claude", "node":
-				return true
-			}
-			return false
+			return harnessKind(p.Cmd) != ""
 		}
 	}
 	return false
 }
 
 // liveClaudePanes — current pane ids running a claude process (the summonable minds).
-func liveClaudePanes() []string {
+func liveMindPanes() []string {
 	var out []string
 	for _, p := range tmuxPanes() {
-		switch p.Cmd {
-		case "claude.exe", "claude", "node":
+		if harnessKind(p.Cmd) != "" {
 			out = append(out, p.ID)
 		}
 	}
@@ -360,7 +355,7 @@ func sendToPane(pane, msg string, onDead func()) bool {
 	}
 	epNoteInjected(msg) // #645: the system's breath must never tick the operator's clock
 	tb := tmuxBin()
-	if tb == "" || !paneAlive(pane) {
+	if tb == "" || !paneIdle(pane) {
 		return false
 	}
 	if err := tmuxRun(tb, "send-keys", "-t", pane, "-l", msg); err != nil || !paneAlive(pane) {
@@ -379,8 +374,10 @@ func sendToPane(pane, msg string, onDead func()) bool {
 			return
 		}
 		tmuxRun(tb, "send-keys", "-t", pane, "Enter")
-		time.Sleep(500 * time.Millisecond)
-		tmuxRun(tb, "send-keys", "-t", pane, "Enter")
+		if paneKind(pane) != "codex" { // Codex submits on the first Enter
+			time.Sleep(500 * time.Millisecond)
+			tmuxRun(tb, "send-keys", "-t", pane, "Enter")
+		}
 	}()
 	return true
 }
@@ -452,12 +449,12 @@ func (c *collector) dispatchParallel(items []workItem, now string) bool {
 	}
 	family := ledgerFamily(items) // #896: the wake reaches only minds with lineage
 	changed := false
-	if !c.budgetAllows() { // budget.go: a rejected/over-cap unified window pauses dispatch; it resumes after the reset by itself
-		return false
-	}
 	p2u := paneUUIDMap()
 	scope := playlistScope()
-	for _, pane := range liveClaudePanes() {
+	for _, pane := range liveMindPanes() {
+		if !c.budgetAllowsPane(pane) {
+			continue
+		}
 		if !inScope(scope, pane, p2u[pane]) { // a lane outside the playlist's scope is neither offered nor woken
 			continue
 		}
@@ -1063,7 +1060,7 @@ func (c *collector) derangedVerifier(authorLabel string) string {
 	uu := paneUUIDs()
 	names := map[string]string{}
 	var panes []string
-	for _, p := range liveClaudePanes() {
+	for _, p := range liveMindPanes() {
 		// #933 tail: bounded — this ran RAW under c.tmu (my own unbounded
 		// exec in the write path, found while chasing the write-wedge #940).
 		out, err := tmuxOut(tb, "display-message", "-p", "-t", p, "#{pane_pid}")
