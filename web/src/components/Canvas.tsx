@@ -400,7 +400,16 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
       // CARD_DWELL_MS; otherwise the canvas scrolls (the default) — so you're
       // never stuck unable to scroll the map over a card.
       const card = t.closest('.card-b.scroll, .vp-text, .vp-tmux, .vp-interactive, .rec-bar');
-      if (card && card === hoverEl && e.timeStamp - hoverSince > CARD_DWELL_MS) return;
+      if (card && card === hoverEl && e.timeStamp - hoverSince > CARD_DWELL_MS) {
+        // dwelled on a card — but only let it eat the wheel if it can ACTUALLY
+        // scroll that direction; otherwise fall through and pan the canvas, so a
+        // rest over a non-scrollable (or edge-of-scroll) card never dead-ends.
+        const c = card as HTMLElement;
+        const canScroll = e.deltaY < 0
+          ? c.scrollTop > 0
+          : c.scrollTop + c.clientHeight < c.scrollHeight - 1;
+        if (canScroll) return;
+      }
       e.preventDefault();
       if (dragging) return;  // never zoom/pan by wheel while the pointer is dragging
       lastWheel = e.timeStamp;
