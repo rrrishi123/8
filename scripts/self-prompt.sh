@@ -29,7 +29,14 @@ idle() {
   echo "$s1" | grep -q 'esc to interrupt' && return 1                 # (a) generating
   line=$(echo "$s1" | grep '^❯' | tail -1)
   rest=$(printf '%s' "$line" | sed 's/^❯[[:space:]]*//')
-  [ -n "$rest" ] && return 1                                          # (b) unsent text at the prompt -> never type on top of it
+  # (b) a REAL composed-but-unsent draft -> defer. But Claude Code renders grey
+  # PLACEHDERS in the same prompt ("Press up to edit queued messages", "Try …")
+  # which capture-pane -p can't distinguish by colour — exclude the known ones so
+  # a placeholder doesn't false-defer the whole loop (the over-correction bug).
+  case "$rest" in
+    ""|"Press up to edit"*|"Try "*|"⏎"*) : ;;  # empty or a placeholder -> safe
+    *) return 1 ;;                             # real unsent text -> never type on top of it
+  esac
   sleep 1.2
   s2=$(tmux capture-pane -t "$1" -p 2>/dev/null)
   echo "$s2" | grep -q 'esc to interrupt' && return 1
@@ -75,7 +82,23 @@ for p in $PANES; do
     echo "$(date +%H:%M) $p on HOLD ($(head -c 80 "$LEDGER/$p.hold" 2>/dev/null)) — skip; rm the marker to resume"
     continue
   fi
-  idle "$p" || { echo "$(date +%H:%M) $p busy — skip"; continue; }
+  # DEFER + THRESHOLD: while the pane is being typed into (or holds a real unsent
+  # draft) we defer — but not forever. Count consecutive defers per pane; once it
+  # passes DEFER_CAP (~passes), send anyway so a long compose / left draft can't
+  # starve the loop (the operator's rule: defer while typing, send after a
+  # threshold). A settled pane resets the counter.
+  DEFER_CAP="${SELF_PROMPT_DEFER_CAP:-3}"
+  dc="$LEDGER/$p.defers"
+  if idle "$p"; then
+    rm -f "$dc"
+  else
+    n=$(( $(cat "$dc" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "$dc"
+    if [ "$n" -lt "$DEFER_CAP" ]; then
+      echo "$(date +%H:%M) $p being typed/unsent — defer ($n/$DEFER_CAP)"; continue
+    fi
+    echo "$(date +%H:%M) $p still unsettled after $n defers — sending anyway (threshold)"; rm -f "$dc"
+  fi
   limited "$p" && { echo "$(date +%H:%M) $p plan-limited — backing off (auto-resumes on reset)"; continue; }
   f="$LEDGER/$p.txt"
   if [ -s "$f" ]; then

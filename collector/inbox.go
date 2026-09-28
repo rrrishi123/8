@@ -174,11 +174,29 @@ var paneTypingProbe = 900 * time.Millisecond
 // hasUnsentInput reports whether a claude-code pane holds composed-but-unsent
 // text at its prompt: a "❯" line with non-space content after the marker. Empty
 // is "❯ " (marker + trailing spaces, nothing after).
+//
+// Claude Code also renders GREY PLACEHOLDER text in that same prompt line —
+// "Press up to edit queued messages", "Try …", a bare "⏎" hint — which
+// capture-pane -p cannot distinguish from a real draft by colour. Treating a
+// placeholder as unsent input false-defers the pane forever (the over-correction
+// that stalled the loop), so the known placeholders are excluded here, in lockstep
+// with scripts/self-prompt.sh's idle().
 func hasUnsentInput(screen string) bool {
 	for _, ln := range strings.Split(screen, "\n") {
 		t := strings.TrimRight(ln, " ")
-		if strings.HasPrefix(t, "❯") && strings.TrimSpace(strings.TrimPrefix(t, "❯")) != "" {
-			return true
+		if !strings.HasPrefix(t, "❯") {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(t, "❯"))
+		switch {
+		case rest == "":
+			continue // empty prompt
+		case strings.HasPrefix(rest, "Press up to edit"),
+			strings.HasPrefix(rest, "Try "),
+			strings.HasPrefix(rest, "⏎"):
+			continue // grey placeholder, not a draft
+		default:
+			return true // a real composed-but-unsent draft
 		}
 	}
 	return false
