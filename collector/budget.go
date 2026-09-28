@@ -377,6 +377,28 @@ func freeLoopbackPort() (int, error) {
 	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
+// budgetWorkingDir works for a checkout, a standalone install, and either host.
+// Explicit overrides fail loudly instead of silently running in another repo.
+func budgetWorkingDir() (string, error) {
+	for _, key := range []string{"EIGHT_BUDGET_DIR", "EIGHT_REPO"} {
+		if dir := os.Getenv(key); dir != "" {
+			st, err := os.Stat(dir)
+			if err != nil {
+				return "", fmt.Errorf("%s: %w", key, err)
+			}
+			if !st.IsDir() {
+				return "", fmt.Errorf("%s is not a directory", key)
+			}
+			return filepath.Abs(dir)
+		}
+	}
+	root := repoRoot()
+	if st, err := os.Stat(filepath.Join(root, "8", "collector")); err == nil && st.IsDir() {
+		return root, nil
+	}
+	return os.UserHomeDir()
+}
+
 // launchTapped — spawn claude with its own held inspector and inject tapJS over
 // it; returns once the tap is installed (the script then starts) or kills the
 // held process when the inject failed, so nothing ever runs untapped.
@@ -387,7 +409,10 @@ func launchTapped(ctx context.Context, args ...string) (*exec.Cmd, string, error
 	}
 	wsurl := fmt.Sprintf("ws://127.0.0.1:%d/dbg", port)
 	cmd := exec.CommandContext(ctx, "claude", args...)
-	cmd.Dir = os.ExpandEnv("$HOME/Desktop/repos")
+	cmd.Dir, err = budgetWorkingDir()
+	if err != nil {
+		return nil, wsurl, err
+	}
 	cmd.Env = append(envWithout(os.Environ(), "BUN_INSPECT"), "BUN_INSPECT="+wsurl+"?wait=1")
 	cmd.Stdin = devNull()
 	os.MkdirAll(os.ExpandEnv("$HOME/.8/stream"), 0o755)
