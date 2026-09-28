@@ -17,7 +17,25 @@ set -uo pipefail
 LEDGER="${LEDGER_DIR:-$HOME/.8/ledger}"
 PANES="${SELF_PROMPT_PANES:-%8 %9 %10 %11}"
 SPEC="$HOME/Desktop/repos/flutter-kaleidoscope/specimen"
-idle() { ! tmux capture-pane -t "$1" -p 2>/dev/null | grep -q 'esc to interrupt'; }
+# idle — safe to inject ONLY when the pane is (a) not generating, (b) has NO
+# composed-but-unsent text, and (c) is not changing (mid-keystroke). The old
+# check tested only (a), so a nudge landed in the middle of the operator typing
+# — including during a THINKING PAUSE, where the pane is stable but the prompt
+# still holds unsent text. Claude Code's empty prompt is "❯ " (marker + space,
+# nothing after); "❯ <text>" is unsent input.
+idle() {
+  local s1 s2 line rest
+  s1=$(tmux capture-pane -t "$1" -p 2>/dev/null)
+  echo "$s1" | grep -q 'esc to interrupt' && return 1                 # (a) generating
+  line=$(echo "$s1" | grep '^❯' | tail -1)
+  rest=$(printf '%s' "$line" | sed 's/^❯[[:space:]]*//')
+  [ -n "$rest" ] && return 1                                          # (b) unsent text at the prompt -> never type on top of it
+  sleep 1.2
+  s2=$(tmux capture-pane -t "$1" -p 2>/dev/null)
+  echo "$s2" | grep -q 'esc to interrupt' && return 1
+  [ "$s1" != "$s2" ] && return 1                                      # (c) changed between samples -> actively typing
+  return 0
+}
 # plan/usage-limit gate: while a pane shows a limit/reset state, back off (don't
 # spam). The 240s poll keeps checking; once the ~4h limit window clears, the next
 # pass delivers its next line automatically — the fleet self-resumes on reset.
