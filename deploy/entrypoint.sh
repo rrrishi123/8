@@ -18,8 +18,8 @@ for spec in ${BROWSER_ENDPOINTS:-}; do
   endpoint=${spec#*=}
   case "$name" in ''|*[!a-zA-Z0-9_-]*) echo "invalid browser name" >&2; exit 1;; esac
   [ "$name" != "$endpoint" ] || { echo "need name=http://host:port" >&2; exit 1; }
-  ws=$(curl -fsS --max-time 5 "$endpoint/json" | jq -er --arg base "$endpoint" \
-    '[.[] | select(.type == "page" and .webSocketDebuggerUrl)][0].webSocketDebuggerUrl
+  ws=$(curl -fsS --max-time 5 "$endpoint/json/version" | jq -er --arg base "$endpoint" \
+    '.webSocketDebuggerUrl
      | select(. != null) | sub("^ws://[^/]+"; ($base | sub("^http"; "ws")))')
   channel -ws "$ws" -listen "127.0.0.1:$port" &
   pids="$pids $!"

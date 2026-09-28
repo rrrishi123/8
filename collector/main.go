@@ -4638,9 +4638,6 @@ func main() {
 	}()
 
 	mux := http.NewServeMux()
-	if *webDir != "" {
-		mux.Handle("/", http.FileServer(http.Dir(*webDir)))
-	}
 	mux.HandleFunc("/feed", c.handleFeed)
 	mux.HandleFunc("/run", c.handleRun)
 	mux.HandleFunc("/broadcast", c.handleBroadcast)
@@ -4679,6 +4676,10 @@ func main() {
 	// should tell a newcomer what it is and how to touch it — the same self-evidence
 	// `discover` gives, at the front door. GET / → what/how/endpoints.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if *webDir != "" {
+			http.FileServer(http.Dir(*webDir)).ServeHTTP(w, r)
+			return
+		}
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
