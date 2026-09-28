@@ -144,6 +144,13 @@ func paneIdle(pane string) bool {
 	if state, _ := classifyScreen(string(out), paneKind(pane)); state != "idle" { // typing, waiting, capped and stuck are not idle either
 		return false
 	}
+	// UNSENT-INPUT GUARD: classifyScreen calls a claude pane "idle" whenever it is
+	// not generating — but the operator may have composed a message and not sent
+	// it (a "❯ <text>" prompt, stable during a thinking pause). Typing on top of
+	// that is the collision the 8-loop hit; refuse it here too.
+	if hasUnsentInput(string(out)) {
+		return false
+	}
 	// TYPING GUARD: "idle" means Claude isn't generating — but the operator may be
 	// mid-keystroke at that idle prompt, and one snapshot can't tell typing from
 	// calm. So sample again after a short beat; if the pane changed, someone is
@@ -163,6 +170,19 @@ func paneIdle(pane string) bool {
 // to tell an operator typing at the prompt from a truly-quiet pane. Long enough
 // to straddle normal inter-keystroke gaps, short enough not to stall a summon.
 var paneTypingProbe = 900 * time.Millisecond
+
+// hasUnsentInput reports whether a claude-code pane holds composed-but-unsent
+// text at its prompt: a "❯" line with non-space content after the marker. Empty
+// is "❯ " (marker + trailing spaces, nothing after).
+func hasUnsentInput(screen string) bool {
+	for _, ln := range strings.Split(screen, "\n") {
+		t := strings.TrimRight(ln, " ")
+		if strings.HasPrefix(t, "❯") && strings.TrimSpace(strings.TrimPrefix(t, "❯")) != "" {
+			return true
+		}
+	}
+	return false
+}
 
 // offer — enqueue the item into the mind's inbox; the item stays todo. Returns
 // false only when the assignee cannot be resolved to any mind or pane.
