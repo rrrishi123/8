@@ -357,7 +357,17 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   // occluded. When the viewport and the world don't intersect, snap to the top-
   // left. Runs on world/viewport/level changes only — panning off the edge by
   // hand is the operator's, this never fights a drag.
-  const camRef = useRef(cam); camRef.current = cam;
+  const gestureTs = useRef(0);            // perf.now() of the last live gesture write to camRef
+  const mmViewRef = useRef<SVGRectElement>(null); // the minimap viewport rect — driven imperatively during a gesture
+  const camRef = useRef(cam);
+  // Sync the gesture ref from React state ONLY when no gesture is in flight. This
+  // cockpit re-renders constantly (websocket/polling); without this guard a routine
+  // re-render mid-scroll reset camRef.current to the PRE-gesture cam — so the next
+  // wheel delta was computed off a stale base AND the debounced persist wrote that
+  // stale cam back, discarding the scroll and freezing the minimap (which reads
+  // React cam). 250ms > the 140ms wheel-settle debounce, so the persist always sees
+  // the real value; programmatic setCam (goto/bird/minimap-drag) still syncs at rest.
+  if (performance.now() - gestureTs.current > 250) camRef.current = cam;
   useEffect(() => {
     const v = vpRef.current, c = camRef.current;
     if (!v.w || !world.h || pendingLane.current) return;
@@ -378,6 +388,22 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     // cam-dependent logic (LOD, minimap) catch up. Same trick useDrag uses.
     const applyCam = (c: { x: number; y: number; z: number }) => {
       if (worldEl.current) worldEl.current.style.transform = `translate(${c.x}px,${c.y}px) scale(${c.z})`;
+      // Drive the minimap viewport rect imperatively too — React cam only catches up
+      // on gesture-settle (the 140ms debounce), so without this the rect lags the
+      // scroll. Read world dims LIVE from the minimap's own viewBox to dodge a
+      // stale-closure world.w/h (this effect's deps are [setCam], so the captured
+      // `world` can be old). Same math as the JSX rect below — kept in lockstep.
+      const rect = mmViewRef.current, mm = rect?.ownerSVGElement;
+      if (rect && mm) {
+        const vb = (mm.getAttribute('viewBox') || '0 0 0 0').split(' ').map(Number);
+        const WW = vb[2] || 0, WH = vb[3] || 0;
+        const vpw = vpRef.current.w || 1200, vph = vpRef.current.h || 800;
+        const vx = Math.max(0, -c.x / c.z), vy = Math.max(0, -c.y / c.z);
+        const vx2 = Math.min(WW, (vpw - c.x) / c.z), vy2 = Math.min(WH, (vph - c.y) / c.z);
+        rect.setAttribute('x', String(vx)); rect.setAttribute('y', String(vy));
+        rect.setAttribute('width', String(Math.max(0, vx2 - vx)));
+        rect.setAttribute('height', String(Math.max(0, vy2 - vy)));
+      }
     };
     // GESTURE DISAMBIGUATION (the Figma/tldraw pattern): pan-drag and wheel/pinch
     // are mutually exclusive, so a trackpad zoom never fights a click-hold-drag.
@@ -424,7 +450,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
       } else {
         next = { ...c, x: c.x - e.deltaX, y: c.y - e.deltaY };
       }
-      camRef.current = next; applyCam(next);                       // smooth: DOM only, no re-render
+      camRef.current = next; gestureTs.current = performance.now(); applyCam(next); // smooth: DOM only, no re-render (gestureTs shields camRef from a mid-scroll render)
       if (wheelTimer) clearTimeout(wheelTimer);
       wheelTimer = window.setTimeout(() => setCam(camRef.current), 140); // persist once the scroll settles
     };
@@ -438,7 +464,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
       let cur = { ...camRef.current };                             // closure-local: a mid-gesture re-render can't clobber it
       const move = (ev: PointerEvent) => {
         cur = { ...cur, x: cur.x + (ev.clientX - lx), y: cur.y + (ev.clientY - ly) };
-        lx = ev.clientX; ly = ev.clientY; camRef.current = cur; applyCam(cur); // DOM only, no re-render
+        lx = ev.clientX; ly = ev.clientY; camRef.current = cur; gestureTs.current = performance.now(); applyCam(cur); // DOM only, no re-render
       };
       const up = () => { dragging = false; el.style.cursor = ''; window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); setCam(cur); }; // commit once
       window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
@@ -631,7 +657,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
           {(() => {
             const vx = Math.max(0, -cam.x / cam.z), vy = Math.max(0, -cam.y / cam.z);
             const vx2 = Math.min(world.w, (vp.w - cam.x) / cam.z), vy2 = Math.min(world.h, (vp.h - cam.y) / cam.z);
-            return <rect x={vx} y={vy} width={Math.max(0, vx2 - vx)} height={Math.max(0, vy2 - vy)} className="mm-view" vectorEffect="non-scaling-stroke" />;
+            return <rect ref={mmViewRef} x={vx} y={vy} width={Math.max(0, vx2 - vx)} height={Math.max(0, vy2 - vy)} className="mm-view" vectorEffect="non-scaling-stroke" />;
           })()}
         </svg>
       )}
