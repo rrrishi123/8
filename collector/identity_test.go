@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -17,6 +19,7 @@ import (
 // that produced them — the thing that keeps two model-families sharing one
 // witness from planting beliefs in each other.
 func TestHandleIdentity_Guard(t *testing.T) {
+	isolateMindTest(t, "#!/bin/sh\ncase $1 in list-panes) echo '%7|test:1.1|claude|test';; esac\n")
 	c := newCollector(nil)
 	const uuid = "01a0e7a4-0275-7af3-9388-f657051d2bb6" // >=32 chars, >=4 dashes
 
@@ -66,4 +69,28 @@ func TestHandleIdentity_Guard(t *testing.T) {
 	if got := post(map[string]any{"name": "codex", "uuid": uuid}); got != http.StatusOK {
 		t.Errorf("uuid-only declaration: want 200, got %d", got)
 	}
+}
+
+// Even the accepted declaration must never write roles/eight.db in the real
+// HOME or resolve the real tmux server. Restore process-global identity caches.
+func isolateMindTest(t *testing.T, script string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, "codex"))
+	if err := os.MkdirAll(filepath.Join(home, ".8"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, "tmux-test")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldTmux := tmuxBin
+	tmuxBin = func() string { return path }
+	oldDeclared, oldSources, oldLoaded := declared, nameSrc, nameSrcLd
+	declared, nameSrc, nameSrcLd = map[string]declaredMind{}, map[string]string{}, false
+	t.Cleanup(func() {
+		tmuxBin = oldTmux
+		declared, nameSrc, nameSrcLd = oldDeclared, oldSources, oldLoaded
+	})
 }

@@ -35,7 +35,10 @@ func tmuxRun(tb string, args ...string) error {
 // ── TMUX — the agents' surface, native (the system's own eyes, no claude-deck) ──
 type tmuxPaneRec struct{ ID, Loc, Cmd, Title string }
 
-func tmuxBin() string {
+// Replaceable in tests: changing HOME alone does not isolate a live tmux server.
+var tmuxBin = findTmuxBin
+
+func findTmuxBin() string {
 	for _, p := range []string{"/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"} {
 		if _, err := os.Stat(p); err == nil {
 			return p

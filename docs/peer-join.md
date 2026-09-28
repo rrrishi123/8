@@ -29,8 +29,9 @@ Leaving both hub variables unset disables native join.
 The existing `scripts/peer-beat.sh` remains useful for synthetic hosts such as a
 Colima VM without its own collector, and for its budget summary/custom metrics.
 Do not run it and native join with the same peer name at the same hub: their
-payloads would overwrite each other. Native join currently sends metrics and
-manifest, not a screenshot or budget summary. Verify registration with
+payloads would overwrite each other. Native join sends metrics, manifest, and
+available Claude/Codex budget readings in `extra.budget`, including their
+original observation timestamps. It does not send a screenshot. Verify registration with
 `GET http://hub-host:7070/peers`; the entry should have `stale: false`.
 
 This joins a reachable HTTP hub. It does not bypass a sandbox's outbound-network

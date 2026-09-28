@@ -141,14 +141,15 @@ func paneIdle(pane string) bool {
 	if err != nil {
 		return false
 	}
-	if state, _ := classifyScreen(string(out), paneKind(pane)); state != "idle" { // typing, waiting, capped and stuck are not idle either
+	kind := paneKind(pane)
+	if state, _ := classifyScreen(string(out), kind); state != "idle" { // typing, waiting, capped and stuck are not idle either
 		return false
 	}
 	// UNSENT-INPUT GUARD: classifyScreen calls a claude pane "idle" whenever it is
 	// not generating — but the operator may have composed a message and not sent
 	// it (a "❯ <text>" prompt, stable during a thinking pause). Typing on top of
 	// that is the collision the 8-loop hit; refuse it here too.
-	if hasUnsentInput(string(out)) {
+	if kind == "claude-code" && hasUnsentInput(string(out)) {
 		return false
 	}
 	// TYPING GUARD: "idle" means Claude isn't generating — but the operator may be

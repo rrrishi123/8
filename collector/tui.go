@@ -113,7 +113,7 @@ func classifyCodexScreen(screen string) (string, string) {
 	}
 	for _, line := range lines {
 		lower := strings.ToLower(strings.TrimSpace(line))
-		lower = strings.TrimLeft(lower, "•!⚠ ")
+		lower = strings.TrimLeft(lower, "•■!⚠ ")
 		if strings.HasPrefix(lower, "you've hit your usage limit") || strings.HasPrefix(lower, "you have hit your usage limit") ||
 			strings.HasPrefix(lower, "usage limit reached") || strings.HasPrefix(lower, "rate limit reached") || strings.HasPrefix(lower, "you're out of credits") {
 			return "capped", strings.Join(strings.Fields(resetsRe.FindString(strings.Join(lines, "\n"))), " ")
