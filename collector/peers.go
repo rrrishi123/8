@@ -35,6 +35,48 @@ type peer struct {
 	Extra     json.RawMessage `json:"extra,omitempty"`
 	Addr      string          `json:"addr,omitempty"` // the peer's collector base URL (from its beat's source IP), for a cross-host budget poke — the per-peer refresh
 	lastBeat  time.Time
+	// per-organ freshness, so a merged card ages a dead contributor's organ out
+	// instead of lingering forever (see the merge in handlePeers).
+	manifestAt time.Time
+	budgetAt   time.Time
+}
+
+// manifestHasTabs reports whether a beat's manifest actually carries tabs. A
+// peer-beat shell sends no manifest; a collector's peer-join always sends the
+// tab list. Used to decide which beat contributes the manifest organ.
+func manifestHasTabs(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var m struct {
+		Total int               `json:"total"`
+		Tabs  []json.RawMessage `json:"tabs"`
+	}
+	if json.Unmarshal(raw, &m) != nil {
+		return false
+	}
+	return m.Total > 0 || len(m.Tabs) > 0
+}
+
+// budgetPopulated reports whether extra.budget carries at least one non-null
+// reading. A host with no budget sensor (e.g. colima's peer-join) sends an
+// empty {}; its beat must not clobber a sibling beat that does carry budget.
+func budgetPopulated(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var e struct {
+		Budget map[string]any `json:"budget"`
+	}
+	if json.Unmarshal(raw, &e) != nil {
+		return false
+	}
+	for _, v := range e.Budget {
+		if v != nil {
+			return true
+		}
+	}
+	return false
 }
 
 var (
@@ -68,6 +110,24 @@ func (c *collector) handlePeers(w http.ResponseWriter, r *http.Request) {
 			p.Addr = "http://" + net.JoinHostPort(host, "7070")
 		}
 		peerMu.Lock()
+		// MERGE, don't clobber. One host may run several beaters — a collector's
+		// peer-join carrying the tab MANIFEST and a peer-beat shell carrying the
+		// BUDGET. Keyed by host alone they'd overwrite each other every beat and
+		// the card would flap between "has tabs, no budget" and "has budget, no
+		// tabs." Carry forward whichever organ THIS beat didn't bring, but only
+		// while the beat that set it is still fresh (< peerStaleAfter), so a dead
+		// contributor's organ ages out rather than lingering. This is what makes
+		// "one host = one card" hold however many beaters a host runs.
+		if manifestHasTabs(p.Manifest) {
+			p.manifestAt = now
+		} else if prev, ok := peers[p.Host]; ok && manifestHasTabs(prev.Manifest) && now.Sub(prev.manifestAt) < peerStaleAfter {
+			p.Manifest, p.manifestAt = prev.Manifest, prev.manifestAt
+		}
+		if budgetPopulated(p.Extra) {
+			p.budgetAt = now
+		} else if prev, ok := peers[p.Host]; ok && budgetPopulated(prev.Extra) && now.Sub(prev.budgetAt) < peerStaleAfter {
+			p.Extra, p.budgetAt = prev.Extra, prev.budgetAt
+		}
 		peers[p.Host] = &p
 		n := len(peers)
 		peerMu.Unlock()

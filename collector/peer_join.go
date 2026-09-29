@@ -77,6 +77,10 @@ func (c *collector) peerHeartbeat(host string) (peer, error) {
 		for _, name := range []string{"5h", "7d"} {
 			if w, ok := b.Windows[name]; ok {
 				bud["claude_"+name] = w.Utilization
+				// carry the window's reset (RFC3339) so a collector's native join
+				// federates the SAME reset shape peer-beat.sh does — the hub shows
+				// every host's ↻ countdown, inner hosts included, from one field.
+				bud["claude_"+name+"_reset"] = w.ResetAt
 			}
 		}
 		bud["claude_gated"] = b.Gated
@@ -87,6 +91,7 @@ func (c *collector) peerHeartbeat(host string) (peer, error) {
 		for _, name := range []string{"5h", "7d"} {
 			if w, ok := windows[name].(map[string]any); ok {
 				bud["codex_"+name] = w["utilization"]
+				bud["codex_"+name+"_reset"] = w["reset_at"] // codex: epoch seconds
 			}
 		}
 		bud["codex_gated"] = cx["gated"]
