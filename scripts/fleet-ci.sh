@@ -51,6 +51,7 @@ for module in 8/collector http-mcp pilot adapters adapters/webrtc; do
     fi
   )
 done
+node --test "$ROOT/8/scripts/fleet-agent.test.mjs"
 (
   cd "$ROOT/8/web"
   npm ci

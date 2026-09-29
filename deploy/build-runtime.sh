@@ -22,7 +22,8 @@ for arm in 8 http-mcp pilot adapters; do
     cp "$source_dir/$path" "$dest_dir/$path"
   done < <(git -C "$source_dir" ls-files -z --cached --others --exclude-standard -- \
     '*.go' 'go.mod' 'go.sum' '**/go.mod' '**/go.sum' 'build.sh' 'contract/transports/transports.json')
-  (cd "$dest_dir" && GOOS=linux GOARCH="$arch" CGO_ENABLED=0 GOMAXPROCS=2 bash build.sh)
+  (cd "$dest_dir" && BUILD_SHA="$(git -C "$source_dir" rev-parse HEAD)" \
+    GOOS=linux GOARCH="$arch" CGO_ENABLED=0 GOMAXPROCS=2 bash build.sh)
   printf '%s %s dirty=%s\n' "$arm" "$(git -C "$source_dir" rev-parse HEAD)" \
     "$(test -n "$(git -C "$source_dir" status --porcelain)" && echo yes || echo no)" >>"$task_dir/source-manifest.txt"
 done

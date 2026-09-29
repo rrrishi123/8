@@ -9,6 +9,7 @@ import { Resources } from './components/Resources';
 import { PaneCockpit } from './components/PaneCockpit';
 import { PaneLive } from './components/PaneLive';
 import { BudgetHud } from './components/BudgetHud';
+import { FleetBuild } from './components/FleetBuild';
 import { Bench } from './components/Bench';
 import { Splitter, SideStack, useLocal } from './components/Dock';
 import { ThemePicker } from './components/ThemePicker';
@@ -182,6 +183,7 @@ export default function App() {
         <span className="mode">NORMAL</span>
         <span className="brand">8</span>
         <BudgetHud />
+        <FleetBuild />
         <span className={live ? 'live' : 'dead'}>{live ? '● LIVE' : '○ OFFLINE'}</span>
         <span>SESSIONS {sessions.length ? sessions.map((s) => s.id).join(', ') : '—'}</span>
         <span>CAPTURE {rows.length}</span>

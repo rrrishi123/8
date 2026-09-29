@@ -13,7 +13,7 @@ func TestHasUnsentInput(t *testing.T) {
 		"some ❯ arrow mid-line\n❯ hi":                   true,  // real prompt line has text
 		"no prompt here at all":                         false,
 		"...\n❯ Press up to edit queued messages\n────": false, // grey placeholder, not a draft
-		"...\n❯ Try \"how does X work?\"\n────":          false, // grey placeholder
+		"...\n❯ Try \"how does X work?\"\n────":         false, // grey placeholder
 		"...\n❯ ⏎ to send\n────":                        false, // grey hint
 	}
 	for screen, want := range cases {

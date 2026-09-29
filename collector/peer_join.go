@@ -92,7 +92,7 @@ func (c *collector) peerHeartbeat(host string) (peer, error) {
 		bud["codex_gated"] = cx["gated"]
 		bud["codex_observed_at"] = cx["observed_at"]
 	}
-	extra, err := json.Marshal(map[string]any{"budget": bud})
+	extra, err := json.Marshal(map[string]any{"budget": bud, "build": buildSHA})
 	if err != nil {
 		return peer{}, err
 	}

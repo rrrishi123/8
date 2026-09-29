@@ -43,6 +43,9 @@ func TestPeerJoinConfig(t *testing.T) {
 // payload fidelity, freshness, retries after a transient 503, and cancellation.
 func TestPeerJoinRoundTripAndRetry(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // federation must not scan the operator's real sensor logs
+	oldBuild := buildSHA
+	buildSHA = "1234567890123456789012345678901234567890"
+	t.Cleanup(func() { buildSHA = oldBuild })
 	const host = `codex-test-"peer`
 	peerMu.Lock()
 	previous := peers
@@ -124,6 +127,12 @@ func TestPeerJoinRoundTripAndRetry(t *testing.T) {
 		t.Fatalf("bad roster: %+v", roster)
 	}
 	p := roster.Peers[0]
+	var extra struct {
+		Build string `json:"build"`
+	}
+	if err := json.Unmarshal(p.Extra, &extra); err != nil || extra.Build != buildSHA {
+		t.Fatalf("heartbeat does not attest the running build: %s (%v)", p.Extra, err)
+	}
 	var hr hostRes
 	if err := json.Unmarshal(p.HostRes, &hr); err != nil || hr.CPUs < 1 || hr.OS == "" {
 		t.Fatalf("missing host metrics: %s (%v)", p.HostRes, err)
