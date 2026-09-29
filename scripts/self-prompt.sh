@@ -46,7 +46,12 @@ idle() {
 # plan/usage-limit gate: while a pane shows a limit/reset state, back off (don't
 # spam). The 240s poll keeps checking; once the ~4h limit window clears, the next
 # pass delivers its next line automatically — the fleet self-resumes on reset.
-limited() { tmux capture-pane -t "$1" -p 2>/dev/null | grep -qiE 'usage limit|resets? (at|in)|rate limit|out of (credit|tokens)|upgrade to increase'; }
+# limited — trust the WITNESS, not the pane text. The old check grepped the pane for
+# 'usage limit'/'rate limit'/'resets at' ANYWHERE on screen, so a pane merely
+# DISCUSSING limits (this conductor, all session) false-flagged as plan-limited and
+# backed off forever. The self-prompt panes are all claude (one mac account), so the
+# real signal is /budget's claude-gated verdict — the same source the phase gate trusts.
+limited() { curl -s -m3 http://127.0.0.1:7070/budget 2>/dev/null | grep -o '"gated":[a-z]*' | head -1 | grep -q true; }
 
 mkdir -p "$LEDGER"
 
