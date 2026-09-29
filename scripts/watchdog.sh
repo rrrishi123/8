@@ -16,6 +16,16 @@
 cd "$(dirname "$0")/.." || exit 1
 TABS_FILE="${TABS_FILE:-$HOME/.8-tabs.txt}"
 
+# Firefox liveness marker — mirror up.sh (the seat's owner). The profile is
+# EIGHT_FF_PROFILE (a host may override via ~/.8/up.env to a logged-in profile,
+# e.g. .ltqa-firefox-deepseek on this mac), else the default ~/.8/firefox-profile.
+# The old hardcoded 'firefox-profile' matched ONLY the default, so on a host with
+# an overridden profile the pgrep below never matched: the ALIVE branch (tab-save
+# + graceful collector-revive) never ran and the loop churned up.sh every cycle.
+# Derive the marker the same way up.sh does so we track whatever profile is live.
+[ -f "$HOME/.8/up.env" ] && . "$HOME/.8/up.env"
+PROFILE_MARK="$(basename "${EIGHT_FF_PROFILE:-$HOME/.8/firefox-profile}")"
+
 # SINGLETON (pid-owned mkdir-lock, dead-owner stolen) — exactly one watchdog.
 # up.sh spawns a watchdog per revive and a detached one can outlive for days;
 # without this guard they pile up (2 watchdogs racing revives, 2026-07-27).
@@ -70,7 +80,7 @@ run_up() {
 
 fails=0  # consecutive cycles with the Firefox PROCESS gone (process death, not socket silence)
 while true; do
-  if pgrep -f 'firefox.*firefox-profile' >/dev/null 2>&1; then
+  if pgrep -f "firefox.*$PROFILE_MARK" >/dev/null 2>&1; then
     fails=0
     # ALIVE (process exists). Opportunistically save tabs — a slow/failed getTree
     # here is just a busy socket, never a recycle trigger.
