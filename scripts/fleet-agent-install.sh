@@ -21,10 +21,13 @@ if [ ! -f "$config" ]; then
   chmod 600 "$config"
 fi
 runner="$state/run.sh"
+# LaunchAgents should execute from their private service directory, not a
+# Desktop/Documents checkout that macOS may suspend behind a privacy prompt.
+cp "$here/fleet-agent.mjs" "$state/fleet-agent.mjs"
 { echo '#!/usr/bin/env bash'
   echo 'set -euo pipefail'
   printf 'source %q\n' "$config"
-  printf 'exec %q %q\n' "$node_bin" "$here/fleet-agent.mjs"
+  printf 'exec %q %q\n' "$node_bin" "$state/fleet-agent.mjs"
 } >"$runner"
 chmod 700 "$runner"
 label="dev.eight.fleet.$mode"
