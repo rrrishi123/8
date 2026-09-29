@@ -25,6 +25,13 @@ import (
 
 const peerStaleAfter = 90 * time.Second
 
+// A peer silent THIS long is genuinely gone (a stopped beater, a
+// decommissioned host), not a just-missed beat — so it is pruned from the
+// roster instead of lingering forever as a stale ghost. The stale FLAG
+// (peerStaleAfter) still rides out momentary misses and restarts; this only
+// drops what has been dead far past any recovery window.
+const peerDropAfter = 15 * time.Minute
+
 type peer struct {
 	Host      string          `json:"host"`
 	At        string          `json:"at"` // last heartbeat (RFC3339)
@@ -143,8 +150,12 @@ func (c *collector) handlePeers(w http.ResponseWriter, r *http.Request) {
 		Stale bool `json:"stale"`
 	}
 	out := make([]view, 0, len(peers))
-	for _, p := range peers {
+	for host, p := range peers {
 		age := time.Since(p.lastBeat)
+		if age > peerDropAfter {
+			delete(peers, host) // dead far past any recovery window — prune, don't render a stale ghost
+			continue
+		}
 		out = append(out, view{peer: *p, AgeS: int(age.Seconds()), Stale: age > peerStaleAfter})
 	}
 	peerMu.Unlock()
