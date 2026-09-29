@@ -137,7 +137,14 @@ while true; do
   # PEER-BEAT liveness — keep this host's federation heartbeats alive so the
   # portal never loses a node to a crashed beat (same per-host singleton lock the
   # beat holds). cwd here is the 8 repo root (cd at top).
-  for spec in "mac:" "colima:HOSTRES_CMD=$(pwd)/scripts/colima-hostres.sh"; do
+  # per-host override: ~/.8/peer-beat.env may set BEAT_SPECS so a NON-HUB host
+  # (e.g. omarchy) revives ITS OWN beat to the hub's address — the rendezvous/IP
+  # lives in that host-local env, never in this public repo. Default = the mac +
+  # colima hub pair. (Fixes: omarchy's beat had no supervisor entry, so a crash/
+  # reboot dropped it from /peers with nothing to revive it.)
+  _specs="mac: colima:HOSTRES_CMD=$(pwd)/scripts/colima-hostres.sh"
+  [ -f "$HOME/.8/peer-beat.env" ] && . "$HOME/.8/peer-beat.env"
+  for spec in ${BEAT_SPECS:-$_specs}; do
     ph="${spec%%:*}"; extra="${spec#*:}"; lock="/tmp/8-peerbeat.$ph.lockdir"
     if [ -d "$lock" ] && kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null; then continue; fi
     echo "[watchdog $(date +%H:%M:%S)] peer-beat $ph down -> reviving"
