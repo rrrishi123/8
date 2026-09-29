@@ -70,6 +70,18 @@ export function BudgetHud() {
     }
     setPoking(false);
   };
+  // PER-PEER refresh: poke the PEER's own collector over Tailscale (collectors send
+  // Access-Control-Allow-Origin:*, so the cross-origin POST is allowed) so it re-taps
+  // its budget; the fresh reading arrives on that peer's next heartbeat, not this
+  // response. Answers "no refresh button for other systems' usages."
+  const [pokingPeer, setPokingPeer] = useState('');
+  const pokePeer = async (peer: BudgetPeer) => {
+    if (!peer.addr || pokingPeer) return;
+    setPokingPeer(peer.host);
+    try { await fetch(`${peer.addr}/budget/poke?provider=both`, { method: 'POST' }); }
+    catch { /* refreshed reading lands via heartbeat, not here */ }
+    setPokingPeer('');
+  };
   useEffect(() => {
     let dead = false;
     const controller = new AbortController();
@@ -122,6 +134,12 @@ export function BudgetHud() {
         <span className="hud-host" data-budget-host={peer.host} key={peer.host}>
           <span className="hud-host-head" title={`/peers · ${peer.host} reports this snapshot · heartbeat ${ago(peer.age_s)} ago`}>
             <b>{peer.host}</b><span className="hud-host-source">peer</span>
+            {peer.addr && (
+              <button className="hud-renew" title={`refresh ${peer.host}'s usage — poke its collector; the fresh reading arrives on its next heartbeat`}
+                onClick={(e) => { e.stopPropagation(); pokePeer(peer); }}>
+                <span className={pokingPeer === peer.host ? 'hud-spin' : ''}>⟳</span>
+              </button>
+            )}
             {(peer.stale || errors.peers) && <span className="hud-stale">peer stale</span>}
           </span>
           {(['claude', 'codex'] as const).map((provider) => {

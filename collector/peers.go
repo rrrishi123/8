@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -32,6 +33,7 @@ type peer struct {
 	Manifest  json.RawMessage `json:"manifest,omitempty"`
 	Thumbnail string          `json:"thumbnail,omitempty"` // data-URI or url
 	Extra     json.RawMessage `json:"extra,omitempty"`
+	Addr      string          `json:"addr,omitempty"` // the peer's collector base URL (from its beat's source IP), for a cross-host budget poke — the per-peer refresh
 	lastBeat  time.Time
 }
 
@@ -58,6 +60,12 @@ func (c *collector) handlePeers(w http.ResponseWriter, r *http.Request) {
 		p.lastBeat = now
 		if p.Actor == "" {
 			p.Actor = r.Header.Get("X-8-Actor")
+		}
+		// capture the peer's source IP so the cockpit can poke ITS collector's
+		// /budget/poke (the per-peer refresh). Standard collector port :7070; a
+		// beat can override via extra if a host maps a different port.
+		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil && host != "" {
+			p.Addr = "http://" + net.JoinHostPort(host, "7070")
 		}
 		peerMu.Lock()
 		peers[p.Host] = &p

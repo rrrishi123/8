@@ -11,6 +11,7 @@ export type BudgetResponse = {
 };
 export type BudgetPeer = {
   host: string; age_s: number; stale: boolean;
+  addr?: string; // the peer's collector base URL (from /peers), for a cross-host budget poke
   extra?: { budget?: Record<string, number | boolean | string | null> };
 };
 export type BudgetHost = { host: string; os?: string };
