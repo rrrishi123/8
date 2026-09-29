@@ -5,7 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${EIGHT_REPO:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 COLLECTOR="$REPO/8/collector/collector"
 WEB="$REPO/8/web"
-export EIGHT_ENGINE=chrome
+# Native discovery prefers Chrome and falls back to Firefox only if Chrome is
+# absent. Preserve an explicit operator choice; do not suppress that fallback.
+export EIGHT_ENGINE="${EIGHT_ENGINE:-}"
 
 [ -x "$COLLECTOR" ] || bash "$REPO/8/build.sh"
 # Native up discovers the browser, holds its CDP broker, then starts the
