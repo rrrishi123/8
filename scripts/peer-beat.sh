@@ -12,7 +12,9 @@
 # Detached:  nohup ./scripts/peer-beat.sh >/tmp/peer-beat.log 2>&1 &
 set -uo pipefail
 RENDEZVOUS="${RENDEZVOUS:-http://127.0.0.1:7070}"    # the collector the Firefox UI reads /peers from
-SELF="${SELF:-http://127.0.0.1:7070}"                # this host's own collector, for /hostres
+# A remotely sampled host has no implicit local collector. Otherwise its hostres
+# gets combined with the Mac's budgets, build and tabs under the remote name.
+if [ -n "${HOSTRES_CMD:-}" ]; then SELF="${SELF-}"; else SELF="${SELF:-http://127.0.0.1:7070}"; fi
 HOST="${PEER_HOST:-$(hostname -s 2>/dev/null || hostname)}"
 INTERVAL="${INTERVAL:-30}"                            # < peerStaleAfter (90s), with margin
 
@@ -37,7 +39,7 @@ while :; do
   # the ONE place that shows every host+provider's 5h/7d limits — the number that
   # decides who can be given work. Each host reports its OWN account (omarchy's is
   # a different Claude account than mac's; codex is a separate provider).
-  if [ "${SKIP_BUDGET:-0}" = 1 ]; then bud='{}'   # host with no Claude account of its OWN that we sense (e.g. colima = browser seats + a cloud Claude read elsewhere)
+  if [ -z "$SELF" ] || [ "${SKIP_BUDGET:-0}" = 1 ]; then bud='{}'   # no sensor for this host's own account
   else
   # jq preserves null (unknown) providers instead of discarding the OTHER
   # provider's reading when one has no sensor. It also removes the Python dep.
@@ -55,15 +57,19 @@ while :; do
   fi
   # BUILD SHA (T3 parity): the running collector's provenance, so /peers self-attests
   # each host's version and the hub flags drift with no human poking.
-  build=$(curl -s -m 4 "$SELF/health" 2>/dev/null | jq -r '.build // ""' 2>/dev/null)
+  build=''
+  [ -z "$SELF" ] || build=$(curl -s -m 4 "$SELF/health" 2>/dev/null | jq -r '.build // ""' 2>/dev/null)
   # MANIFEST (federate this host's panes/tabs so /resolve host-qualifies them ACROSS
   # hosts): carry the reconciled LIVE tab list, so a host's tmux panes + browser tabs
   # show on the hub as <host>/<seat>/<tab>, not only the local ones. Trimmed to live +
   # essential fields to bound the 30s beat.
-  man=$(curl -s -m 4 "$SELF/manifest" 2>/dev/null | jq -c '{tabs:[.tabs[]|select(.status=="live")|{uid,ctx,url,session,opened_by,why,status}]}' 2>/dev/null)
+  man='{}'
+  [ -z "$SELF" ] || man=$(curl -s -m 4 "$SELF/manifest" 2>/dev/null | jq -c '{tabs:[.tabs[]|select(.status=="live")|{uid,ctx,url,session,opened_by,why,status}]}' 2>/dev/null)
   [ -n "$man" ] || man='{}'
-  body=$(printf '{"host":"%s","actor":"peer-beat","hostres":%s,"manifest":%s,"extra":{"budget":%s,"build":"%s"}}' "$HOST" "$hr" "$man" "$bud" "$build")
+  body=$(jq -cn --arg host "$HOST" --argjson hr "$hr" --argjson man "$man" --argjson bud "$bud" --arg build "$build" \
+    '{host:$host,actor:"peer-beat",hostres:$hr,manifest:$man,extra:{budget:$bud,build:$build}}')
   curl -s -m 6 "$RENDEZVOUS/peers" -H 'Content-Type: application/json' -H "X-8-Actor: peer-beat/$HOST" -d "$body" >/dev/null 2>&1 \
     || echo "[peer-beat $(date +%H:%M:%S)] beat to $RENDEZVOUS FAILED (unreachable?)"
+  [ "${1:-}" != --once ] || break
   sleep "$INTERVAL"
 done
