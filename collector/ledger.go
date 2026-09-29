@@ -349,13 +349,29 @@ func pickNextForPane(items []workItem, pane string, done map[int64]bool) int {
 // socket — /tmp/tmux-<uid>, not HOME-scoped — and must never touch live panes,
 // the #401/#394 testing near-miss made law). onDead, when non-nil, runs if the
 // pane dies mid-settle (the TOCTOU tail).
-func sendToPane(pane, msg string, onDead func()) bool {
+func sendToPane(pane, msg string, onDead func()) bool { return sendPane(pane, msg, onDead, true) }
+
+// sendPane — type msg into a tmux pane. idleGuard=true (the default, via sendToPane)
+// refuses a BUSY pane, protecting a working mind from the auto-loop's breath.
+// idleGuard=false is the OPERATOR's explicit FORCE: send even into a busy pane —
+// Claude Code queues it as a follow-up input, codex likewise — so a /panes/send
+// broadcast reaches everyone, not only the idle few. paneAlive is ALWAYS required:
+// never type into a dead pane (the dead-pane and menu-state risk is the operator's
+// to accept when they force).
+func sendPane(pane, msg string, onDead func(), idleGuard bool) bool {
 	if os.Getenv("EIGHT_NO_SUMMON") == "1" {
 		return false
 	}
 	epNoteInjected(msg) // #645: the system's breath must never tick the operator's clock
 	tb := tmuxBin()
-	if tb == "" || !paneIdle(pane) {
+	if tb == "" {
+		return false
+	}
+	if idleGuard {
+		if !paneIdle(pane) {
+			return false
+		}
+	} else if !paneAlive(pane) {
 		return false
 	}
 	if err := tmuxRun(tb, "send-keys", "-t", pane, "-l", msg); err != nil || !paneAlive(pane) {

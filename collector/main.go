@@ -1399,6 +1399,7 @@ func (c *collector) handlePanesSend(w http.ResponseWriter, r *http.Request) {
 		Panes []string `json:"panes"`
 		All   bool     `json:"all"`
 		Text  string   `json:"text"`
+		Force bool     `json:"force"` // operator override: send even into BUSY panes (they queue it) — not only idle ones
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Text) == "" {
 		http.Error(w, `{"error":"need {text, and panes[] or all:true}"}`, http.StatusBadRequest)
@@ -1420,7 +1421,7 @@ func (c *collector) handlePanesSend(w http.ResponseWriter, r *http.Request) {
 	out := make([]res, 0, len(targets))
 	n := 0
 	for _, p := range targets {
-		ok := sendToPane(p, req.Text, nil)
+		ok := sendPane(p, req.Text, nil, !req.Force) // force -> idleGuard off: reach BUSY panes too (they queue it)
 		if ok {
 			n++
 		}

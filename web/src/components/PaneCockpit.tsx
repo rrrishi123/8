@@ -15,6 +15,7 @@ export function PaneCockpit({ cardKey }: { cardKey?: string } = {}) {
   const [busy, setBusy] = useState(false);
   const [res, setRes] = useState<PaneSendResult | null>(null);
   const [err, setErr] = useState('');
+  const [force, setForce] = useState(false);
 
   useEffect(() => {
     let dead = false;
@@ -44,7 +45,7 @@ export function PaneCockpit({ cardKey }: { cardKey?: string } = {}) {
     if (!text.trim() || busy) return;
     setBusy(true); setErr(''); setRes(null);
     try {
-      setRes(await panesSend(text, chosen, allSelected || chosen.length === 0));
+      setRes(await panesSend(text, chosen, allSelected || chosen.length === 0, force));
     } catch (e) {
       const msg = String(e instanceof Error ? e.message : e);
       // #814 root-cause guard: a NetworkError from a long-open tab is almost
@@ -84,6 +85,9 @@ export function PaneCockpit({ cardKey }: { cardKey?: string } = {}) {
         onChange={(e) => setText(e.target.value)}
       />
       <div className="pc-actions">
+        <label className="pc-force" title="force: send even into BUSY/working panes — Claude Code & codex queue it as a follow-up (default reaches only idle panes)">
+          <input type="checkbox" checked={force} onChange={() => setForce((f) => !f)} /> force
+        </label>
         <button className="pc-send" disabled={busy || !text.trim()} onClick={send}>
           {busy ? 'sending…' : `send → ${allSelected || chosen.length === 0 ? 'ALL' : chosen.join(' ')}`}
         </button>

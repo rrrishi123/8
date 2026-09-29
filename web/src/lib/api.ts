@@ -135,10 +135,10 @@ export async function identity(): Promise<PaneIdentity[]> {
   return j.identity || [];
 }
 export interface PaneSendResult { sent: number; total: number; targets: { pane: string; sent: boolean }[] }
-export async function panesSend(text: string, panes: string[], all: boolean): Promise<PaneSendResult> {
+export async function panesSend(text: string, panes: string[], all: boolean, force = false): Promise<PaneSendResult> {
   const r = await fetch(`${BASE}/panes/send`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'X-8-Actor': 'cockpit' },
-    body: JSON.stringify(all ? { all: true, text } : { panes, text }),
+    body: JSON.stringify(all ? { all: true, text, force } : { panes, text, force }),
   });
   if (!r.ok) throw new Error(`${r.status} ${r.status === 404 ? '— /panes/send not deployed yet (restart the collector)' : await r.text()}`);
   return r.json();
