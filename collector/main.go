@@ -3759,6 +3759,13 @@ func (c *collector) handleStream(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, `{"error":"no live stream for this session"}`, http.StatusNotFound)
 }
 
+// buildSHA is stamped at link time (build.sh: -ldflags "-X main.buildSHA=<git HEAD>").
+// It is the RUNNING binary's provenance — the T3 parity contract. Empty in an ad-hoc
+// `go build`; build.sh and build-runtime.sh both set it. Exposed at /health and
+// carried by peer-beat as extra.build so every host self-attests its version and the
+// hub can flag drift without a human poking (T3 → feeds T14's re-attestation).
+var buildSHA string
+
 func (c *collector) handleHealth(w http.ResponseWriter, r *http.Request) {
 	brokers := c.brokerList()
 	ids := make([]string, len(brokers))
@@ -3766,7 +3773,7 @@ func (c *collector) handleHealth(w http.ResponseWriter, r *http.Request) {
 		ids[i] = b.id
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"alive": true, "sessions": ids})
+	json.NewEncoder(w).Encode(map[string]any{"alive": true, "sessions": ids, "build": buildSHA})
 }
 
 // handleType types a string into the focused element of a context via REAL

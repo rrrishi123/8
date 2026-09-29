@@ -10,7 +10,10 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")" && pwd)"
 cd "$root/collector"
-go build -o collector .
+# stamp the running binary's provenance (T3 parity contract). build-runtime.sh
+# copies source WITHOUT .git, so it passes BUILD_SHA explicitly for the image.
+sha="${BUILD_SHA:-$(git -C "$root" rev-parse HEAD 2>/dev/null || echo unknown)}"
+go build -ldflags "-X main.buildSHA=$sha" -o collector .
 echo "built: $root/collector/collector"
 echo "  serve:  ./collector -listen :7070 ...   (the panopticon)"
 echo "  boot:   ./collector up                  (discover substrate + start bodies, degrade if absent)"

@@ -51,7 +51,10 @@ while :; do
   }' 2>/dev/null)
   [ -n "$bud" ] || bud='{}'
   fi
-  body=$(printf '{"host":"%s","actor":"peer-beat","hostres":%s,"extra":{"budget":%s}}' "$HOST" "$hr" "$bud")
+  # BUILD SHA (T3 parity): the running collector's provenance, so /peers self-attests
+  # each host's version and the hub flags drift with no human poking.
+  build=$(curl -s -m 4 "$SELF/health" 2>/dev/null | jq -r '.build // ""' 2>/dev/null)
+  body=$(printf '{"host":"%s","actor":"peer-beat","hostres":%s,"extra":{"budget":%s,"build":"%s"}}' "$HOST" "$hr" "$bud" "$build")
   curl -s -m 6 "$RENDEZVOUS/peers" -H 'Content-Type: application/json' -H "X-8-Actor: peer-beat/$HOST" -d "$body" >/dev/null 2>&1 \
     || echo "[peer-beat $(date +%H:%M:%S)] beat to $RENDEZVOUS FAILED (unreachable?)"
   sleep "$INTERVAL"
