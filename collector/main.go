@@ -4715,6 +4715,7 @@ func main() {
 	mux.HandleFunc("/claim", c.handleClaim)       // an agent leases a tab (verify/falsify: is anyone using it?)
 	mux.HandleFunc("/dedup", c.handleDedup)       // same-URL duplicates; close the unclaimed ones
 	mux.HandleFunc("/manifest", c.handleManifest) // durable tab manifest: how-many/what/where/who/why/when
+	mux.HandleFunc("/resolve", c.handleResolve)   // T1: host/browser/tab addressing — union of manifest+nodes+peers, the one shared referent
 	mux.HandleFunc("/tmuxpane", c.handleTmuxPane)
 	mux.HandleFunc("/type", c.handleType)
 	mux.HandleFunc("/collector/hostres", c.handleHostRes) // this host's cpu/mem/load/uptime, for cross-host observability
