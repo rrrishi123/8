@@ -1,31 +1,20 @@
 import { useEffect, useState } from 'react';
+import { localBudgetHost, observedAge, peerProvider, remoteBudgetPeers, type BudgetHost, type BudgetPeer, type BudgetProvider, type BudgetResponse, type ProviderName } from '../lib/budget';
+import './BudgetHud.css';
 
 const BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
 
-// BUDGET HUD — always visible in the statusline. TWO budget families, clearly
-// segregated: CLAUDE (anthropic-ratelimit-unified-* headers observed by a tapped
-// pane) and CODEX (rollout rate_limits via codex-budget.sh). Each segment shows
-// its own phase (research=work hard / conserve=hold heavy work / gated=hard cap),
-// the 5h bar with the research ceiling (50%) and hard cap (95%) marked, 5h/7d,
-// and how fresh the reading is. ⟳ renews BOTH via POST /budget/poke?provider=both
-// (each provider's refresh is an OBSERVED response; refreshed:false shows why).
-type Win = { utilization: number; status?: string; reset_in_s?: number };
-type Prov = { phase: string; research_ok: boolean; research_ceil?: number; cap?: number; five_h_util?: number;
-  windows: Record<string, Win | null>; gated: boolean };
-type Resp = {
-  budget?: Prov | null; // legacy key (claude)
-  providers?: { claude: Prov | null; codex: Prov | null };
-  observed_age_s?: number | null; codex_observed_age_s?: number | null; sensors_armed?: number;
-  refreshed?: { claude: boolean; codex: boolean }; reasons?: Record<string, string>; note?: string;
-};
+// Local provider responses and peer heartbeat snapshots stay separately named.
+// Refresh requests apply only to the local collector; a heartbeat is never
+// mistaken for a fresh provider observation.
 type Renew = { at: number; refreshed: { claude: boolean; codex: boolean }; reasons: Record<string, string> };
 
 const hhm = (s?: number | null) => s == null ? '' : s > 3600 ? `${Math.floor(s / 3600)}h${Math.round((s % 3600) / 60)}m` : `${Math.round(s / 60)}m`;
 const ago = (s: number) => s < 60 ? `${s}s` : hhm(s);
-const pct = (u?: number | null) => `${((u ?? 0) * 100).toFixed(0)}%`;
+const pct = (u?: number | null) => u == null ? '—' : `${(u * 100).toFixed(0)}%`;
 
 // One provider's reading. phase: the provider's own; gated overrides (red).
-function Segment({ label, p, age, why }: { label: string; p: Prov | null; age?: number | null; why?: string }) {
+function Segment({ label, p, age, why }: { label: string; p: BudgetProvider | null; age?: number | null; why?: string }) {
   if (!p || !p.windows) {
     return (
       <span className="hud-seg hud-seg-none" title={why || `${label}: no reading yet`}>
@@ -35,44 +24,46 @@ function Segment({ label, p, age, why }: { label: string; p: Prov | null; age?: 
       </span>
     );
   }
-  const five = p.five_h_util ?? p.windows['5h']?.utilization ?? 0;
-  const sevenD = p.windows['7d']?.utilization ?? 0;
+  const five = p.five_h_util ?? p.windows['5h']?.utilization;
+  const sevenD = p.windows['7d']?.utilization;
   const ceil = p.research_ceil ?? 0.5, cap = p.cap ?? 0.95;
   const phase = p.gated ? 'gated' : (p.phase === 'research' ? 'research' : 'conserve');
   const stale = age == null || age > 900;
   const resets = Object.values(p.windows).find((w) => w && (w.status === 'rejected' || (w.utilization ?? 0) >= cap))?.reset_in_s;
-  const tip = `${label} · 5h ${pct(five)} · research ceiling ${pct(ceil)} · hard cap ${pct(cap)} · 7d ${pct(sevenD)} · ${age == null ? 'never observed' : `observed ${ago(age)} ago`}${why ? ` · not refreshed: ${why}` : ''}`;
+  const tip = `${label} · ${phase} · 5h ${pct(five)} · research ceiling ${pct(ceil)} · hard cap ${pct(cap)} · 7d ${pct(sevenD)} · ${age == null ? 'observation time unavailable — last-known' : `observed ${ago(age)} ago`}${resets != null ? ` · resets ${hhm(resets)}` : ''}${why ? ` · not refreshed: ${why}` : ''}`;
   return (
     <span className={`hud-seg hud-seg-${phase}`} title={tip}>
       <span className="hud-tag">{label}</span>
-      <span className={`hud-pill hud-pill-${phase}`}>{phase.toUpperCase()}</span>
-      <span className="hud-bar" aria-hidden>
-        <span className="hud-fill" style={{ width: `${Math.min(100, five * 100)}%` }} />
-        <span className="hud-mark hud-ceil" style={{ left: `${ceil * 100}%` }} />
-        <span className="hud-mark hud-cap" style={{ left: `${cap * 100}%` }} />
-      </span>
+      <span className="hud-phase" aria-label={phase} title={phase}>●</span>
       <span className="hud-num">5h {pct(five)}</span>
       <span className="hud-num dim">7d {pct(sevenD)}</span>
-      {phase === 'gated' && resets != null && <span className="hud-gated">⏸ resets {hhm(resets)}</span>}
       {stale
-        ? <span className="hud-stale" title="no recent observed response — last-known">·stale{age != null ? ` ${hhm(age)}` : ''}</span>
-        : <span className="hud-obs">observed {ago(age as number)} ago</span>}
+        ? <span className="hud-stale" title="no recent observed response — last-known">stale{age != null ? ` ${hhm(age)}` : ''}</span>
+        : <span className="hud-obs" title={`observed ${ago(age as number)} ago`}>{ago(age as number)} ago</span>}
       {why && <span className="hud-why" title={why}>⚠ {why}</span>}
     </span>
   );
 }
 
 export function BudgetHud() {
-  const [r, setR] = useState<Resp | null>(null);
+  const [r, setR] = useState<BudgetResponse | null>(null);
+  const [host, setHost] = useState<BudgetHost | null>(null);
+  const [peers, setPeers] = useState<BudgetPeer[]>([]);
+  const [errors, setErrors] = useState<Record<string, boolean>>({});
+  const [now, setNow] = useState(Date.now());
+  const [budgetAt, setBudgetAt] = useState(Date.now());
   const [poking, setPoking] = useState(false);
   const [renew, setRenew] = useState<Renew | null>(null);
   const poke = async () => {
     if (poking) return;
     setPoking(true);
     try {
-      const j: Resp = await (await fetch(`${BASE}/budget/poke?provider=both`, { method: 'POST' })).json();
+      const response = await fetch(`${BASE}/budget/poke?provider=both`, { method: 'POST' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const j: BudgetResponse = await response.json();
       // update BOTH segments from the returned providers (legacy `budget` kept in sync)
       setR((p) => ({ ...(p || {}), ...j, budget: j.providers?.claude ?? j.budget ?? null }));
+      setBudgetAt(Date.now());
       setRenew({ at: Date.now(), refreshed: j.refreshed ?? { claude: false, codex: false }, reasons: j.reasons ?? {} });
     } catch (e) {
       setRenew({ at: Date.now(), refreshed: { claude: false, codex: false }, reasons: { claude: `poke failed: ${e}`, codex: `poke failed: ${e}` } });
@@ -81,23 +72,65 @@ export function BudgetHud() {
   };
   useEffect(() => {
     let dead = false;
-    const tick = () => fetch(`${BASE}/budget`).then((x) => x.json()).then((j) => { if (!dead) setR(j); }).catch(() => {});
-    tick(); const t = setInterval(tick, 4000);
-    return () => { dead = true; clearInterval(t); };
+    const controller = new AbortController();
+    const get = async (path: string) => {
+      const response = await fetch(`${BASE}/${path}`, { signal: controller.signal });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    };
+    get('hostres').then((j) => { if (!dead) setHost(j); }).catch(() => {});
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      await Promise.all(['budget', 'peers'].map(async (path) => {
+        try {
+          const j = await get(path);
+          if (dead) return;
+          if (path === 'budget') { setR(j); setBudgetAt(Date.now()); }
+          else setPeers(j.peers ?? []);
+          setErrors((before) => ({ ...before, [path]: false }));
+        } catch {
+          if (!dead) setErrors((before) => ({ ...before, [path]: true }));
+        }
+      }));
+      if (!dead) timer = setTimeout(tick, 4000);
+    };
+    tick();
+    const clock = setInterval(() => setNow(Date.now()), 1000);
+    return () => { dead = true; controller.abort(); clearTimeout(timer); clearInterval(clock); };
   }, []);
   const claude = r?.providers?.claude ?? r?.budget ?? null; // back-compat when providers is absent
   const codex = r?.providers ? r.providers.codex : null;
-  const whyOf = (k: 'claude' | 'codex') => renew && !renew.refreshed[k] ? (renew.reasons[k] || 'not refreshed') : undefined;
+  const whyOf = (k: ProviderName) => renew && !renew.refreshed[k] ? (renew.reasons[k] || 'not refreshed') : undefined;
+  const localAge = (p: BudgetProvider | null, age?: number | null) => observedAge(p?.observed_at, now) ?? (age == null ? null : age + Math.max(0, Math.floor((now - budgetAt) / 1000)));
+  const hostName = localBudgetHost(host);
   return (
-    <span className="hud hud-dual" title={`budget families, segregated · ${r?.sensors_armed ?? 0} claude sensors armed`}>
-      <Segment label="CLAUDE" p={claude} age={r?.observed_age_s} why={whyOf('claude')} />
-      <span className="hud-div" aria-hidden />
-      <Segment label="CODEX" p={codex} age={r?.codex_observed_age_s} why={whyOf('codex')} />
-      <button className="hud-refresh" disabled={poking}
-        title="renew BOTH readings: a tapped trivial claude call + codex-budget.sh --poke, each an observed response"
-        onClick={(e) => { e.stopPropagation(); poke(); }}>
-        <span className={poking ? 'hud-spin' : ''}>⟳</span>
-      </button>
+    <span className="hud hud-dual hud-fleet" aria-label="Budgets by host">
+      <span className="hud-host" data-budget-host={hostName}>
+        <span className="hud-host-head" title={`${host?.host ?? 'local collector'} · /budget · ${r?.sensors_armed ?? 0} Claude sensors armed`}>
+          <b>{hostName}</b><span className="hud-host-source">local</span>
+          {errors.budget && <span className="hud-stale">budget unavailable</span>}
+          <button className="hud-refresh" disabled={poking} aria-label={`Refresh ${hostName} budgets`}
+            title={`renew ${hostName} Claude + Codex only; peer readings arrive by heartbeat`}
+            onClick={(e) => { e.stopPropagation(); poke(); }}>
+            <span className={poking ? 'hud-spin' : ''}>⟳</span>
+          </button>
+        </span>
+        <Segment label="CLAUDE" p={claude} age={localAge(claude, r?.observed_age_s)} why={whyOf('claude')} />
+        <Segment label="CODEX" p={codex} age={localAge(codex, r?.codex_observed_age_s)} why={whyOf('codex')} />
+      </span>
+      {remoteBudgetPeers(peers, host).map((peer) => (
+        <span className="hud-host" data-budget-host={peer.host} key={peer.host}>
+          <span className="hud-host-head" title={`/peers · ${peer.host} reports this snapshot · heartbeat ${ago(peer.age_s)} ago`}>
+            <b>{peer.host}</b><span className="hud-host-source">peer</span>
+            {(peer.stale || errors.peers) && <span className="hud-stale">peer stale</span>}
+          </span>
+          {(['claude', 'codex'] as const).map((provider) => {
+            const reading = peerProvider(peer, provider);
+            return <Segment key={provider} label={provider.toUpperCase()} p={reading} age={observedAge(reading?.observed_at, now)} />;
+          })}
+        </span>
+      ))}
+      {errors.peers && <span className="hud-stale" role="status">peers unavailable</span>}
     </span>
   );
 }
