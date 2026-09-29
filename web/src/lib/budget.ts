@@ -2,6 +2,7 @@ export type BudgetWindow = { utilization: number; status?: string; reset_in_s?: 
 export type BudgetProvider = {
   phase?: string; research_ok?: boolean; research_ceil?: number; cap?: number; five_h_util?: number;
   windows: Record<string, BudgetWindow | null>; gated?: boolean; observed_at?: string;
+  pane_reset?: string; // codex: its TUI-advertised reset ("2:45 AM") when the rollout windows are null
 };
 export type BudgetResponse = {
   budget?: BudgetProvider | null;
@@ -39,8 +40,19 @@ export function peerProvider(peer: BudgetPeer, provider: ProviderName): BudgetPr
   if (five == null && seven == null) return null;
   const gated = budget[`${provider}_gated`] === true || (five ?? 0) >= .95 || (seven ?? 0) >= .95;
   const observed = budget[`${provider}_observed_at`];
+  // a beat may carry each window's reset (absolute — ISO string or epoch seconds); the
+  // countdown is computed live so it stays right even as the heartbeat ages.
+  const resetIn = (w: string): number | undefined => {
+    const at = budget[`${provider}_${w}_reset`];
+    if (typeof at === 'string') { const t = Date.parse(at); if (Number.isFinite(t)) return Math.max(0, Math.floor((t - Date.now()) / 1000)); }
+    if (typeof at === 'number' && Number.isFinite(at)) return Math.max(0, Math.floor(at - Date.now() / 1000));
+    return undefined;
+  };
   return {
-    windows: { '5h': five == null ? null : { utilization: five }, '7d': seven == null ? null : { utilization: seven } },
+    windows: {
+      '5h': five == null ? null : { utilization: five, reset_in_s: resetIn('5h') },
+      '7d': seven == null ? null : { utilization: seven, reset_in_s: resetIn('7d') },
+    },
     five_h_util: five ?? undefined, gated,
     phase: gated ? 'gated' : five != null && five < .5 ? 'research' : 'conserve',
     observed_at: typeof observed === 'string' ? observed : undefined,

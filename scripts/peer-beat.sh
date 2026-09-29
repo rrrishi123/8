@@ -45,9 +45,11 @@ while :; do
     claude_5h: .budget.windows["5h"].utilization,
     claude_7d: .budget.windows["7d"].utilization,
     claude_gated: .budget.gated, claude_observed_at: .budget.observed_at,
+    claude_5h_reset: .budget.windows["5h"].reset_at, claude_7d_reset: .budget.windows["7d"].reset_at,
     codex_5h: .providers.codex.windows["5h"].utilization,
     codex_7d: .providers.codex.windows["7d"].utilization,
-    codex_gated: .providers.codex.gated, codex_observed_at: .providers.codex.observed_at
+    codex_gated: .providers.codex.gated, codex_observed_at: .providers.codex.observed_at,
+    codex_5h_reset: .providers.codex.windows["5h"].reset_at, codex_7d_reset: .providers.codex.windows["7d"].reset_at
   }' 2>/dev/null)
   [ -n "$bud" ] || bud='{}'
   fi

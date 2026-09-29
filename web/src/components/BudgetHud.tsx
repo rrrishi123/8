@@ -37,7 +37,9 @@ function Segment({ label, p, age, why }: { label: string; p: BudgetProvider | nu
       <span className="hud-tag">{label}</span>
       <span className="hud-phase" aria-label={phase} title={phase}>●</span>
       <span className="hud-num">5h {pct(five)}</span>
-      {fiveReset != null && <span className="hud-reset" title={`5h window resets in ${hhm(fiveReset)} — plan ahead`}>↻{hhm(fiveReset)}</span>}
+      {fiveReset != null
+        ? <span className="hud-reset" title={`5h window resets in ${hhm(fiveReset)} — plan ahead`}>↻{hhm(fiveReset)}</span>
+        : p.pane_reset && <span className="hud-reset" title={`resets ${p.pane_reset} (from the pane)`}>↻{p.pane_reset}</span>}
       <span className="hud-num dim">7d {pct(sevenD)}</span>
       {sevenReset != null && <span className="hud-reset dim" title={`7d window resets in ${hhm(sevenReset)}`}>↻{hhm(sevenReset)}</span>}
       {stale
