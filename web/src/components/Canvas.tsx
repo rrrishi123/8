@@ -420,8 +420,25 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     el.addEventListener('pointermove', onHover, { passive: true });
     const onWheel = (e: WheelEvent) => {
       const t = e.target as HTMLElement;
-      // fixed chrome (minimap, perspective bar, cards menu) owns its own wheel.
-      if (t.closest('.minimap, .persp-bar, .cards-menu')) return;
+      // fixed chrome: the perspective bar and cards menu own their own wheel.
+      if (t.closest('.persp-bar, .cards-menu')) return;
+      // MINIMAP wheel = ZOOM (operator's split: minimap-scroll zooms, canvas-scroll
+      // pans/swipes). The minimap is the overview, so scrolling it zooms the main
+      // view about the viewport centre — no ctrl/meta needed here.
+      if (t.closest('.minimap')) {
+        e.preventDefault();
+        if (dragging) return;
+        lastWheel = e.timeStamp;
+        const c = camRef.current;
+        const nz = clampZ(c.z * (e.deltaY < 0 ? 1.06 : 0.94)); const k = nz / c.z;
+        const vw = vpRef.current.w || 1200, vh = vpRef.current.h || 800;
+        const mx = vw / 2, my = vh / 2;              // zoom about the viewport centre
+        const next = { z: nz, x: mx - (mx - c.x) * k, y: my - (my - c.y) * k };
+        camRef.current = next; gestureTs.current = performance.now(); applyCam(next);
+        if (wheelTimer) clearTimeout(wheelTimer);
+        wheelTimer = window.setTimeout(() => setCam(camRef.current), 140);
+        return;
+      }
       // a card body scrolls ITSELF only after the pointer has RESTED in it past
       // CARD_DWELL_MS; otherwise the canvas scrolls (the default) — so you're
       // never stuck unable to scroll the map over a card.
@@ -456,7 +473,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     };
     const onDown = (e: PointerEvent) => {
       if ((e.target as HTMLElement).closest('button, input, select, textarea, a, .card-b.scroll, .card-acts, .seeing-tabs, .tab-pick, .series-row, .rec-btn, .curl-in, .persp-bar, .deck-head, .cap-card, .vp-interactive, .cards-menu')) return;
-      if (e.pointerType === 'mouse' && e.button !== 0) return;     // only the primary button pans
+      if (e.pointerType === 'mouse' && e.button !== 0 && e.button !== 2) return; // left OR right button pans (Figma-style)
       if (e.timeStamp - lastWheel < 120) return;                  // a trackpad zoom just fired — don't also start a pan
       dragging = true;
       el.style.cursor = 'grabbing';
@@ -469,9 +486,16 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
       const up = () => { dragging = false; el.style.cursor = ''; window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); setCam(cur); }; // commit once
       window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
     };
+    // right-drag pans (Figma) — suppress the browser context menu on the canvas
+    // BACKGROUND so a right-drag isn't interrupted; interactive targets keep theirs.
+    const onCtx = (ev: MouseEvent) => {
+      if ((ev.target as HTMLElement).closest('button, input, select, textarea, a, .card-b.scroll, .card-acts, .vp-interactive, .cards-menu, .persp-bar, .deck-head')) return;
+      ev.preventDefault();
+    };
     el.addEventListener('wheel', onWheel, { passive: false });
     el.addEventListener('pointerdown', onDown);
-    return () => { el.removeEventListener('wheel', onWheel); el.removeEventListener('pointerdown', onDown); el.removeEventListener('pointermove', onHover); if (wheelTimer) clearTimeout(wheelTimer); };
+    el.addEventListener('contextmenu', onCtx);
+    return () => { el.removeEventListener('wheel', onWheel); el.removeEventListener('pointerdown', onDown); el.removeEventListener('pointermove', onHover); el.removeEventListener('contextmenu', onCtx); if (wheelTimer) clearTimeout(wheelTimer); };
   }, [setCam]);
 
   const persp = {
