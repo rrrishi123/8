@@ -520,10 +520,21 @@ func codexReading() (map[string]any, any) {
 	}
 	five, _ := windows["5h"].(map[string]any)
 	util, _ := five["utilization"].(float64)
+	// PANE is ground truth for a block: codex-budget.sh reads the codex TUI and sets
+	// pane_blocked when it shows "hit your usage limit". Honor it — the rollout's
+	// rate_limits lags or misses the block, so windows-derived gated/util would report
+	// "fine" while codex is actually capped (the divergence the operator caught, where
+	// /budget said not-gated next to a pane_blocked:true it was already carrying).
+	if pb, _ := cx["pane_blocked"].(bool); pb {
+		gated = true
+		if util < 0.99 {
+			util = 0.99
+		}
+	}
 	cx["gated"], cx["cap"], cx["five_h_util"] = gated, budgetCap(), util
-	cx["research_ceil"], cx["research_ok"] = researchCeil(), util < researchCeil()
+	cx["research_ceil"], cx["research_ok"] = researchCeil(), !gated && util < researchCeil()
 	cx["phase"] = "research"
-	if util >= researchCeil() {
+	if gated || util >= researchCeil() {
 		cx["phase"] = "conserve"
 	}
 	cx["observed_age_s"] = codexAge(cx)
