@@ -54,7 +54,13 @@ while :; do
   # BUILD SHA (T3 parity): the running collector's provenance, so /peers self-attests
   # each host's version and the hub flags drift with no human poking.
   build=$(curl -s -m 4 "$SELF/health" 2>/dev/null | jq -r '.build // ""' 2>/dev/null)
-  body=$(printf '{"host":"%s","actor":"peer-beat","hostres":%s,"extra":{"budget":%s,"build":"%s"}}' "$HOST" "$hr" "$bud" "$build")
+  # MANIFEST (federate this host's panes/tabs so /resolve host-qualifies them ACROSS
+  # hosts): carry the reconciled LIVE tab list, so a host's tmux panes + browser tabs
+  # show on the hub as <host>/<seat>/<tab>, not only the local ones. Trimmed to live +
+  # essential fields to bound the 30s beat.
+  man=$(curl -s -m 4 "$SELF/manifest" 2>/dev/null | jq -c '{tabs:[.tabs[]|select(.status=="live")|{uid,ctx,url,session,opened_by,why,status}]}' 2>/dev/null)
+  [ -n "$man" ] || man='{}'
+  body=$(printf '{"host":"%s","actor":"peer-beat","hostres":%s,"manifest":%s,"extra":{"budget":%s,"build":"%s"}}' "$HOST" "$hr" "$man" "$bud" "$build")
   curl -s -m 6 "$RENDEZVOUS/peers" -H 'Content-Type: application/json' -H "X-8-Actor: peer-beat/$HOST" -d "$body" >/dev/null 2>&1 \
     || echo "[peer-beat $(date +%H:%M:%S)] beat to $RENDEZVOUS FAILED (unreachable?)"
   sleep "$INTERVAL"
