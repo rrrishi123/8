@@ -16,6 +16,10 @@ Release-readiness follow-ups to the v0.0.2 line:
 - `scripts/up.sh`: the browser pack is resolved from `EIGHT_ADAPTERS` (else the
   sibling `adapters` checkout) at `.bin/browser` — the path `adapters/build.sh`
   writes — instead of the untracked in-tree `browser/browser` binary.
+- CI to all arms: the `build`/`vet`/`test`/`gofmt` gate `8` and `http-mcp` carried
+  is now on `pilot` and `adapters` too (`adapters` also gates its nested `webrtc`
+  module and the `.bin/` build); every arm of the four-system now CI-gates on push
+  and PR.
 - This changelog.
 
 ## v0.0.2 — 2026-09
