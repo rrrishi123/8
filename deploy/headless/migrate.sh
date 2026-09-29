@@ -35,6 +35,7 @@ docker rename "$name" "$backup"
 docker volume create "$volume" >/dev/null
 rollback() {
   echo "migration failed; restoring $backup" >&2
+  docker logs --tail 50 "$name" >&2 || true
   docker rm -f "$name" >/dev/null 2>&1 || true
   docker rename "$backup" "$name"
   docker start "$name" >/dev/null
@@ -46,17 +47,28 @@ docker run --rm --user 0 --entrypoint /bin/sh \
 docker run -d --name "$name" --init --restart unless-stopped \
   --memory "${BROWSER_MEMORY:-2500m}" --cpus "${BROWSER_CPUS:-1.25}" --shm-size 512m \
   --label four-system.browser-mode=headless --label "four-system.rollback=$backup" \
-  -p "127.0.0.1:$port:9222" -v "$volume:/config" "$image" "${urls[@]}"
+  -p "127.0.0.1:$port:9222" -v "$volume:/config" "$image"
 # A started container is not proof of a functioning browser. Roll back if its
 # DevTools endpoint cannot serve a browser websocket within the startup window.
 ready=0
-for _ in {1..30}; do
-  if curl -fsS --max-time 2 "http://127.0.0.1:$port/json/version" | jq -e '.webSocketDebuggerUrl | length > 0' >/dev/null 2>&1; then
+for _ in {1..60}; do
+  # Colima's host-port forwarder can lag a recreated binding. Probe inside the
+  # container first; wire verification checks the host forwarding separately.
+  if docker exec "$name" curl -fsS --max-time 2 http://127.0.0.1:9222/json/version 2>/dev/null | jq -e '.webSocketDebuggerUrl | length > 0' >/dev/null 2>&1; then
     ready=1; break
   fi
   sleep 1
 done
 [ "$ready" = 1 ] || { echo 'headless CDP did not become ready' >&2; false; }
+# Chromium rejects multiple positional startup URLs in headless mode. Let the
+# copied profile restore first, then reconcile missing manifest URLs over CDP's
+# HTTP target endpoint (PUT). Keep existing tabs and their authenticated state.
+for url in "${urls[@]}"; do
+  if ! docker exec "$name" curl -fsS http://127.0.0.1:9222/json/list | jq -e --arg url "$url" 'any(.[]; .type == "page" and .url == $url)' >/dev/null; then
+    encoded="$(jq -rn --arg url "$url" '$url|@uri')"
+    docker exec "$name" curl -fsS -X PUT "http://127.0.0.1:9222/json/new?$encoded" >/dev/null
+  fi
+done
 trap - ERR
 printf 'Headless seat: %s, host CDP port: %s\nRollback container (stopped): %s\nOriginal profile volume (unchanged): %s\nNew profile volume: %s\n' "$name" "$port" "$backup" "$source_volume" "$volume"
 echo 'Verify /json/version and /manifest through http-mcp, then reattach/restart the runtime if its browser IP changed.'
