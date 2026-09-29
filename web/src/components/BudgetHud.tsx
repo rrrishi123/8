@@ -26,6 +26,7 @@ function Segment({ label, p, age, why }: { label: string; p: BudgetProvider | nu
   }
   const five = p.five_h_util ?? p.windows['5h']?.utilization;
   const sevenD = p.windows['7d']?.utilization;
+  const fiveReset = p.windows['5h']?.reset_in_s, sevenReset = p.windows['7d']?.reset_in_s;
   const ceil = p.research_ceil ?? 0.5, cap = p.cap ?? 0.95;
   const phase = p.gated ? 'gated' : (p.phase === 'research' ? 'research' : 'conserve');
   const stale = age == null || age > 900;
@@ -36,7 +37,9 @@ function Segment({ label, p, age, why }: { label: string; p: BudgetProvider | nu
       <span className="hud-tag">{label}</span>
       <span className="hud-phase" aria-label={phase} title={phase}>●</span>
       <span className="hud-num">5h {pct(five)}</span>
+      {fiveReset != null && <span className="hud-reset" title={`5h window resets in ${hhm(fiveReset)} — plan ahead`}>↻{hhm(fiveReset)}</span>}
       <span className="hud-num dim">7d {pct(sevenD)}</span>
+      {sevenReset != null && <span className="hud-reset dim" title={`7d window resets in ${hhm(sevenReset)}`}>↻{hhm(sevenReset)}</span>}
       {stale
         ? <span className="hud-stale" title="no recent observed response — last-known">stale{age != null ? ` ${hhm(age)}` : ''}</span>
         : <span className="hud-obs" title={`observed ${ago(age as number)} ago`}>{ago(age as number)} ago</span>}
