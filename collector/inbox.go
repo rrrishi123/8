@@ -343,10 +343,11 @@ func (c *collector) handleInbox(w http.ResponseWriter, r *http.Request) {
 			UUID     string `json:"uuid"`
 			Pane     string `json:"pane"`
 			By       string `json:"by"`
-			Assignee string `json:"assignee"` // offer only: whose inbox (role/%N/uuid); defaults to the item's own assignee
+			Text     string `json:"text"`     // say only: the free-text words to leave in the inbox
+			Assignee string `json:"assignee"` // offer/say: whose inbox (role/%N/uuid); offer defaults to the item's own assignee
 		}
-		if json.NewDecoder(r.Body).Decode(&p) != nil || p.ID == 0 || (p.Action != "take" && p.Action != "decline" && p.Action != "offer") {
-			http.Error(w, `{"error":"need id + action take|decline|offer"}`, 400)
+		if json.NewDecoder(r.Body).Decode(&p) != nil || (p.Action != "take" && p.Action != "decline" && p.Action != "offer" && p.Action != "say") || (p.ID == 0 && p.Action != "say") {
+			http.Error(w, `{"error":"need action take|decline|offer|say; id required except for say"}`, 400)
 			return
 		}
 		if p.Action == "offer" { // a mind hands an item to another mind's inbox — no playlist, no typing
@@ -373,6 +374,30 @@ func (c *collector) handleInbox(w http.ResponseWriter, r *http.Request) {
 			}
 			ok := c.offer(*it, "offered by "+firstNonEmpty(firstNonEmpty(p.By, p.UUID), firstNonEmpty(p.Pane, "a sibling")))
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": ok, "action": "offer", "item": it})
+			return
+		}
+		if p.Action == "say" { // a mind leaves WORDS (free text) in another mind's inbox —
+			// the message the offer-by-id path had no field for; this is philo's dropped
+			// words. The record now witnesses WHAT was said, not merely THAT a POST arrived.
+			if p.Text == "" || p.Assignee == "" {
+				http.Error(w, `{"error":"say needs text + assignee (whose inbox)"}`, 400)
+				return
+			}
+			uuid, pane := inboxKeys(p.Assignee)
+			key := keyFor(uuid, pane)
+			if key == "" {
+				http.Error(w, `{"error":"no mind resolves to that assignee"}`, 404)
+				return
+			}
+			inboxMu.Lock()
+			offers := loadInbox(key)
+			offers = append(offers, offer{ID: time.Now().UnixNano(), Text: p.Text, Reason: "message from " + firstNonEmpty(firstNonEmpty(p.By, p.UUID), "a sibling"), Pane: pane, OfferedAt: time.Now().UTC().Format(time.RFC3339)})
+			saveInbox(key, offers)
+			n := len(offers)
+			inboxMu.Unlock()
+			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.message","params":{"to_uuid":%q,"pane":%q,"by":%q}}}`, uuid, pane, p.By))
+			c.nudge(pane, uuid, n)
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "action": "say", "to": p.Assignee, "pending": n})
 			return
 		}
 		who := p.By
