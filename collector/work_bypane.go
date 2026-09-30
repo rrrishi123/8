@@ -37,13 +37,29 @@ func (c *collector) handleWorkByPane(w http.ResponseWriter, r *http.Request) {
 		return by[pane]
 	}
 	pool := &paneLedger{Pane: "pool", Doing: []int64{}, Next: []int64{}}
+	// resolveAssignee shells out to tmux (paneForUUID execs `tmux list-panes`)
+	// and reads roles.json, so it is expensive; the same assignee recurs across
+	// many items. Memoize it for the life of this request — it is deterministic
+	// within one snapshot — collapsing O(items) resolutions to O(distinct).
+	resolveCache := map[string]string{}
+	resolve := func(a string) string {
+		if a == "" {
+			return ""
+		}
+		if p, ok := resolveCache[a]; ok {
+			return p
+		}
+		p := resolveAssignee(a)
+		resolveCache[a] = p
+		return p
+	}
 	for _, it := range items {
 		if it.Status != "todo" && it.Status != "doing" {
 			continue
 		}
 		pane := ""
 		if it.Assignee != "" {
-			pane = resolveAssignee(it.Assignee) // name/uuid/%N -> current %N
+			pane = resolve(it.Assignee) // name/uuid/%N -> current %N (memoized)
 		}
 		lg := pool
 		if strings.HasPrefix(pane, "%") {
@@ -63,12 +79,10 @@ func (c *collector) handleWorkByPane(w http.ResponseWriter, r *http.Request) {
 		out = append(out, lg)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Pane < out[j].Pane })
-	pool.Todo = 0
-	for _, it := range items {
-		if it.Status == "todo" && (it.Assignee == "" || !strings.HasPrefix(resolveAssignee(it.Assignee), "%")) {
-			pool.Todo++
-		}
-	}
+	// pool.Todo is already accumulated in the loop above (identical condition:
+	// an item lands in pool exactly when its assignee is empty or resolves to a
+	// non-%N pane), so no second pass — and no second round of tmux-shelling
+	// resolutions — is needed.
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"by_pane": out, "pool": pool,
 		"note": "identification is the pane number; name is a label. doing = working now; next = queued for that same pane; pool = unassigned, any idle pane may pull.",
