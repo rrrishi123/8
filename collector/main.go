@@ -2355,15 +2355,17 @@ func (c *collector) seatWatchLoop() {
 						}
 					}
 				}
-				// CHROME (CDP) reads — tabs registered substrate=chrome (T5). The fox
-				// pass above skips them harmlessly (BiDi eval on a chrome target errors);
-				// this reads them over CDP via the shared probe.
-				if cb := c.find("chrome"); cb != nil {
-					for ctx, prev := range watch {
-						if c.watchSubOf(ctx) != "chrome" {
-							continue
-						}
-						c.watchStep(ctx, prev, c.chromeSig(cb, ctx), "chrome")
+				// CDP reads (T5) — a watched tab is read over a NAMED CDP broker, not only
+				// one literally called "chrome": mac has "chrome", colima has
+				// "eight-chrome-1"/"eight-chrome-2". watchSub[ctx] holds the broker name;
+				// the fox pass above skips these (a BiDi eval on their target errors).
+				for ctx, prev := range watch {
+					bk := c.watchSubOf(ctx)
+					if bk == "" || bk == "fox" {
+						continue
+					}
+					if cb := c.find(bk); cb != nil {
+						c.watchStep(ctx, prev, c.chromeSig(cb, ctx), bk)
 					}
 				}
 			}
@@ -2378,6 +2380,10 @@ func (c *collector) seatWatchLoop() {
 func (c *collector) handleWatch(w http.ResponseWriter, r *http.Request) {
 	ctx := r.URL.Query().Get("context")
 	sub := r.URL.Query().Get("substrate") // T5: "chrome" reads this tab over CDP; default fox
+	brk := r.URL.Query().Get("broker")    // T5: the named CDP broker to read over (chrome, eight-chrome-1, …)
+	if brk == "" && sub == "chrome" {
+		brk = "chrome" // back-compat: substrate=chrome ⇒ the broker named "chrome"
+	}
 	c.wmu.Lock()
 	if c.watched == nil {
 		c.watched = map[string]string{}
@@ -2393,8 +2399,8 @@ func (c *collector) handleWatch(w http.ResponseWriter, r *http.Request) {
 			if _, ok := c.watched[ctx]; !ok {
 				c.watched[ctx] = "" // empty sig → first read establishes baseline (no false first event)
 			}
-			if sub == "chrome" {
-				c.watchSub[ctx] = "chrome"
+			if brk != "" {
+				c.watchSub[ctx] = brk
 			}
 		}
 	}
