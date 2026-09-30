@@ -91,7 +91,8 @@ type collector struct {
 	manifestOmitted uint64     // observations refused when all bounded slots are live
 
 	wmu     sync.Mutex        // #12 change-detector: a tab you WATCH pushes tab.changed on DOM shift
-	watched map[string]string // ctx -> last DOM signature (opt-in; only watched tabs are read)
+	watched    map[string]string // ctx -> last DOM signature (opt-in; only watched tabs are read)
+	watchDirty map[string]int    // T5: ctx -> consecutive stable checks since last change; settle → reply-complete
 
 	pmu       sync.Mutex        // witness pane appearance (#277): pane_id -> first_seen
 	panesSeen map[string]string // so a spawned pane is RECORDED (pane.appeared), not guessed
@@ -2327,20 +2328,30 @@ func (c *collector) seatWatchLoop() {
 							continue
 						}
 						sig := strconv.FormatUint(fnv1a([]byte(r.Result.Result.Value)), 16)
-						if prev != "" && prev != sig {
-							var d struct {
-								T    string `json:"t"`
-								N    int    `json:"n"`
-								Tail string `json:"tail"`
-							}
-							json.Unmarshal([]byte(r.Result.Result.Value), &d)
-							c.publish(fmt.Sprintf(`{"session":"fox","origin":"COLLECTOR","frame":{"method":"tab.changed","params":{"context":%q,"title":%q,"len":%d}}}`, ctx, d.T, d.N))
+						var d struct {
+							T    string `json:"t"`
+							N    int    `json:"n"`
+							Tail string `json:"tail"`
 						}
+						json.Unmarshal([]byte(r.Result.Result.Value), &d)
+						// T5 reply-completion: decide under the lock (settleStep is pure),
+						// then emit after unlocking (publish + recordReplyEvent do I/O and
+						// take their own locks — never nest them under wmu).
 						c.wmu.Lock()
+						if c.watchDirty == nil {
+							c.watchDirty = map[string]int{}
+						}
+						changed, settled := settleStep(c.watchDirty, ctx, prev, sig, watchSettleChecks)
 						if _, still := c.watched[ctx]; still {
 							c.watched[ctx] = sig
 						}
 						c.wmu.Unlock()
+						if changed { // raw change signal (kept, #12): a reply is arriving
+							c.publish(fmt.Sprintf(`{"session":"fox","origin":"COLLECTOR","frame":{"method":"tab.changed","params":{"context":%q,"title":%q,"len":%d}}}`, ctx, d.T, d.N))
+						}
+						if settled { // T5: the DOM settled after activity → witnessed reply-complete
+							c.recordReplyEvent(replyEvent{Kind: "reply-complete", Tab: ctx, Detail: d.T, By: "cdpwatch"})
+						}
 					}
 				}
 			}

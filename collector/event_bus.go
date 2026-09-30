@@ -32,6 +32,36 @@ type replyEvent struct {
 
 const evRingMax = 512
 
+// watchSettleChecks — how many change-free detector checks after activity mean the
+// reply has SETTLED (is complete). The change-detector runs every ~3rd tick, so 1
+// is "one quiet interval after the DOM stopped shifting" — a streaming reply keeps
+// shifting (stays dirty) and settles once, when it stops.
+const watchSettleChecks = 1
+
+// settleStep advances one tab's reply-completion state machine for a single
+// detector check and reports what to emit. `changed` = the DOM shifted (a reply is
+// arriving); `settled` = a tab that HAD shifted then held stable to the threshold,
+// i.e. the reply completed. Mutates dirty[ctx] in place. Pure (no I/O) so the
+// completion heuristic is unit-testable without a live browser. prev=="" is the
+// baseline read (no history yet), which emits nothing.
+func settleStep(dirty map[string]int, ctx, prev, sig string, threshold int) (changed, settled bool) {
+	if prev == "" {
+		return false, false
+	}
+	if prev != sig {
+		dirty[ctx] = 0 // activity: a reply is arriving; (re)start the settle count
+		return true, false
+	}
+	if q, isDirty := dirty[ctx]; isDirty {
+		if q+1 >= threshold {
+			delete(dirty, ctx)
+			return false, true
+		}
+		dirty[ctx] = q + 1
+	}
+	return false, false
+}
+
 var (
 	evMu   sync.Mutex
 	evRing = make([]replyEvent, 0, evRingMax)
