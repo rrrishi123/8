@@ -51,6 +51,40 @@ for module in 8/collector http-mcp pilot adapters adapters/webrtc; do
     fi
   )
 done
+
+# Boot-to-first-seat smoke: the witness must not merely compile but actually
+# start and reach a seat. Build the collector to a temp path (outside every
+# checkout, so the clean-tree assertion below still holds), boot it browser-less
+# on an isolated port with auth off, and require /health to report alive within
+# a bounded window. This degraded boot is exactly what `collector up` promises
+# when substrate is absent, so a green here means a host can boot the release.
+echo "== boot-to-first-seat smoke (collector) =="
+smoke_dir="$(mktemp -d)"
+smoke_bin="$smoke_dir/collector-smoke"
+smoke_log="$smoke_dir/collector-smoke.log"
+smoke_port="${FLEET_SMOKE_PORT:-7199}"
+(cd "$ROOT/8/collector" && go build -o "$smoke_bin" .)
+EIGHT_TOKEN="" "$smoke_bin" -listen ":$smoke_port" >"$smoke_log" 2>&1 &
+smoke_pid=$!
+smoke_ok=""
+for _ in $(seq 1 30); do
+  if curl -sf "http://127.0.0.1:$smoke_port/health" 2>/dev/null | grep -q '"alive":true'; then
+    smoke_ok=1
+    break
+  fi
+  sleep 0.5
+done
+kill "$smoke_pid" 2>/dev/null || true
+wait "$smoke_pid" 2>/dev/null || true
+if [[ -z "$smoke_ok" ]]; then
+  echo "collector did not reach first seat (/health alive) — boot smoke failed" >&2
+  tail -20 "$smoke_log" >&2 || true
+  rm -rf "$smoke_dir"
+  exit 1
+fi
+rm -rf "$smoke_dir"
+echo "boot smoke: collector reached first seat on :$smoke_port"
+
 node --test "$ROOT/8/scripts/fleet-agent.test.mjs"
 (
   cd "$ROOT/8/web"
