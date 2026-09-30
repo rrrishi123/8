@@ -51,6 +51,7 @@ type budget struct {
 	Phase        string  `json:"phase"`       // "research" (go) | "conserve" (hold heavy work)
 	ResearchOK   bool    `json:"research_ok"` // 5h below the ceiling
 	ResearchCeil float64 `json:"research_ceil"`
+	WorkClass    string  `json:"work_class,omitempty"` // T17: whose ceiling this is (foursystem|private|…)
 	FiveH        float64 `json:"five_h_util"`
 }
 
@@ -61,13 +62,41 @@ var (
 	budgetGateLog time.Time
 )
 
+// workClass — this collector's work class (T17): the ceiling is set by WHAT the
+// account is used for, not one global constant. "foursystem" (hardening the wire)
+// carries a high ceiling; "private"/"kosaten"/thesis work on a separate account is
+// held low so it resumes WITHIN the four-system without starving that account.
+// Declared per host via EIGHT_WORK_CLASS (default foursystem).
+func workClass() string {
+	if c := strings.ToLower(strings.TrimSpace(os.Getenv("EIGHT_WORK_CLASS"))); c != "" {
+		return c
+	}
+	return "foursystem"
+}
+
+// researchCeil — the 5h utilization below which the fleet still does discretionary
+// (research) work; above it, conserve. Per work class (T17): EIGHT_CEIL_<CLASS>
+// wins (e.g. EIGHT_CEIL_FOURSYSTEM=0.9, EIGHT_CEIL_PRIVATE=0.45), then the global
+// EIGHT_RESEARCH_CEIL (back-compat + the operator's explicit push ceiling), then a
+// class default: private/kosaten conserves the account at 0.45, everything else 0.5.
 func researchCeil() float64 {
+	class := workClass()
+	if v := os.Getenv("EIGHT_CEIL_" + strings.ToUpper(class)); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && f <= 1 {
+			return f
+		}
+	}
 	if v := os.Getenv("EIGHT_RESEARCH_CEIL"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && f <= 1 {
 			return f
 		}
 	}
-	return 0.50
+	switch class {
+	case "private", "kosaten", "thesis":
+		return 0.45 // a separate account: keep private work under half, never starve it
+	default:
+		return 0.50
+	}
 }
 
 var lastPhase string
@@ -180,6 +209,7 @@ func (c *collector) budgetNow() *budget {
 			}
 		}
 		best.ResearchCeil = researchCeil()
+		best.WorkClass = workClass()
 		best.FiveH = best.Windows["5h"].Utilization
 		best.ResearchOK = best.FiveH < best.ResearchCeil
 		if best.ResearchOK {
