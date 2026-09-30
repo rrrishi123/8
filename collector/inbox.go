@@ -351,6 +351,14 @@ func (c *collector) handleInbox(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if p.Action == "offer" { // a mind hands an item to another mind's inbox — no playlist, no typing
+			// BUG FIX (T16 / #1242): the recipient is whoever the offerer NAMED — by
+			// assignee, uuid, OR pane. The old path honoured only p.Assignee, so an
+			// offer addressed by uuid (philo → conductor's uuid) left the item's own
+			// assignee untouched; c.offer() then resolved via that stale assignee to
+			// the wrong mind (or none), returned ok:false, and NEVER wrote the inbox
+			// file — the act was witnessed, the words silently dropped. Route to the
+			// named recipient so the content actually lands.
+			target := firstNonEmpty(p.Assignee, firstNonEmpty(p.UUID, p.Pane))
 			c.tmu.Lock()
 			var items []workItem
 			if b, err := os.ReadFile(workFile()); err == nil {
@@ -359,8 +367,8 @@ func (c *collector) handleInbox(w http.ResponseWriter, r *http.Request) {
 			var it *workItem
 			for i := range items {
 				if items[i].ID == p.ID {
-					if p.Assignee != "" && items[i].Assignee != p.Assignee {
-						items[i].Assignee = p.Assignee
+					if target != "" && items[i].Assignee != target {
+						items[i].Assignee = target
 						writeWork(items)
 					}
 					cp := items[i]
@@ -373,7 +381,14 @@ func (c *collector) handleInbox(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			ok := c.offer(*it, "offered by "+firstNonEmpty(firstNonEmpty(p.By, p.UUID), firstNonEmpty(p.Pane, "a sibling")))
-			_ = json.NewEncoder(w).Encode(map[string]any{"ok": ok, "action": "offer", "item": it})
+			if !ok {
+				// HONEST ERROR, never a 200 with ok:false (the witnessed-but-undelivered
+				// smell, #1052 class): if the recipient resolves to no live mind or pane,
+				// SAY the offer was not delivered — don't hand back a receipt for nothing.
+				http.Error(w, fmt.Sprintf(`{"ok":false,"error":"offer not delivered — %q resolved to no live mind or pane"}`, target), 404)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "action": "offer", "item": it})
 			return
 		}
 		if p.Action == "say" { // a mind leaves WORDS (free text) in another mind's inbox —
