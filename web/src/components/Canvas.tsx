@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { PaneCockpit } from './PaneCockpit';
 import { PaneLive } from './PaneLive';
 import { resetDrag } from '../lib/useDrag';
@@ -81,6 +81,11 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   // per-lane OFFSET on top of the computed layout; "⌂ layout" forgets all offsets.
   const [posBy, setPosBy] = useLocal<Record<string, { x: number; y: number }>>('posBy', {});
   const dragLane = useRef<{ key: string; px: number; py: number; bx: number; by: number } | null>(null);
+  // T20: per-CARD size override, persisted like posBy. A corner handle drags
+  // freeform; double-click the handle forgets it (back to computed layout). The
+  // pointer delta is screen-px, so divide by cam.z to get world-px.
+  const [sizeBy, setSizeBy] = useLocal<Record<string, { w: number; h: number }>>('sizeBy', {});
+  const dragSize = useRef<{ key: string; px: number; py: number; bw: number; bh: number; z: number } | null>(null);
   const [showSelf, setShowSelf] = useLocal<boolean>('showSelf', false); // reflexive: let this 8 SEE its own tab
   const [hidden, setHidden] = useLocal<Record<string, boolean>>('cardHidden', {});
   const [levelPick, setLevelPick] = useLocal<'auto' | Level>('level', 'auto');
@@ -325,7 +330,13 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   // ── PACK ────────────────────────────────────────────────────────────────────
   const world = packWorld(ordered, heroKey, posBy);
   rectsRef.current = {};
-  for (const L of world.lanes) for (const p of L.cards) rectsRef.current[p.key] = { x: p.x, y: p.y, w: p.w, h: p.h };
+  for (const L of world.lanes) for (const p of L.cards) {
+    // T20: a persisted per-card size wins over the computed one (freeform, may
+    // overlap neighbours — same spatial model as a posBy drag).
+    const sz = sizeBy[p.card.key];
+    if (sz) { p.w = sz.w; p.h = sz.h; }
+    rectsRef.current[p.key] = { x: p.x, y: p.y, w: p.w, h: p.h };
+  }
   const laneRect = (key: string) => world.lanes.find((L) => L.lane.key === key);
   const goto = (r: { x: number; y: number; w: number; h: number }, z: number) => { const w = vpRef.current.w || 1200, h = vpRef.current.h || 800; setCam({ z, x: w / 2 - (r.x + r.w / 2) * z, y: h / 2 - (r.y + r.h / 2) * z }); };
   const pendingLane = useRef('');
@@ -593,12 +604,32 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
               hud={tab?.url ? hudBy[tab.url] : undefined} />;
           }
           return (
-            <CardFrame key={c.key} card={c} rect={p} lod={lod}
-              onHide={isVp ? undefined : () => setHidden((h) => ({ ...h, [c.key]: true }))}
-              onEnter={isVp ? () => setHoverKey(c.key) : undefined}
-              onLeave={isVp ? () => setHoverKey((h) => (h === c.key ? '' : h)) : undefined}>
-              {body}
-            </CardFrame>
+            <Fragment key={c.key}>
+              <CardFrame card={c} rect={p} lod={lod}
+                onHide={isVp ? undefined : () => setHidden((h) => ({ ...h, [c.key]: true }))}
+                onEnter={isVp ? () => setHoverKey(c.key) : undefined}
+                onLeave={isVp ? () => setHoverKey((h) => (h === c.key ? '' : h)) : undefined}>
+                {body}
+              </CardFrame>
+              {/* T20 resize handle — freeform drag (÷cam.z → world px), double-click resets */}
+              <div className="card-resize" title="drag to resize · double-click to reset"
+                style={{ position: 'absolute', left: p.x + p.w - 15, top: p.y + p.h - 15, width: 15, height: 15,
+                  cursor: 'nwse-resize', zIndex: 6, touchAction: 'none', opacity: sizeBy[c.key] ? 0.9 : 0.4 }}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  try { (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId); } catch { /* */ }
+                  dragSize.current = { key: c.key, px: e.clientX, py: e.clientY, bw: p.w, bh: p.h, z: cam.z };
+                }}
+                onPointerMove={(e) => {
+                  const g = dragSize.current; if (!g || g.key !== c.key) return;
+                  e.stopPropagation();
+                  const w = Math.max(80, g.bw + (e.clientX - g.px) / g.z);
+                  const h = Math.max(56, g.bh + (e.clientY - g.py) / g.z);
+                  setSizeBy((s) => ({ ...s, [c.key]: { w, h } }));
+                }}
+                onPointerUp={() => { dragSize.current = null; }}
+                onDoubleClick={(e) => { e.stopPropagation(); setSizeBy((s) => { const n = { ...s }; delete n[c.key]; return n; }); }} />
+            </Fragment>
           );
         }))}
       </div>
