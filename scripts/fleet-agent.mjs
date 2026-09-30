@@ -105,8 +105,8 @@ export async function checkoutRepository(dir, url, revision) {
     return;
   }
   // Existing deployment checkouts may contain operator edits: never reset them.
-  if (await run('git', ['status', '--porcelain', '--untracked-files=no'], { cwd: dir }))
-    throw new Error(`Deployment checkout ${path.basename(dir)} has tracked edits; refusing to discard`);
+  if (await run('git', ['status', '--porcelain', '--untracked-files=normal'], { cwd: dir }))
+    throw new Error(`Deployment checkout ${path.basename(dir)} has local edits; refusing to discard or build untested source`);
   await run('git', ['fetch', '--no-tags', 'origin', revision], { cwd: dir });
   await run('git', ['checkout', '--detach', revision], { cwd: dir });
 }

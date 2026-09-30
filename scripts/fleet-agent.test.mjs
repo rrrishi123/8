@@ -100,9 +100,9 @@ test('existing staged and unstaged operator edits are preserved', async t => {
   const { dir, origin, first, second } = await repositoryFixture(t);
   await checkoutRepository(dir, origin, first);
   await fs.writeFile(path.join(dir, 'file'), 'operator edit\n');
-  await assert.rejects(checkoutRepository(dir, origin, second), /tracked edits/);
+  await assert.rejects(checkoutRepository(dir, origin, second), /local edits/);
   await git(dir, 'add', 'file');
-  await assert.rejects(checkoutRepository(dir, origin, second), /tracked edits/);
+  await assert.rejects(checkoutRepository(dir, origin, second), /local edits/);
   assert.equal(await fs.readFile(path.join(dir, 'file'), 'utf8'), 'operator edit\n');
   assert.equal(await git(dir, 'rev-parse', 'HEAD'), first);
 });
@@ -113,4 +113,13 @@ test('failed bootstrap leaves no partial checkout and the next tick recovers', a
   assert.deepEqual(await fs.readdir(root), ['origin']);
   await checkoutRepository(dir, origin, second);
   assert.equal(await git(dir, 'rev-parse', 'HEAD'), second);
+});
+
+test('untracked source cannot contaminate an otherwise pinned build', async t => {
+  const { dir, origin, first, second } = await repositoryFixture(t);
+  await checkoutRepository(dir, origin, first);
+  await fs.writeFile(path.join(dir, 'injected.go'), 'package main\n');
+  await assert.rejects(checkoutRepository(dir, origin, second), /untested source/);
+  assert.equal(await fs.readFile(path.join(dir, 'injected.go'), 'utf8'), 'package main\n');
+  assert.equal(await git(dir, 'rev-parse', 'HEAD'), first);
 });

@@ -45,7 +45,18 @@ if [ "$(uname -s)" = Darwin ]; then
   plutil -insert StandardOutPath -string "$state/agent.log" "$plist"
   plutil -insert StandardErrorPath -string "$state/agent.log" "$plist"
   launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
-  launchctl bootstrap "gui/$(id -u)" "$plist"
+  # bootout can return before launchd finishes removing the old job. Retry the
+  # bootstrap briefly so reinstalling a running service does not leave it down.
+  for attempt in {1..10}; do
+    if bootstrap_error=$(launchctl bootstrap "gui/$(id -u)" "$plist" 2>&1); then
+      break
+    fi
+    if [ "$attempt" = 10 ]; then
+      printf '%s\n' "$bootstrap_error" >&2
+      exit 1
+    fi
+    sleep 1
+  done
 else
   unit_dir="$HOME/.config/systemd/user"
   mkdir -p "$unit_dir"
