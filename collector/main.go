@@ -1820,6 +1820,7 @@ func (c *collector) handleTabs(w http.ResponseWriter, r *http.Request) {
 		if out, err := c.execChrome(chromeTabsScript); err == nil && strings.HasPrefix(strings.TrimSpace(out), "[") {
 			var ct []struct{ Bcid, URL, Title string }
 			if json.Unmarshal([]byte(out), &ct) == nil {
+				seenParked := map[string]int{} // disambiguate duplicate-URL parked tabs so each renders
 				for _, t := range ct {
 					if t.URL == "" || strings.HasPrefix(t.URL, "about:") || strings.Contains(t.URL, ":8088") {
 						continue
@@ -1828,7 +1829,21 @@ func (c *collector) handleTabs(w http.ResponseWriter, r *http.Request) {
 					if ctx, ok := urlToCtx[t.URL]; ok {
 						rec["context"], rec["parked"] = ctx, "false"
 					} else {
-						rec["context"], rec["parked"] = "parked:"+t.Bcid, "true"
+						// PARKED (discarded) tabs have no browsingContext, so Bcid is empty
+						// for ALL of them — a shared "parked:" context that the cockpit
+						// deduped down to ONE card (the "8 shows 1 Firefox tab" bug). Their
+						// stable identity is the URL (also the /wake?url= key); disambiguate
+						// duplicate URLs by occurrence so every parked tab gets a unique
+						// context and renders.
+						pid := t.Bcid
+						if pid == "" {
+							pid = t.URL
+							if n := seenParked[t.URL]; n > 0 {
+								pid = fmt.Sprintf("%s#%d", t.URL, n)
+							}
+							seenParked[t.URL]++
+						}
+						rec["context"], rec["parked"] = "parked:"+pid, "true"
 					}
 					tabs = append(tabs, rec)
 				}
