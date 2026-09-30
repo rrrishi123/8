@@ -4749,6 +4749,7 @@ func main() {
 	mux.HandleFunc("/peers", c.handlePeers)               // #886: federation rendezvous — push register/heartbeat
 	mux.HandleFunc("/db", c.handleDB)                     // project the scattered stores into ~/.8/eight.db for DBeaver
 	mux.HandleFunc("/stopwatch", c.handleStopwatch)       // experiri: the witness's staleness made readable
+	mux.HandleFunc("/event", c.handleEvent) // T5: witnessed reply-event bus (per-tab CDP watcher posts here; any host polls ?since=)
 	mux.HandleFunc("/work", c.handleWork)
 	mux.HandleFunc("/work/next", c.handleWorkNext)
 	mux.HandleFunc("/work/playlist", c.handlePlaylist)
