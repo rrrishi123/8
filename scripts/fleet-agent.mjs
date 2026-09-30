@@ -89,18 +89,35 @@ async function candidate(cfg, heads) {
   return null;
 }
 
+export async function checkoutRepository(dir, url, revision) {
+  if (!shaRE.test(revision)) throw new Error('Checkout requires a full commit SHA');
+  if (!await fs.stat(dir).catch(e => { if (e.code === 'ENOENT') return null; throw e; })) {
+    // A --no-checkout clone has an empty index, so status reports every tracked
+    // file deleted. Initialize it completely before applying the dirty guard or
+    // publishing the directory; a failed fetch must not strand the next tick.
+    const staging = await fs.mkdtemp(`${dir}-clone-`);
+    try {
+      await run('git', ['clone', '--no-checkout', url, staging]);
+      await run('git', ['fetch', '--no-tags', 'origin', revision], { cwd: staging });
+      await run('git', ['checkout', '--detach', revision], { cwd: staging });
+      await fs.rename(staging, dir);
+    } finally { await fs.rm(staging, { recursive: true, force: true }); }
+    return;
+  }
+  // Existing deployment checkouts may contain operator edits: never reset them.
+  if (await run('git', ['status', '--porcelain', '--untracked-files=no'], { cwd: dir }))
+    throw new Error(`Deployment checkout ${path.basename(dir)} has tracked edits; refusing to discard`);
+  await run('git', ['fetch', '--no-tags', 'origin', revision], { cwd: dir });
+  await run('git', ['checkout', '--detach', revision], { cwd: dir });
+}
+
 async function checkout(cfg, manifest) {
   const root = path.join(cfg.state, 'source');
   await fs.mkdir(root, { recursive: true });
   for (const arm of arms) {
     const dir = path.join(root, arm);
-    if (!await fs.stat(path.join(dir, '.git')).catch(() => false))
-      await run('git', ['clone', '--no-checkout', `https://github.com/rrrishi123/${arm}.git`, dir]);
     // These are private deployment checkouts, never the operator's working tree.
-    if (await run('git', ['status', '--porcelain', '--untracked-files=no'], { cwd: dir }))
-      throw new Error(`Deployment checkout ${arm} has tracked edits; refusing to discard`);
-    await run('git', ['fetch', '--no-tags', 'origin', manifest.revisions[arm]], { cwd: dir });
-    await run('git', ['checkout', '--detach', manifest.revisions[arm]], { cwd: dir });
+    await checkoutRepository(dir, `https://github.com/rrrishi123/${arm}.git`, manifest.revisions[arm]);
   }
   return root;
 }

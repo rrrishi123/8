@@ -15,6 +15,13 @@ operator's working trees, and rechecks branch heads after building. Failed CI,
 missing artifacts, superseded manifests and unknown build attestations never
 authorize a deployment. No model calls or provider budget are consumed.
 
+Fresh deployment clones are initialized at the pinned commit in a temporary
+directory before being promoted to `source/<arm>`. A failed clone/fetch leaves
+no partial checkout to block later polls. Existing checkouts still reject
+tracked edits. If an older watcher stranded an empty `--no-checkout` clone,
+stop the service and move that directory aside for inspection before restarting;
+do not reset a checkout that might contain operator edits.
+
 Prerequisites: Node 22+, authenticated `gh` with read access to Actions artifacts,
 Git, Go, npm and the canonical build prerequisites. Colima mode also needs Docker
 and an existing `eight-fleet` container with a named `/root/.8` volume.
