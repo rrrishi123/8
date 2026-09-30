@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { procinfo, type ProcInfo } from '../lib/api';
+import { useCardText } from '../lib/cardText';
 
 // The witness watching its own diet: per-tab memory + CPU across every tab on
 // the shared Firefox, including 8's own cockpit tab (★). Polls /procinfo ~4s,
 // pauses when the cockpit tab is hidden (the same aperture-control the witness
 // applies to all its consumption).
-export function Resources({ session }: { session: string | null }) {
+export function Resources({ session, cardKey }: { session: string | null; cardKey?: string }) {
   const [pi, setPi] = useState<ProcInfo | null>(null);
   const [miss, setMiss] = useState(false);
   // last cumulative cpu_ms per process, to derive a live CPU% over the poll gap
@@ -41,6 +42,7 @@ export function Resources({ session }: { session: string | null }) {
   }, [session]);
 
   const self = location.host; // 8's own cockpit tab
+  useCardText(cardKey, [miss || !pi ? 'no procinfo yet' : `parent ${pi.parent_mem_mb || '·'}MB`, 'tab  mem  cpu', ...(pi?.tabs || []).map((t) => `${t.url} ${t.mem_mb} ${t.cpu_pct ?? '·'}`), pi?.gpu ? 'gpu' : '']);
 
   return (
     <section className="panel resources">

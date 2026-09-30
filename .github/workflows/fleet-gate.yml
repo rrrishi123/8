@@ -1,0 +1,61 @@
+name: fleet gate
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-attest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # The source arm is exactly the pushed commit, including during a rerun.
+      # Each sibling checkout resolves the release head once; the resulting
+      # manifest pins those tested commits so hosts cannot deploy later heads.
+      - uses: actions/checkout@v4
+        with:
+          repository: rrrishi123/8
+          ref: ${{ github.repository == 'rrrishi123/8' && github.sha || 'release/v0.0.2' }}
+          path: 8
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: rrrishi123/http-mcp
+          ref: ${{ github.repository == 'rrrishi123/http-mcp' && github.sha || 'release/v0.0.2' }}
+          path: http-mcp
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: rrrishi123/pilot
+          ref: ${{ github.repository == 'rrrishi123/pilot' && github.sha || 'release/v0.0.2' }}
+          path: pilot
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: rrrishi123/adapters
+          ref: ${{ github.repository == 'rrrishi123/adapters' && github.sha || 'release/v0.0.2' }}
+          path: adapters
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: |
+            8/collector/go.sum
+            pilot/go.sum
+            adapters/webrtc/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: 8/web/package-lock.json
+      - name: Build and test all four arms
+        run: bash 8/scripts/fleet-ci.sh
+      - name: Publish the tested release manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: fleet-release
+          path: fleet-release.json
+          if-no-files-found: error
+          retention-days: 14

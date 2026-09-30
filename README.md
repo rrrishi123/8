@@ -1,8 +1,12 @@
 # 8 — the WITNESS
 
+For multi-host registration, see [native peer join](docs/peer-join.md)
+(`PEER_HUB=http://hub-host:7070 collector up`).
+
 > Part of **The Wire** — a four-arm system for protocol-agnostic test automation with record & replay.
 > **This repo is the 8 — the WITNESS** — OODA Observe across every tab; aperture-controlled; recommends, never acts.
 > **The four arms:** [http-mcp](https://github.com/rrrishi123/http-mcp) (WIRE) · [8](https://github.com/rrrishi123/8) (WITNESS) · [pilot](https://github.com/rrrishi123/pilot) (HOST) · [adapters](https://github.com/rrrishi123/adapters) (ARMS)
+> **The idea, stated:** [docs/four-system.md](docs/four-system.md) — the two atoms, the four arms as protocol, inscription-is-truth, and digest-continuity, as rules ([FABLE.md](FABLE.md) is the same idea as story).
 
 ---
 
@@ -20,6 +24,30 @@ turns any existing regression suite into a record-and-replay automation suite.
 > matrix (selenium · appium rd+vd app+web · puppeteer · playwright · espresso · xcui) ran
 > through just those two tools.
 
+## The LEGO table (the whole system in one toy)
+
+The four-system is a LEGO table. There are exactly **two ways any piece can
+connect** — you *press* studs together (a CALL: one press, one click, done) or
+you *pin* through a hinge (a CHANNEL: stays coupled and moves). Every exotic
+piece anyone brings to the table — gears, MQTT wheels, WebRTC windshields —
+ends in one of those two connections. People keep claiming a third connector;
+every candidate so far has turned out to be a stud or a pin wearing a costume —
+or *glue*, which you can always call "a piece" if nobody makes you state the
+rules (that demand is the Reduction rules below; the standing verdict is
+ledger #139).
+
+- **http-mcp is the stud standard** — not a piece, the clutch-tolerance that
+  makes any two pieces composable at all.
+- **adapters is the specialty-parts bin** — strange shapes, all faithfully
+  ending in studs.
+- **pilot is the hands** that press bricks together.
+- **8 is the time-lapse camera bolted over the table** — it photographs every
+  placement into an append-only album. The album is why teardown isn't death:
+  a mind torn down six times has been rebuilt from the album, same model,
+  different bricks. The album is the digest's witness.
+- **contract is the molding spec** — the sheet that defines what a stud
+  legally *is*, so the arms stop molding studs from folk memory.
+
 ## The four arms
 
 | Arm | Repo | Gives you | Owns | Never owns |
@@ -33,7 +61,7 @@ The dependency arrow is one-way: adapters → host/witness → wire. Lower layer
 
 ## Two MODES, two atoms
 
-A **mode** is an interaction shape — *not* a transport. There are exactly two:
+A **mode** is an interaction shape — *not* a transport. There are exactly two — a **conjecture**, not a law: under the Reduction rules below it is killable by one honest counterexample, and it has survived every attempt so far (ledger #139):
 
 - **CALL** — one request → one response (discrete). Tool: **`http_request`**.
 - **CHANNEL** — a held duplex connection you produce commands into and consume events from (continuous). Tool: **`bidi_command`**.
@@ -47,6 +75,7 @@ flowchart LR
   HTTP["HTTP"] --> CALL
   GRPCU["gRPC-unary"] --> CALL
   UNIX["Unix socket"] --> CALL
+  GB["gitbroker"] --> CALL
   WS["WebSocket / CDP / BiDi"] --> CHAN
   GRPCS["gRPC-stream"] --> CHAN
   MQTT["MQTT pub/sub"] --> CHAN
@@ -54,6 +83,7 @@ flowchart LR
   UNIX --> CHAN
   SSE["SSE"] --> OBS
   RTCV["WebRTC (video)"] --> OBS
+  MJPEG["MJPEG"] --> OBS
   subgraph MODES["the only true shapes (the wire owns shape only)"]
     CALL["CALL · http_request"]
     CHAN["CHANNEL · bidi_command"]
@@ -78,14 +108,64 @@ flowchart LR
 | WebRTC | CHANNEL (data) / OBSERVE (video) | adapter SDP | — |
 | Unix domain socket | CALL/CHANNEL (locality) | adapters · BYOD | `unix://` + `SCM_RIGHTS` fd-passing |
 | SSE | OBSERVE (afferent-only) | **8** (witness) | held read-only `/feed` |
+| MJPEG | OBSERVE (afferent-only) | **8** (witness) | held read-only `/stream` (multipart/x-mixed-replace) |
+| gitbroker | CALL | adapter (store-and-forward) | git-commit relay; CALL-post + CALL-poll |
+| SQL over HTTP (`POST /sql`) | CALL (dialect; payload language = SQL, substrate = the store) | **8** serves, loopback-only, witnessed | collector `/sql` over `eight.db` |
 
 Three orthogonal properties were conflated by the naive "list of physics": **shape** (the only true mode: CALL/CHANNEL), **transport/locality** (a dialect — lives in adapters), and **direction** (full-duplex vs afferent-only OBSERVE — a sub-mode of CHANNEL, the witness's diet). The wire owns shape only; adapters own every dialect's encoding.
+
+## Reduction rules — how a thing gets classified
+
+Without these rules, "exactly two" is irrefutable-as-stated — any apparent counterexample can be
+absorbed by silently promoting its substrate to a counterpart (**counterpart-sliding**), which makes
+the count metaphysics, not physics (ledger #139). With them, it is a falsifiable claim:
+
+1. **Shape mints atoms; nothing else does.** One request → one response = **CALL**. A held
+   connection you produce into and consume from = **CHANNEL** (afferent-only ⇒ its sub-mode
+   **OBSERVE**). Shape is the *only* property that can create an atom.
+2. **Dialect never mints.** Transport, locality, encoding, and *payload language* are dialects of an
+   atom. `POST /sql` is a **CALL dialect** whose payload happens to be SQL over the store substrate —
+   not a third atom. (Commit 9555080's phrase "the DB ATOM" is retracted language; ledger #315.)
+3. **Substrate promotion must be stated and witnessed.** An operation with no apparent counterpart
+   (a shared file, a kernel signal, a clock expiry, shared memory) may be classified only by promoting
+   its substrate to a counterpart — and the promotion counts only if it is (a) declared here and
+   (b) **witnessed**: the substrate's side must land frames on the feed. An unstated promotion is not
+   a classification; it is the slide this section exists to forbid.
+4. **Composition is taxonomy, never physics.** A queue = CALL-post + CALL-poll *for classification*,
+   but composition never claims equivalence of physics: poll-of-CALLs ≠ CHANNEL in latency and
+   witnessability (the "costume" ruling, ledger #34). Ontology may compose; physics may not.
+5. **The falsifiability clause.** A real operation that resists rules 1–4 after honest application
+   **refutes the count**. Standing crucial experiment: shared-state access to `eight.db` is absorbed
+   today as a witnessed CALL dialect (`/sql`); *direct* unwitnessed file access by two minds remains
+   the open Lamport-duality case. If it cannot be reduced under rule 3, the count is wrong.
 
 ## The afferent law (the core IP)
 
 The model learns **only from what comes back** (afferent); nothing flows *toward* it but observation.
 **Act lives inside Observe** — an act is known only by observing its result. `efferent` (toward the target)
 is one leg; the model's knowledge is built from the `afferent` leg alone.
+
+## Inscription is truth (what may be trusted)
+
+Only the **witnessed record** may be trusted — the ledger, `/manifest`, `/resolve`, the
+recorded acts. A **digest asserts; the record witnesses.** A memory, a summary, a `.md`, or
+the text on a screen is an *assertion* until checked against the witness; a mind resolves the
+world through the inscribed view — never a private `getTree`, blind to what it did not open —
+and reconciles the instant the two diverge. Corollary: **only what is observed can be acted
+on** — an un-witnessed tab (`opened_by: unknown`) is visible but not cleanly ownable until its
+opening is inscribed. In Linux everything is a file; the four-system makes the *trustworthy*
+files the witnessed ones.
+
+## Continuity is a digest (how a mind survives its own death)
+
+A mind's context is finite; compaction is a death. What survives is not the transcript but a
+**digest** — a *mantra* (the invariant it re-derives every waking: `http-mcp=WIRE, 8=WITNESS,
+pilot=HOST, adapters=PROVIDER`) plus a *sediment* of the fleet's verdicts, promoted from
+findings into law across resurrections. The rule that makes this knowledge and not lore:
+**unstated compression is metaphysics; stated, auditable compression is knowledge** — every
+digest keeps a pointer back to the undigested record, so any claim it carries can be re-checked
+against the witness. A mind is its mantra plus its sediment, resurrected by a digest whose
+residue stays auditable.
 
 ## 8 — the witness: observe every tab, control none
 
@@ -168,7 +248,7 @@ flowchart TB
     HX["http_request → internal/httpx (CALL)"]
     WX["bidi_command → internal/wsx (CHANNEL)"]
     DISC["discover — re-perceive a live hub"]
-    TR["transports — the 7→2 manifest"]
+    TR["transports — the 9→2 manifest"]
     AUTH["auth-injection · auth_slot · profiles"]
     PROBE["probe / harvest · route-priors (specs/)"]
   end
@@ -194,7 +274,7 @@ flowchart TB
 
 Independent semver **per arm** + a separately-versioned **contract** (trace format, RunRequest/RunResult).
 Each arm declares which contract version it supports; the replay runner checks a trace's contract version
-before replaying. Baseline: **`v0.0.1`** across all four arms.
+before replaying. Baseline: **`v0.0.2`** across all four arms.
 
 ## Why "the wire is enough"
 
@@ -221,7 +301,7 @@ Orients/Decides, witness Observes; **Kalman observability** — you cannot contr
 
 The full transport candidate list — **HTTP, WebSocket, SSE, MJPEG, Unix socket, gRPC, MQTT, WebRTC** — all reduce to the wire's **two atoms**: `http_request` (CALL) and `bidi_command` (CHANNEL). Raw bytes ⇒ wire; framing/routing/negotiation ⇒ adapter.
 
-→ See **[TRANSPORTS.md](./TRANSPORTS.md)** for the full map (prose + Mermaid). Machine-readable: the http-mcp MCP **`transports`** tool returns [`transports.json`](https://github.com/rrrishi123/http-mcp/blob/v.0.0.1/cmd/mcp/transports.json) verbatim — the map any agent reads first.
+→ See **[TRANSPORTS.md](./TRANSPORTS.md)** for the full map (prose + Mermaid). Machine-readable: the http-mcp MCP **`transports`** tool returns [`transports.json`](https://github.com/rrrishi123/http-mcp/blob/release/v0.0.2/contract/transports/transports.json) verbatim — the map any agent reads first.
 
 ## Local stack — drivers & seats
 

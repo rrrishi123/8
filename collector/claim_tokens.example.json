@@ -1,0 +1,8 @@
+{
+  "_README": "Copy this to ~/.8/claim_tokens.json (host-side, NEVER commit the real file — I1 invariant) to CLOSE the actor spoof. Absent this file the collector runs the open dev model (any name may /claim; leases show authenticated but NOT verified). Present, /claim REQUIRES a matching token per agent (X-8-Token header or {token} body) or is rejected, and provenance.authenticated then requires a VERIFIED lease. Generate real tokens with e.g. `openssl rand -hex 16` per agent and distribute each secret only to that agent. Delete the _README key in the real file.",
+  "validator-pmf": "REPLACE-with-openssl-rand-hex-16",
+  "sibling-1": "REPLACE-with-openssl-rand-hex-16",
+  "validator-philo": "REPLACE-with-openssl-rand-hex-16",
+  "conductor": "REPLACE-with-openssl-rand-hex-16",
+  "wire-mitm": "REPLACE-with-openssl-rand-hex-16"
+}

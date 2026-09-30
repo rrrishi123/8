@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# STATUS (#320/#347, 2026-08-14): SUPERSEDED-IN-PART by `collector watch` — since #347 it
+# revives the collector WIRED (from ~/.8/boot.json) and guards a SEEN pack-profile firefox
+# seat (process-judged, 4500MB sustained recycle). THIS script still owns THIS host's
+# office-profile firefox guard (different profile marker); keep it here until that seat
+# migrates to the pack profile.
 # watchdog.sh — keep the channel Firefox alive. The hard lesson: judge Firefox by
 # its PROCESS, not by whether the BiDi socket answers. Under captureScreenshot
 # stream load the single BiDi socket saturates and getTree times out for many
@@ -10,6 +15,16 @@
 # Run detached:  nohup bash scripts/watchdog.sh >/tmp/watchdog.log 2>&1 &
 cd "$(dirname "$0")/.." || exit 1
 TABS_FILE="${TABS_FILE:-$HOME/.8-tabs.txt}"
+
+# Firefox liveness marker — mirror up.sh (the seat's owner). The profile is
+# EIGHT_FF_PROFILE (a host may override via ~/.8/up.env to a logged-in profile,
+# e.g. .ltqa-firefox-deepseek on this mac), else the default ~/.8/firefox-profile.
+# The old hardcoded 'firefox-profile' matched ONLY the default, so on a host with
+# an overridden profile the pgrep below never matched: the ALIVE branch (tab-save
+# + graceful collector-revive) never ran and the loop churned up.sh every cycle.
+# Derive the marker the same way up.sh does so we track whatever profile is live.
+[ -f "$HOME/.8/up.env" ] && . "$HOME/.8/up.env"
+PROFILE_MARK="$(basename "${EIGHT_FF_PROFILE:-$HOME/.8/firefox-profile}")"
 
 # SINGLETON (pid-owned mkdir-lock, dead-owner stolen) — exactly one watchdog.
 # up.sh spawns a watchdog per revive and a detached one can outlive for days;
@@ -65,7 +80,7 @@ run_up() {
 
 fails=0  # consecutive cycles with the Firefox PROCESS gone (process death, not socket silence)
 while true; do
-  if pgrep -f 'firefox.*ltqa-firefox-deepseek' >/dev/null 2>&1; then
+  if pgrep -f "firefox.*$PROFILE_MARK" >/dev/null 2>&1; then
     fails=0
     # ALIVE (process exists). Opportunistically save tabs — a slow/failed getTree
     # here is just a busy socket, never a recycle trigger.
@@ -105,7 +120,12 @@ while true; do
       # revive path MUST stay arg-parity with up.sh's collector start (the
       # 2026-07-27 drift: this line lacked it, so a watchdog-revived collector
       # went blind at the next recycle).
-      nohup collector/collector -listen :7070 -brokers "$BRK" -gecko "http://127.0.0.1:4444/session/$SID" -session-file "$HOME/.8/gecko.json" >/tmp/collector-8.log 2>&1 &
+      # WITNESS SERVER PIN (2026-09-16 rebirth): if ~/.8/witness-tmux.env names a
+      # tmux socket, the collector must witness THAT server across revives — else
+      # it defaults to $TMUX (the default server) and goes blind to the reborn
+      # fleet on eight2. Absent file = inherit env (pre-rebirth behaviour).
+      WT=""; [ -f "$HOME/.8/witness-tmux.env" ] && WT="TMUX=$(cat "$HOME/.8/witness-tmux.env")"
+      env $WT nohup collector/collector -listen :7070 -brokers "$BRK" -gecko "http://127.0.0.1:4444/session/$SID" -session-file "$HOME/.8/gecko.json" >/tmp/collector-8.log 2>&1 &
     fi
   else
     # Firefox PROCESS is GONE -> genuinely dead. Two consecutive to ride out a
@@ -119,5 +139,26 @@ while true; do
       sleep 30
     fi
   fi
+  # NAME HEAL: re-stamp @mind (durable uuid->name) onto whatever %N each family
+  # session now holds. %N re-mints on a tmux SERVER restart and blanks @mind; this
+  # restores visible identity within a tick, independent of the collector's sync.
+  [ -x "$HOME/.8/heal-names.sh" ] && bash "$HOME/.8/heal-names.sh" >/dev/null 2>&1
+
+  # PEER-BEAT liveness — keep this host's federation heartbeats alive so the
+  # portal never loses a node to a crashed beat (same per-host singleton lock the
+  # beat holds). cwd here is the 8 repo root (cd at top).
+  # per-host override: ~/.8/peer-beat.env may set BEAT_SPECS so a NON-HUB host
+  # (e.g. omarchy) revives ITS OWN beat to the hub's address — the rendezvous/IP
+  # lives in that host-local env, never in this public repo. Default = the mac +
+  # colima hub pair. (Fixes: omarchy's beat had no supervisor entry, so a crash/
+  # reboot dropped it from /peers with nothing to revive it.)
+  _specs="mac: colima:HOSTRES_CMD=$(pwd)/scripts/colima-hostres.sh"
+  [ -f "$HOME/.8/peer-beat.env" ] && . "$HOME/.8/peer-beat.env"
+  for spec in ${BEAT_SPECS:-$_specs}; do
+    ph="${spec%%:*}"; extra="${spec#*:}"; lock="/tmp/8-peerbeat.$ph.lockdir"
+    if [ -d "$lock" ] && kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null; then continue; fi
+    echo "[watchdog $(date +%H:%M:%S)] peer-beat $ph down -> reviving"
+    ( env PEER_HOST="$ph" $extra nohup bash scripts/peer-beat.sh >"/tmp/peer-beat-$ph.log" 2>&1 & )
+  done
   sleep 15
 done

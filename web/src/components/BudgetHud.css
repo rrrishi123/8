@@ -1,0 +1,14 @@
+/* Each host keeps two provider rows together. The statusline can scroll this
+   strip independently instead of pushing its view controls out of the pane. */
+.hud.hud-fleet { align-items: stretch; gap: 10px; padding: 3px 8px; min-width: 0; }
+.hud-fleet .hud-host { display: flex; flex-direction: column; flex: none; gap: 1px; }
+.hud-fleet .hud-host + .hud-host { border-left: 1px solid var(--line, #666); padding-left: 10px; }
+.hud-fleet .hud-host-head { display: flex; align-items: center; gap: 5px; font-size: 10px; }
+.hud-fleet .hud-host-source { opacity: .6; font-size: 9px; }
+.hud-fleet .hud-host-head .hud-refresh { margin-left: auto; }
+.hud-fleet .hud-seg { white-space: nowrap; gap: 4px; font-size: 10px; line-height: 1.5; }
+.hud-fleet .hud-tag { min-width: 49px; font-size: 9px; letter-spacing: .04em; padding: 0 3px; }
+.hud-fleet .hud-phase { font-size: 8px; }
+.hud-fleet .hud-num { min-width: 48px; }
+.hud-fleet .hud-obs, .hud-fleet .hud-stale { font-size: 9px; }
+.statusline .hud.hud-fleet { flex: 1 1 auto; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; }
