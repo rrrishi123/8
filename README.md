@@ -6,6 +6,7 @@ For multi-host registration, see [native peer join](docs/peer-join.md)
 > Part of **The Wire** — a four-arm system for protocol-agnostic test automation with record & replay.
 > **This repo is the 8 — the WITNESS** — OODA Observe across every tab; aperture-controlled; recommends, never acts.
 > **The four arms:** [http-mcp](https://github.com/rrrishi123/http-mcp) (WIRE) · [8](https://github.com/rrrishi123/8) (WITNESS) · [pilot](https://github.com/rrrishi123/pilot) (HOST) · [adapters](https://github.com/rrrishi123/adapters) (ARMS)
+> **The idea, stated:** [docs/four-system.md](docs/four-system.md) — the two atoms, the four arms as protocol, inscription-is-truth, and digest-continuity, as rules ([FABLE.md](FABLE.md) is the same idea as story).
 
 ---
 
