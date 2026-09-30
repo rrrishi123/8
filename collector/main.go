@@ -90,9 +90,10 @@ type collector struct {
 	manifestSeeded  bool       // first reconcile after (re)start captures already-open tabs as "unknown" — the witness didn't see them born, so it must NOT claim "human"
 	manifestOmitted uint64     // observations refused when all bounded slots are live
 
-	wmu     sync.Mutex        // #12 change-detector: a tab you WATCH pushes tab.changed on DOM shift
+	wmu        sync.Mutex        // #12 change-detector: a tab you WATCH pushes tab.changed on DOM shift
 	watched    map[string]string // ctx -> last DOM signature (opt-in; only watched tabs are read)
 	watchDirty map[string]int    // T5: ctx -> consecutive stable checks since last change; settle → reply-complete
+	watchSub   map[string]string // T5: ctx -> substrate ("fox"|"chrome"); default fox. Routes the DOM-sig read.
 
 	pmu       sync.Mutex        // witness pane appearance (#277): pane_id -> first_seen
 	panesSeen map[string]string // so a spawned pane is RECORDED (pane.appeared), not guessed
@@ -2354,6 +2355,17 @@ func (c *collector) seatWatchLoop() {
 						}
 					}
 				}
+				// CHROME (CDP) reads — tabs registered substrate=chrome (T5). The fox
+				// pass above skips them harmlessly (BiDi eval on a chrome target errors);
+				// this reads them over CDP via the shared probe.
+				if cb := c.find("chrome"); cb != nil {
+					for ctx, prev := range watch {
+						if c.watchSubOf(ctx) != "chrome" {
+							continue
+						}
+						c.watchStep(ctx, prev, c.chromeSig(cb, ctx), "chrome")
+					}
+				}
 			}
 		}
 	}
@@ -2365,16 +2377,24 @@ func (c *collector) seatWatchLoop() {
 // ping for tabs you're NOT looking at (a reply landed on claude/deepseek).
 func (c *collector) handleWatch(w http.ResponseWriter, r *http.Request) {
 	ctx := r.URL.Query().Get("context")
+	sub := r.URL.Query().Get("substrate") // T5: "chrome" reads this tab over CDP; default fox
 	c.wmu.Lock()
 	if c.watched == nil {
 		c.watched = map[string]string{}
 	}
+	if c.watchSub == nil {
+		c.watchSub = map[string]string{}
+	}
 	if ctx != "" {
 		if r.URL.Query().Get("off") == "1" {
 			delete(c.watched, ctx)
+			delete(c.watchSub, ctx)
 		} else {
 			if _, ok := c.watched[ctx]; !ok {
 				c.watched[ctx] = "" // empty sig → first read establishes baseline (no false first event)
+			}
+			if sub == "chrome" {
+				c.watchSub[ctx] = "chrome"
 			}
 		}
 	}
@@ -4760,7 +4780,7 @@ func main() {
 	mux.HandleFunc("/peers", c.handlePeers)               // #886: federation rendezvous — push register/heartbeat
 	mux.HandleFunc("/db", c.handleDB)                     // project the scattered stores into ~/.8/eight.db for DBeaver
 	mux.HandleFunc("/stopwatch", c.handleStopwatch)       // experiri: the witness's staleness made readable
-	mux.HandleFunc("/event", c.handleEvent) // T5: witnessed reply-event bus (per-tab CDP watcher posts here; any host polls ?since=)
+	mux.HandleFunc("/event", c.handleEvent)               // T5: witnessed reply-event bus (per-tab CDP watcher posts here; any host polls ?since=)
 	mux.HandleFunc("/work", c.handleWork)
 	mux.HandleFunc("/work/next", c.handleWorkNext)
 	mux.HandleFunc("/work/playlist", c.handlePlaylist)
