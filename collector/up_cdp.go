@@ -16,23 +16,24 @@ func prepareCDPSeat(root string, s substrate) error {
 	if !portUp("127.0.0.1:9333") {
 		packUpEngine(root, "chrome", 9333, s.Chrome)
 	}
+	// Hold the BROWSER-level CDP endpoint (/json/version), not a single page ws.
+	// handleTabs enumerates the chrome seat with Target.getTargets and captures by
+	// Target.attachToTarget(flatten) — both are browser-level operations. A page
+	// ws can speak to only its own target, so the manifest reconcile saw ZERO tabs
+	// and no other tab could be captured (2026-10-04). The browser ws sees every
+	// tab across every window; cdpShot's browser-seat path already handles it.
 	client := &http.Client{Timeout: time.Second}
 	var ws string
 	for i := 0; i < 40; i++ {
-		resp, err := client.Get("http://127.0.0.1:9333/json")
+		resp, err := client.Get("http://127.0.0.1:9333/json/version")
 		if err == nil {
-			var tabs []struct {
-				Type, WebSocketDebuggerURL string
+			var v struct {
+				WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
 			}
-			err = json.NewDecoder(resp.Body).Decode(&tabs)
+			err = json.NewDecoder(resp.Body).Decode(&v)
 			resp.Body.Close()
-			if err == nil {
-				for _, tab := range tabs {
-					if tab.Type == "page" && tab.WebSocketDebuggerURL != "" {
-						ws = tab.WebSocketDebuggerURL
-						break
-					}
-				}
+			if err == nil && v.WebSocketDebuggerURL != "" {
+				ws = v.WebSocketDebuggerURL
 			}
 		}
 		if ws != "" {
@@ -41,7 +42,7 @@ func prepareCDPSeat(root string, s substrate) error {
 		time.Sleep(250 * time.Millisecond)
 	}
 	if ws == "" {
-		return fmt.Errorf("no CDP page on :9333; collector can still boot without a browser")
+		return fmt.Errorf("no CDP browser endpoint on :9333; collector can still boot without a browser")
 	}
 	if portUp("127.0.0.1:4446") {
 		return nil
