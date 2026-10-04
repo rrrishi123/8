@@ -79,6 +79,37 @@ func lookChrome() string {
 	return ""
 }
 
+// lookChromeMember resolves a SPECIFIC chrome-family browser by name
+// (chromium|edge|brave|chrome) — PATH first, then the OS install location — so
+// an explicit EIGHT_ENGINE choice wins over discovery's first-installed default.
+func lookChromeMember(engine string) string {
+	names := map[string][]string{
+		"chromium": {"chromium", "chromium-browser"},
+		"edge":     {"microsoft-edge", "microsoft-edge-stable"},
+		"brave":    {"brave-browser", "brave"},
+		"chrome":   {"google-chrome", "google-chrome-stable", "chrome"},
+	}[engine]
+	for _, n := range names {
+		if p := look(n); p != "" {
+			return p
+		}
+	}
+	apps := map[string]string{
+		"chromium": "/Applications/Chromium.app/Contents/MacOS/Chromium",
+		"edge":     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+		"brave":    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+		"chrome":   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+	}
+	if runtime.GOOS == "darwin" {
+		if cand := apps[engine]; cand != "" {
+			if st, err := os.Stat(cand); err == nil && !st.IsDir() {
+				return cand
+			}
+		}
+	}
+	return ""
+}
+
 func discoverSubstrate() substrate {
 	s := substrate{OS: runtime.GOOS, Tmux: look("tmux"), Gecko: look("geckodriver"), Firefox: look("firefox")}
 	if s.Firefox == "" { // not on PATH — try the OS's standard install location
@@ -90,6 +121,16 @@ func discoverSubstrate() substrate {
 		}
 	}
 	s.Chrome = lookChrome()
+	// Honor an explicit chrome-family member: discovery returns the first
+	// installed (Chrome is probed before Chromium), so an operator who asks for
+	// EIGHT_ENGINE=chromium (or edge/brave) would otherwise still get Chrome. A
+	// named member overrides the first-installed default; the engine FAMILY stays
+	// "chrome" (CDP is uniform), only the binary changes.
+	if eng := os.Getenv("EIGHT_ENGINE"); eng != "" && eng != "firefox" && eng != "chrome" {
+		if b := lookChromeMember(eng); b != "" {
+			s.Chrome = b
+		}
+	}
 	// Prefer one Chrome/CDP engine: capture at display width in the browser.
 	// Firefox remains available when explicitly selected or Chrome is absent.
 	s.Engine = selectBrowserEngine(s, os.Getenv("EIGHT_ENGINE"))
