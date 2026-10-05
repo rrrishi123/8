@@ -102,7 +102,18 @@ for p in $PANES; do
     if [ "$n" -lt "$DEFER_CAP" ]; then
       echo "$(date +%H:%M) $p being typed/unsent — defer ($n/$DEFER_CAP)"; continue
     fi
-    echo "$(date +%H:%M) $p still unsettled after $n defers — sending anyway (threshold)"; rm -f "$dc"
+    # THRESHOLD reached — a LEFT/forgotten draft must not starve the loop. But
+    # never type over someone ACTIVELY typing: the DEFER_CAP once fired a nudge
+    # straight through a long compose/thinking pause (2026-10-05). Re-sample: if
+    # the pane is still CHANGING (or generating), the operator is mid-compose —
+    # hold the counter at the cap and keep deferring, no matter how long it takes.
+    # Only send-anyway for a STABLE unsent draft (truly left behind).
+    a=$(tmux capture-pane -t "$p" -p 2>/dev/null); sleep 1.2; b=$(tmux capture-pane -t "$p" -p 2>/dev/null)
+    if [ "$a" != "$b" ] || printf '%s' "$b" | grep -q 'esc to interrupt'; then
+      echo "$DEFER_CAP" > "$dc"   # hold at cap; active typing must never trip the threshold
+      echo "$(date +%H:%M) $p actively typing at threshold — keep deferring (not sending over live input)"; continue
+    fi
+    echo "$(date +%H:%M) $p stable unsent draft after $n defers — sending anyway (threshold)"; rm -f "$dc"
   fi
   limited "$p" && { echo "$(date +%H:%M) $p plan-limited — backing off (auto-resumes on reset)"; continue; }
   f="$LEDGER/$p.txt"

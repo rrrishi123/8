@@ -50,11 +50,22 @@ for row in docker_ps():
                   'view_url': f'http://127.0.0.1:{view}/' if view else None,
                   'cdp_url': f'http://127.0.0.1:{cdp}' if cdp else None})
 
-# the host browser: present when the pack published a seat (gecko.json) or the meta names one
+# the host browser: present when the pack published a seat (gecko.json) or the meta names one.
+# A chrome-family host seat exposes CDP on :9333 — probe it so the host node is LIVE
+# (viewable/driveable), not a dead static entry. meta may pin cdp_url/view_url explicitly.
 host_engine = hostmeta.get('engine', 'firefox')
 if hostmeta or os.path.exists(os.path.join(home, 'gecko.json')):
+    hcdp = hostmeta.get('cdp_url')
+    if hcdp is None and host_engine in ('chrome', 'chromium', 'edge', 'brave'):
+        try:
+            import urllib.request
+            urllib.request.urlopen('http://127.0.0.1:9333/json/version', timeout=1).read()
+            hcdp = 'http://127.0.0.1:9333'
+        except Exception:
+            hcdp = None
     nodes.append({'id': hostmeta.get('id', 'host-' + host_engine), 'engine': host_engine, 'mode': 'host',
-                  'profile': hostmeta.get('profile', 'host'), 'view_url': None, 'cdp_url': None})
+                  'profile': hostmeta.get('profile', 'host'),
+                  'view_url': hostmeta.get('view_url'), 'cdp_url': hcdp})
 
 out = os.path.join(home, 'browser-nodes.json')
 tmp = out + '.tmp'
