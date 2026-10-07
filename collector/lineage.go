@@ -75,6 +75,41 @@ func staleBoot(it workItem) bool {
 type lineageFile struct {
 	Boots map[string]map[string]string `json:"boots"` // boot -> %N -> claude uuid
 	Seen  map[string]string            `json:"seen"`  // boot -> last witnessed (RFC3339)
+	Seats map[string]int               `json:"seats"` // uuid -> STABLE seat: the identity number tmux's %N can't be
+}
+
+// seatCap bounds the stable-seat space. Seats are assigned once per identity and
+// PERSISTED, so a given uuid shows the SAME number across every tmux boot even as
+// tmux re-mints %N. A uuid's seat is seeded from a hash (so seats spread instead
+// of piling at 0) then linear-probed to the first free slot; far more slots than
+// the fleet ever has panes, so probing effectively never wraps.
+const seatCap = 1000
+
+// assignSeat returns uuid's stable seat, minting one on first sight and never
+// changing it after. This is the mechanism that makes the pane NUMBER durable:
+// don't fight tmux for a fixed %N — own a seat the four-system controls, derived
+// from the uuid, and show that. The collector maps %N -> uuid -> seat each tick.
+func assignSeat(l *lineageFile, uuid string) int {
+	if l.Seats == nil {
+		l.Seats = map[string]int{}
+	}
+	if s, ok := l.Seats[uuid]; ok {
+		return s
+	}
+	used := make(map[int]bool, len(l.Seats))
+	for _, s := range l.Seats {
+		used[s] = true
+	}
+	start := int(fnv1a([]byte(uuid)) % seatCap)
+	for i := 0; i < seatCap; i++ {
+		cand := (start + i) % seatCap
+		if !used[cand] {
+			l.Seats[uuid] = cand
+			return cand
+		}
+	}
+	l.Seats[uuid] = start // pool exhausted (never at < seatCap identities)
+	return start
 }
 
 func lineagePath() string { return os.ExpandEnv("$HOME/.8/lineage.json") }
@@ -88,6 +123,9 @@ func loadLineage() *lineageFile {
 		}
 		if l.Seen == nil {
 			l.Seen = map[string]string{}
+		}
+		if l.Seats == nil {
+			l.Seats = map[string]int{}
 		}
 	}
 	return l
@@ -123,6 +161,7 @@ func recordLineage(l *lineageFile, boot, now string, paneUUID map[string]string)
 		if uuid == "" {
 			continue
 		}
+		assignSeat(l, uuid) // mint-once the stable seat for this identity (no-op if it already has one)
 		if l.Boots[boot][pane] != uuid {
 			l.Boots[boot][pane] = uuid
 			fresh = append(fresh, [2]string{pane, uuid})
@@ -310,10 +349,21 @@ func (c *collector) handleLineage(w http.ResponseWriter, r *http.Request) {
 		fmt.Sscan(boot, &secs)
 		bootAt = time.Unix(secs, 0).UTC().Format(time.RFC3339)
 	}
+	// seat_by_pane: this boot's live %N -> the identity's STABLE seat (the number
+	// to SHOW). %N churns across boots; the seat does not.
+	seatByPane := map[string]int{}
+	if cur := l.Boots[boot]; cur != nil {
+		for pane, uuid := range cur {
+			if s, ok := l.Seats[uuid]; ok {
+				seatByPane[pane] = s
+			}
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"boot": boot, "boot_at": bootAt, "boots": boots, "lineage": l.Boots, "seen": l.Seen,
+		"seats": l.Seats, "seat_by_pane": seatByPane,
 		"quarantined": quar, "quarantined_ids": ids,
-		"note": "%N is per tmux boot; items stamped with an older boot are quarantined until translated via uuid",
+		"note": "%N is per tmux boot; the STABLE identity number is seat (uuid->seat, persisted); seat_by_pane maps this boot's %N to it",
 	})
 }
