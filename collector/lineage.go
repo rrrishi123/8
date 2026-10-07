@@ -78,18 +78,17 @@ type lineageFile struct {
 	Seats map[string]int               `json:"seats"` // uuid -> STABLE seat: the identity number tmux's %N can't be
 }
 
-// seatCap bounds the stable-seat space. Seats are assigned once per identity and
-// PERSISTED, so a given uuid shows the SAME number across every tmux boot even as
-// tmux re-mints %N. A uuid's seat is seeded from a hash (so seats spread instead
-// of piling at 0) then linear-probed to the first free slot; far more slots than
-// the fleet ever has panes, so probing effectively never wraps.
-const seatCap = 1000
-
 // assignSeat returns uuid's stable seat, minting one on first sight and never
 // changing it after. This is the mechanism that makes the pane NUMBER durable:
-// don't fight tmux for a fixed %N — own a seat the four-system controls, derived
-// from the uuid, and show that. The collector maps %N -> uuid -> seat each tick.
-func assignSeat(l *lineageFile, uuid string) int {
+// don't fight tmux for a fixed %N — own a seat the four-system controls.
+//
+// The seat is SEEDED FROM THE IDENTITY'S CURRENT %N so it reads like the pane
+// number everyone already uses to address each other (conductor at %6 -> seat 6),
+// then stays fixed even as tmux re-mints %N on every boot. On the rare collision
+// (a small number a different identity already owns from an earlier boot) it
+// probes upward to the first free slot. Seats are host-local, exactly like %N:
+// address an agent on another host as <host>/<seat>.
+func assignSeat(l *lineageFile, uuid, pane string) int {
 	if l.Seats == nil {
 		l.Seats = map[string]int{}
 	}
@@ -100,16 +99,16 @@ func assignSeat(l *lineageFile, uuid string) int {
 	for _, s := range l.Seats {
 		used[s] = true
 	}
-	start := int(fnv1a([]byte(uuid)) % seatCap)
-	for i := 0; i < seatCap; i++ {
-		cand := (start + i) % seatCap
+	seed := 0
+	if n := strings.TrimPrefix(pane, "%"); n != "" {
+		fmt.Sscan(n, &seed)
+	}
+	for cand := seed; ; cand++ {
 		if !used[cand] {
 			l.Seats[uuid] = cand
 			return cand
 		}
 	}
-	l.Seats[uuid] = start // pool exhausted (never at < seatCap identities)
-	return start
 }
 
 func lineagePath() string { return os.ExpandEnv("$HOME/.8/lineage.json") }
@@ -161,7 +160,7 @@ func recordLineage(l *lineageFile, boot, now string, paneUUID map[string]string)
 		if uuid == "" {
 			continue
 		}
-		assignSeat(l, uuid) // mint-once the stable seat for this identity (no-op if it already has one)
+		assignSeat(l, uuid, pane) // mint-once the stable seat, seeded from this %N (no-op if it already has one)
 		if l.Boots[boot][pane] != uuid {
 			l.Boots[boot][pane] = uuid
 			fresh = append(fresh, [2]string{pane, uuid})
