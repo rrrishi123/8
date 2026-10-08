@@ -38,6 +38,47 @@ var daemonSpecs = []daemonSpec{
 	{"dbeaver", "DBeaver.app", "", false},
 }
 
+// Host-supplied daemons: every host has its own background minds (a linux host may run
+// systemd user services the office Mac never has). Rather than hardcode them,
+// the witness reads optional extra specs from $EIGHT_DAEMONS_FILE (default ~/.8/daemons.conf),
+// one per line: name|pgrep-pattern|log   (log may be a path, "journal:<user-unit>", or empty).
+// No file => exactly the built-in list. Lines starting with # are ignored.
+func init() {
+	p := os.Getenv("EIGHT_DAEMONS_FILE")
+	if p == "" {
+		h, _ := os.UserHomeDir()
+		p = h + "/.8/daemons.conf"
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return
+	}
+	for _, ln := range strings.Split(string(b), "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln == "" || strings.HasPrefix(ln, "#") {
+			continue
+		}
+		f := strings.SplitN(ln, "|", 3)
+		if len(f) < 2 || f[0] == "" || f[1] == "" {
+			continue
+		}
+		spec := daemonSpec{name: strings.TrimSpace(f[0]), pat: strings.TrimSpace(f[1])}
+		if len(f) == 3 {
+			spec.log = strings.TrimSpace(f[2])
+		}
+		daemonSpecs = append(daemonSpecs, spec)
+	}
+}
+
+// daemonLog tails a daemon's log: a file path, or "journal:<unit>" for a systemd user unit.
+func daemonLog(src string, n int) string {
+	if u, ok := strings.CutPrefix(src, "journal:"); ok {
+		out, _ := exec.Command("journalctl", "--user", "-u", u, "-n", strconv.Itoa(n), "--no-pager", "-o", "short-iso").Output()
+		return string(out)
+	}
+	return tailFile(os.ExpandEnv(src), n)
+}
+
 type daemonRec struct{ Name, Pid, Info string }
 
 func daemonList() []daemonRec {
@@ -163,7 +204,7 @@ func (c *collector) handleDaemonFrame(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if d.log != "" {
-			b.WriteString("\n── log ──\n" + tailFile(os.ExpandEnv(d.log), 24))
+			b.WriteString("\n── log ──\n" + daemonLog(d.log, 24))
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		io.WriteString(w, b.String())
