@@ -140,7 +140,7 @@ fi
 if up 7070; then echo "collector:  already up :7070"; else
   # a missing binary must NOT kill the wire (8 would poll a dead :7070 forever) —
   # build it on demand. This is the gap that left 8 "moving while doing nothing".
-  [ -x "$COLLECTOR" ] || { echo "collector:  binary missing -> building"; ( cd "$REPO/8/collector" && go build -o collector . ); }
+  [ -x "$COLLECTOR" ] || { echo "collector:  binary missing -> building"; bash "$REPO/8/build.sh" >/dev/null 2>&1; }  # build.sh stamps -ldflags SHA (bare `go build` left /health build EMPTY)
   # -session-file: re-read the live seat on every probe, so /procinfo (and the
   # watchdog's FLOW-10 recycle that depends on it) survives Firefox recycles —
   # a fixed -gecko session URL goes stale on the first recycle and blinds both.

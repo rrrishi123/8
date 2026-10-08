@@ -111,7 +111,7 @@ while true; do
     # COLLECTOR liveness — revive a dead collector WITHOUT Firefox churn.
     if ! lsof -ti :7070 >/dev/null 2>&1; then
       echo "[watchdog $(date +%H:%M:%S)] collector :7070 down -> reviving (collector-only)"
-      [ -x collector/collector ] || ( cd collector && go build -o collector . )
+      [ -x collector/collector ] || bash build.sh >/dev/null 2>&1   # build.sh stamps -ldflags SHA; a bare `go build` left /health build EMPTY (2026-10-08)
       SID=$(ps aux | grep '[c]hannel -ws' | grep 4445 | grep -o 'session/[0-9a-f-]*' | head -1 | cut -d/ -f2)
       BRK="fox=http://127.0.0.1:4445"
       lsof -ti :4446 >/dev/null 2>&1 && BRK="$BRK,chrome=http://127.0.0.1:4446"

@@ -37,8 +37,13 @@ for r in $REPOS; do
     if git -C "$d" merge --no-edit FETCH_HEAD >/dev/null 2>&1; then say "  merged upstream under overlay -> $(git -C "$d" rev-parse --short HEAD)"
     else git -C "$d" merge --abort 2>/dev/null; say "  CONFLICT with private overlay — aborted, needs a human"; continue; fi
   fi
-  # rebuild through the canonical build (same one CI uses)
-  if [ -x "$d/build.sh" ]; then ( cd "$d" && ./build.sh >/dev/null 2>&1 ) && say "  rebuilt" || say "  build FAILED"; fi
+  # rebuild through the canonical build. A private host carrying a kosaten overlay
+  # must build the OVERLAY variant (e.g. pilot -tags kosaten) via its
+  # kosaten/build.sh; public hosts have no such file and fall back to build.sh.
+  # (2026-10-08: fleet-sync rebuilt pilot with the plain build.sh, dropping
+  # -tags kosaten on private hosts.)
+  b="kosaten/build.sh"; [ -x "$d/$b" ] || b="build.sh"
+  if [ -x "$d/$b" ]; then ( cd "$d" && "./$b" >/dev/null 2>&1 ) && say "  rebuilt ($b)" || say "  build FAILED ($b)"; fi
 done
 
 # Rebuilt binaries do NOT run until the service is bounced. This is OPT-IN
