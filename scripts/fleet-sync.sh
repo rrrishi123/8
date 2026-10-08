@@ -39,11 +39,22 @@ for r in $REPOS; do
   fi
   # rebuild through the canonical build. A private host carrying a kosaten overlay
   # must build the OVERLAY variant (e.g. pilot -tags kosaten) via its
-  # kosaten/build.sh; public hosts have no such file and fall back to build.sh.
-  # (2026-10-08: fleet-sync rebuilt pilot with the plain build.sh, dropping
-  # -tags kosaten on private hosts.)
-  b="kosaten/build.sh"; [ -x "$d/$b" ] || b="build.sh"
-  if [ -x "$d/$b" ]; then ( cd "$d" && "./$b" >/dev/null 2>&1 ) && say "  rebuilt ($b)" || say "  build FAILED ($b)"; fi
+  # kosaten/build.sh — and that script is a NO-OP (exit 0, builds nothing) unless
+  # KOSATEN_HOME=1 is set, so fleet-sync must pass the flag or it prints "rebuilt"
+  # while producing nothing (2026-10-08, reported from omarchy). Public hosts have
+  # no kosaten/build.sh and fall back to build.sh. The "rebuilt" claim is verified
+  # by a mtime marker: only say rebuilt if the build actually wrote an output.
+  b="kosaten/build.sh"; kh=0; [ -x "$d/$b" ] && kh=1 || b="build.sh"
+  if [ -x "$d/$b" ]; then
+    marker="$(mktemp)"
+    if [ "$kh" = 1 ]; then ( cd "$d" && KOSATEN_HOME=1 "./$b" >/dev/null 2>&1 ); else ( cd "$d" && "./$b" >/dev/null 2>&1 ); fi
+    rc=$?
+    changed="$(find "$d" -type f -not -path '*/.git/*' -newer "$marker" -print 2>/dev/null | head -1)"
+    rm -f "$marker"
+    if [ "$rc" -ne 0 ]; then say "  build FAILED ($b)"
+    elif [ -n "$changed" ]; then say "  rebuilt ($b)"
+    else say "  build ran but wrote NOTHING ($b) — overlay flag off, or already current"; fi
+  fi
 done
 
 # Rebuilt binaries do NOT run until the service is bounced. This is OPT-IN
