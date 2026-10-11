@@ -455,6 +455,15 @@ func (c *collector) handleInbox(w http.ResponseWriter, r *http.Request) {
 		}
 		c.tmu.Unlock()
 		if got == nil {
+			// A "say" message is not a work item, so take/decline cannot find it in the
+			// ledger — and it then stayed in the inbox forever, re-nudging the pane every
+			// half hour. Taking or declining a message is its acknowledgement: drop it.
+			if hasOffer(p.UUID, p.ID) || hasOffer(p.Pane, p.ID) {
+				dropOffer(p.UUID, p.ID)
+				dropOffer(p.Pane, p.ID)
+				_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "action": "ack", "id": p.ID})
+				return
+			}
 			http.Error(w, `{"error":"no such item"}`, 404)
 			return
 		}
@@ -482,4 +491,19 @@ func dropOfferEverywhere(id int64) {
 		key = strings.Replace(key, "pane-", "%", 1)
 		dropOffer(key, id)
 	}
+}
+
+// hasOffer reports whether the inbox under key holds an offer/message with this id.
+func hasOffer(key string, id int64) bool {
+	if key == "" {
+		return false
+	}
+	inboxMu.Lock()
+	defer inboxMu.Unlock()
+	for _, o := range loadInbox(key) {
+		if o.ID == id {
+			return true
+		}
+	}
+	return false
 }
