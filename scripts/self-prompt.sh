@@ -116,7 +116,11 @@ for p in $PANES; do
     echo "$(date +%H:%M) $p stable unsent draft after $n defers — sending anyway (threshold)"; rm -f "$dc"
   fi
   limited "$p" && { echo "$(date +%H:%M) $p plan-limited — backing off (auto-resumes on reset)"; continue; }
-  f="$LEDGER/$p.txt"
+  # The nudge FIFO is a SEPARATE file from the inscription ledger. $p.txt is the
+  # append-only inscription log (witnessed progress); popping its head fed days-old
+  # inscriptions back as stale "do next" nudges AND destroyed the log line by line
+  # (2026-10-12). The plan-queue the agent appends its next step to is $p.plan.
+  f="$LEDGER/$p.plan"
   if [ -s "$f" ]; then
     next=$(head -1 "$f")
     tail -n +2 "$f" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"   # pop delivered line
