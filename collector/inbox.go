@@ -137,7 +137,7 @@ func paneIdle(pane string) bool {
 	if tb == "" {
 		return false
 	}
-	out, err := tmuxOut(tb, "capture-pane", "-p", "-t", pane)
+	out, err := tmuxOut(tb, "capture-pane", "-e", "-p", "-t", pane) // -e: tell dim placeholders from drafts
 	if err != nil {
 		return false
 	}
@@ -145,10 +145,8 @@ func paneIdle(pane string) bool {
 	if state, _ := classifyScreen(string(out), kind); state != "idle" { // typing, waiting, capped and stuck are not idle either
 		return false
 	}
-	// UNSENT-INPUT GUARD: classifyScreen calls a claude pane "idle" whenever it is
-	// not generating — but the operator may have composed a message and not sent
-	// it (a "❯ <text>" prompt, stable during a thinking pause). Typing on top of
-	// that is the collision the 8-loop hit; refuse it here too.
+	// UNSENT-INPUT GUARD: classifyScreen already reports a claude draft as
+	// "typing"; kept as a belt-and-braces check (the collision the 8-loop hit).
 	if kind == "claude-code" && hasUnsentInput(string(out)) {
 		return false
 	}
@@ -160,7 +158,7 @@ func paneIdle(pane string) bool {
 	// simply isn't sent to this cycle; the caller retries once it settles.
 	first := string(out)
 	time.Sleep(paneTypingProbe)
-	out2, err := tmuxOut(tb, "capture-pane", "-p", "-t", pane)
+	out2, err := tmuxOut(tb, "capture-pane", "-e", "-p", "-t", pane)
 	if err != nil || string(out2) != first {
 		return false
 	}
@@ -173,34 +171,26 @@ func paneIdle(pane string) bool {
 var paneTypingProbe = 900 * time.Millisecond
 
 // hasUnsentInput reports whether a claude-code pane holds composed-but-unsent
-// text at its prompt: a "❯" line with non-space content after the marker. Empty
-// is "❯ " (marker + trailing spaces, nothing after).
+// text at its prompt: a "❯" line with real (non-placeholder) content.
 //
-// Claude Code also renders GREY PLACEHOLDER text in that same prompt line —
-// "Press up to edit queued messages", "Try …", a bare "⏎" hint — which
-// capture-pane -p cannot distinguish from a real draft by colour. Treating a
-// placeholder as unsent input false-defers the pane forever (the over-correction
-// that stalled the loop), so the known placeholders are excluded here, in lockstep
-// with scripts/self-prompt.sh's idle().
+// Claude Code also renders GREY/DIM PLACEHOLDER text in that same prompt line —
+// a ghost suggestion ("❯ send it into the pane myself"), "Press up to edit queued
+// messages", "Try …", a bare "⏎" hint. On an ANSI capture (capture-pane -e) the
+// faint/grey cells are dropped, so ANY ghost reads as empty. On a plain capture
+// only the known placeholders can be excluded (in lockstep with
+// scripts/self-prompt.sh's idle()).
 func hasUnsentInput(screen string) bool {
-	for _, ln := range strings.Split(screen, "\n") {
-		t := strings.TrimRight(ln, " ")
-		if !strings.HasPrefix(t, "❯") {
-			continue
-		}
-		rest := strings.TrimSpace(strings.TrimPrefix(t, "❯"))
-		switch {
-		case rest == "":
-			continue // empty prompt
-		case strings.HasPrefix(rest, "Press up to edit"),
-			strings.HasPrefix(rest, "Try "),
-			strings.HasPrefix(rest, "⏎"):
-			continue // grey placeholder, not a draft
-		default:
-			return true // a real composed-but-unsent draft
+	lines := strings.Split(screen, "\n")
+	for i := len(lines) - 1; i >= 0; i-- { // the composer is the LAST prompt line; earlier ones are transcript
+		if d, ok := composerDraft(lines[i], "❯", claudePlaceholder); ok {
+			return d != "" // a real composed-but-unsent draft
 		}
 	}
 	return false
+}
+
+func claudePlaceholder(d string) bool {
+	return d == "" || strings.HasPrefix(d, "Press up to edit") || strings.HasPrefix(d, "Try ") || strings.HasPrefix(d, "⏎")
 }
 
 // offer — enqueue the item into the mind's inbox; the item stays todo. Returns
