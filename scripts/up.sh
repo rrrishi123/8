@@ -36,6 +36,12 @@ trap 'rm -rf "$_LOCKDIR"' EXIT
 
 set -uo pipefail
 
+# Detach stdin so the backgrounded daemons (vite/broker/collector/watchdog/peer-beat)
+# don't hold the caller's terminal: without this, `bash up.sh` finishes its work but the
+# interactive shell never gets its prompt back (reported from a clean VM, 2026-10-13).
+# The tab-restore loop reads from an explicit file redirect, so it is unaffected.
+exec </dev/null
+
 # Portability (peer review, v0.0.2): env-overridable with DERIVED fallbacks —
 # REPO from this script's own location (never an inscribed home); PROFILE
 # defaults to the CLEAN pack profile. A host with a special seat (this mac's
