@@ -152,8 +152,17 @@ fi
 
 # 6. vite cockpit (the web app served on :8088).
 if up 8088; then echo "vite:       already up :8088"; else
-  ( cd "$WEB" && nohup npm run dev >/tmp/vite-8.log 2>&1 & )
-  wait_up 8088 && echo "vite:       up :8088"
+  # A fresh clone has no node_modules; `npm run dev` then silently fails and the
+  # cockpit never comes up (reported from a clean VM, 2026-10-13). Install first,
+  # idempotently — only when missing — so first-run bring-up is one command.
+  ( cd "$WEB"
+    if [ ! -d node_modules ]; then
+      echo "vite:       cockpit deps missing — installing (npm ci)…"
+      npm ci >/tmp/vite-npm.log 2>&1 || npm install >/tmp/vite-npm.log 2>&1
+    fi
+    nohup npm run dev >/tmp/vite-8.log 2>&1 & )
+  wait_up 8088 && echo "vite:       up :8088" \
+    || echo "vite:       FAILED :8088 — see /tmp/vite-8.log and /tmp/vite-npm.log"
 fi
 
 # 6b. 8 runs REFLEXIVELY — as a tab INSIDE the Firefox it observes (FLOW 6). That
