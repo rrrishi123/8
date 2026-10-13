@@ -171,6 +171,20 @@ if up 8088; then echo "vite:       already up :8088"; else
     || echo "vite:       FAILED :8088 — see /tmp/vite-8.log and /tmp/vite-npm.log"
 fi
 
+# 6c. pilot broker (the HOST arm, :7700) — the native bring-up previously started only
+#     the wire + witness; pilot's broker came up only on the Docker path (clean-VM
+#     report, 2026-10-13). Start it here too, idempotently and gracefully: bring it up if
+#     the binary is built, else note and continue (no hard dependency, no required config).
+PILOT_BROKER="$REPO/pilot/.bin/broker"
+if up 7700; then echo "pilot:      broker already up :7700"
+elif [ -x "$PILOT_BROKER" ]; then
+  ( cd "$REPO/pilot" && nohup "$PILOT_BROKER" >/tmp/pilot-broker.log 2>&1 & )
+  wait_up 7700 && echo "pilot:      broker up :7700" \
+    || echo "pilot:      broker FAILED :7700 — see /tmp/pilot-broker.log"
+else
+  echo "pilot:      broker not built ($PILOT_BROKER) — run pilot/build.sh; skipping"
+fi
+
 # 6b. 8 runs REFLEXIVELY — as a tab INSIDE the Firefox it observes (FLOW 6). That
 #     self-witness (8 sees its own ★ tab memory through its own /procinfo) is 8's
 #     biggest IP; the cockpit tab is restored below with the other tabs. The ~8GB
