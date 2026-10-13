@@ -301,7 +301,15 @@ func wireUp(root, collectorAddr string) {
 		fmt.Println("  wire:         binary absent (http-mcp build.sh, or install.sh) — /host dormant")
 		return
 	}
-	cmd := exec.Command(wb, "-listen", ":4724", "-witness", "http://"+collectorAddr)
+	// The wire is a credential-handling MITM — bind it to loopback by default so it is
+	// never exposed on the network (SECURITY.md); EIGHT_WIRE_BIND opts into a wider bind
+	// for a deliberate mesh case. Reported from a clean VM (2026-10-13): it bound ":4724"
+	// = all interfaces. The readiness probe above already expects 127.0.0.1:4724.
+	wireBind := os.Getenv("EIGHT_WIRE_BIND")
+	if wireBind == "" {
+		wireBind = "127.0.0.1:4724"
+	}
+	cmd := exec.Command(wb, "-listen", wireBind, "-witness", "http://"+collectorAddr)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
 		fmt.Printf("  wire:         FAILED: %v\n", err)
