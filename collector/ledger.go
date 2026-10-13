@@ -58,6 +58,15 @@ type workItem struct {
 	// DeclinedBy — the mind that was offered this and said no (inbox.go); the
 	// item went back to the pool. Its decision is on the record, not overridden.
 	DeclinedBy string `json:"declined_by,omitempty"`
+	// Notify — opt-in WAKE-ON-EVENT (#4441): a uuid/role/%N to POKE when this task
+	// flips done — the dispatcher WAITING on the result. The witness stamps every
+	// write and hands the ACTOR a receipt, but a completion otherwise reaches no
+	// one else, so a dispatcher learns its task finished only by polling or by a
+	// human typing in its pane (the gap caught live 2026-10-13: codex completed,
+	// the conductor was never told). With notify set, handleWork sends a bounded
+	// completion notice to that pane on done (sendToPane is idle-guarded — a busy
+	// dispatcher is never interrupted). Blank = current behavior (no poke).
+	Notify string `json:"notify,omitempty"`
 }
 
 // flipActor resolves who is flipping a status: declared body `by` wins, the
@@ -761,6 +770,7 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			Assignee string  `json:"assignee"` // route this task to a specific tmux pane
 			Sweep    bool    `json:"sweep"`    // #736: bookkeeping close — the CLOSER declares this flip is hygiene, not a claim: no [verify] spawns, flipped_by carries the intent
 			Kind     string  `json:"kind"`     // #1088: task|record — explicit on create; {id,kind} reclassifies
+			Notify   string  `json:"notify"`   // #4441: uuid/role/%N to poke when this task flips done
 		}
 		json.NewDecoder(r.Body).Decode(&p)
 		now := time.Now().UTC().Format(time.RFC3339)
@@ -791,7 +801,7 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			if p.By == "" {
 				p.By = "operator"
 			}
-			ni := workItem{ID: max + 1, Text: p.Text, Status: "todo", By: p.By, TS: now, Deps: p.Deps, Assignee: p.Assignee, Kind: p.Kind, Epoch: currentEpoch()}
+			ni := workItem{ID: max + 1, Text: p.Text, Status: "todo", By: p.By, TS: now, Deps: p.Deps, Assignee: p.Assignee, Kind: p.Kind, Notify: p.Notify, Epoch: currentEpoch()}
 			if ni.Assignee == "" && roleUUID(p.By) != "" { // a role's own filed task routes back to it — no orphan todos
 				ni.Assignee = p.By
 			}
@@ -811,7 +821,7 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			items = append(items, ni)
 			ackID = ni.ID
 			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.add","params":{"id":%d,"text":%q,"by":%q,"deps":%v}}}`, ni.ID, p.Text, p.By, p.Deps))
-		} else if p.ID > 0 && (p.Prio != nil || p.Assignee != "" || p.Kind != "") && p.Status == "" { // ADJUST THE QUEUE (reorder / reassign) — operator or agent
+		} else if p.ID > 0 && (p.Prio != nil || p.Assignee != "" || p.Kind != "" || p.Notify != "") && p.Status == "" { // ADJUST THE QUEUE (reorder / reassign / attach notify) — operator or agent
 			for i := range items {
 				if items[i].ID == p.ID {
 					if p.Prio != nil {
@@ -822,6 +832,9 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 					}
 					if p.Assignee != "" {
 						items[i].Assignee = p.Assignee
+					}
+					if p.Notify != "" { // #4441: attach wake-on-completion to an already-filed task
+						items[i].Notify = p.Notify
 					}
 					ackID = items[i].ID
 					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.reorder","params":{"id":%d,"prio":%d,"assignee":%q}}}`, items[i].ID, items[i].Prio, items[i].Assignee))
@@ -853,6 +866,37 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 							items[i].Status = "todo"
 							items[i].FlippedBy = "auto:summon-failed"
 						}
+					}
+				}
+			}
+			// #4441 WAKE-ON-EVENT: a completion must reach the DISPATCHER, not merely
+			// leave the actor's own receipt. If the just-done task opted in (notify
+			// set), poke that pane with a bounded completion notice. In a GOROUTINE:
+			// handleWork holds c.tmu and sendToPane shells out to tmux — an inline
+			// send convoys every POST /work behind the shell-out (#931) and re-locks
+			// toward the delivered-stamp deadlock (#343). sendToPane is idle-guarded,
+			// so a busy dispatcher is never interrupted; a guarded miss publishes a
+			// notify-deferred frame (the notice lives on the feed, not lost).
+			if p.Status == "done" {
+				for i := range items {
+					if items[i].ID == p.ID && items[i].Notify != "" {
+						notify, doneID, by := items[i].Notify, items[i].ID, items[i].FlippedBy
+						text := items[i].Text
+						if len(text) > 160 {
+							text = text[:160] + "…"
+						}
+						go func() {
+							pane := resolveAssignee(notify)
+							if paneAlive(pane) {
+								msg := fmt.Sprintf("[8-done #%d] %s — completed by %s (wake-on-event #4441)", doneID, text, by)
+								if sendToPane(pane, msg, func() {}) {
+									c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.notify","params":{"id":%d,"notify":%q,"pane":%q}}}`, doneID, notify, pane))
+									return
+								}
+							}
+							c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.notify-deferred","params":{"id":%d,"notify":%q,"reason":"pane-busy-or-dead"}}}`, doneID, notify))
+						}()
+						break
 					}
 				}
 			}
