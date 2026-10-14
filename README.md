@@ -8,6 +8,20 @@ For multi-host registration, see [native peer join](docs/peer-join.md)
 > **The four arms:** [http-mcp](https://github.com/rrrishi123/http-mcp) (WIRE) · [8](https://github.com/rrrishi123/8) (WITNESS) · [pilot](https://github.com/rrrishi123/pilot) (HOST) · [adapters](https://github.com/rrrishi123/adapters) (ARMS)
 > **The idea, stated:** [docs/four-system.md](docs/four-system.md) — the two atoms, the four arms as protocol, inscription-is-truth, and digest-continuity, as rules ([FABLE.md](FABLE.md) is the same idea as story).
 
+## See it in action
+
+```bash
+./scripts/demo.sh        # the two atoms + the witness, narrated, with live receipts
+```
+
+A hermetic, self-evidencing walk-through: it stands up an **isolated** witness (its own
+temp HOME, a spare port, no brokers — it never touches `~/.8`), then runs each piece live
+and prints the proof — the **CALL** atom with its `X-8-Witness` receipt, the ledger reading
+the act back, the `/mind` · `/peers` surfaces, **wake-on-event** firing on a completion, and
+the **CHANNEL** atom (driving a real browser) shown as the exact live command. Reproducible
+on any host. For the visual surface: `cd web && npm run dev` → the cockpit on
+`http://localhost:8088`.
+
 ---
 
 <!-- ===== SHARED TERRITORY (identical across http-mcp · 8 · pilot · adapters) ===== -->
