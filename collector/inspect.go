@@ -116,9 +116,54 @@ func procOf(pane string) procFacts {
 	return procByPane[pane]
 }
 
-// inspectorFor — the first loopback TCP port the process listens on, as our
-// BUN_INSPECT convention ws://127.0.0.1:<port>/dbg. Blank when none.
+// inspCache remembers each pid's inspector port. A live mind's BUN_INSPECT port
+// never moves, so the hot probe loop must not re-lsof it every cycle — that was
+// the kernel-saturating storm (per-mind lsof -iTCP every tick × N observers).
+// poll→push step: sample the stable datum once, then only reconfirm it with a
+// cheap TCP dial, never re-discover it. lsof runs only on a cache miss or when
+// the cached port stops answering (process gone / restarted on a new port).
+var (
+	inspCacheMu sync.Mutex
+	inspCache   = map[int]string{}
+)
+
+// inspectorFor — ws://127.0.0.1:<port>/dbg for the process's loopback inspector,
+// cached per pid and revalidated by dial. Blank when none.
 func inspectorFor(pid int) string {
+	inspCacheMu.Lock()
+	cached := inspCache[pid]
+	inspCacheMu.Unlock()
+	if cached != "" && dialAlive(cached) {
+		return cached
+	}
+	ws := inspectorProbe(pid)
+	inspCacheMu.Lock()
+	if ws != "" {
+		inspCache[pid] = ws
+	} else {
+		delete(inspCache, pid)
+	}
+	inspCacheMu.Unlock()
+	return ws
+}
+
+// dialAlive — cheap liveness for a ws://host:port/path URL: one non-blocking TCP
+// connect, no kernel file-table scan. Replaces lsof on the steady-state path.
+func dialAlive(wsurl string) bool {
+	u, err := url.Parse(wsurl)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	c, err := net.DialTimeout("tcp", u.Host, 300*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = c.Close()
+	return true
+}
+
+// inspectorProbe — the one lsof: first loopback TCP LISTEN port of the process.
+func inspectorProbe(pid int) string {
 	o, err := exec.Command("lsof", "-a", "-p", strconv.Itoa(pid), "-iTCP", "-sTCP:LISTEN", "-P", "-n", "-Fn").Output()
 	if err != nil {
 		return ""
