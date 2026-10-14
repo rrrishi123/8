@@ -38,7 +38,7 @@ else red "8/web: tsc FAIL"; fi
 
 # --- version-literal lockstep (the drift guard, as a gate) ---
 echo "-- version lockstep --"
-lit() { grep -cE "$3" "$ROOT/$1/$2" 2>/dev/null; }   # read the CHECKED-OUT file (HEAD) — works on release/v0.0.2 or a private kosaten branch that merged it
+lit() { grep -cE "$3" "$ROOT/$1/$2" 2>/dev/null; }   # read the CHECKED-OUT file (HEAD) — works on release/v0.0.2 or a private overlay branch that merged it
 c=$(lit http-mcp contract/contract.go 'Version = "v0.0.2"')
 a=$(lit adapters trace/trace.go 'Version = "v0.0.2"')
 p=$(lit pilot main.go 'fallbackVersion = "v0.0.2"')

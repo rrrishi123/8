@@ -64,7 +64,7 @@ var (
 
 // workClass — this collector's work class (T17): the ceiling is set by WHAT the
 // account is used for, not one global constant. "foursystem" (hardening the wire)
-// carries a high ceiling; "private"/"kosaten"/thesis work on a separate account is
+// carries a high ceiling; a "private" class (work on a separate account) is
 // held low so it resumes WITHIN the four-system without starving that account.
 // Declared per host via EIGHT_WORK_CLASS (default foursystem).
 func workClass() string {
@@ -78,7 +78,8 @@ func workClass() string {
 // (research) work; above it, conserve. Per work class (T17): EIGHT_CEIL_<CLASS>
 // wins (e.g. EIGHT_CEIL_FOURSYSTEM=0.9, EIGHT_CEIL_PRIVATE=0.45), then the global
 // EIGHT_RESEARCH_CEIL (back-compat + the operator's explicit push ceiling), then a
-// class default: private/kosaten conserves the account at 0.45, everything else 0.5.
+// class default: the "private" class conserves the account at 0.45, everything else
+// 0.5. A host running a differently-named background class sets EIGHT_CEIL_<CLASS>.
 func researchCeil() float64 {
 	class := workClass()
 	if v := os.Getenv("EIGHT_CEIL_" + strings.ToUpper(class)); v != "" {
@@ -92,8 +93,8 @@ func researchCeil() float64 {
 		}
 	}
 	switch class {
-	case "private", "kosaten", "thesis":
-		return 0.45 // a separate account: keep private work under half, never starve it
+	case "private":
+		return 0.45 // a separate/background account: keep it under half, never starve it
 	default:
 		return 0.50
 	}

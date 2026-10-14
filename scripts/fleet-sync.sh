@@ -2,7 +2,7 @@
 # fleet-sync — a HOST pulls the open-source release into its own branch and
 # rebuilds. This is the afferent-of-code half of the fleet: every host tracks
 # the same upstream (release/v0.0.2) unless it explicitly runs a private branch,
-# in which case the release is merged UNDER the private overlay (kosaten stays on
+# in which case the release is merged UNDER the private overlay (the overlay stays on
 # top). Idempotent, and --dry-run shows the plan without changing anything.
 #
 #   REPOS="http-mcp 8 pilot adapters" UPSTREAM=release/v0.0.2 ./fleet-sync.sh --dry-run
@@ -37,17 +37,19 @@ for r in $REPOS; do
     if git -C "$d" merge --no-edit FETCH_HEAD >/dev/null 2>&1; then say "  merged upstream under overlay -> $(git -C "$d" rev-parse --short HEAD)"
     else git -C "$d" merge --abort 2>/dev/null; say "  CONFLICT with private overlay — aborted, needs a human"; continue; fi
   fi
-  # rebuild through the canonical build. A private host carrying a kosaten overlay
-  # must build the OVERLAY variant (e.g. pilot -tags kosaten) via its
-  # kosaten/build.sh — and that script is a NO-OP (exit 0, builds nothing) unless
-  # KOSATEN_HOME=1 is set, so fleet-sync must pass the flag or it prints "rebuilt"
-  # while producing nothing (2026-10-08, reported from omarchy). Public hosts have
-  # no kosaten/build.sh and fall back to build.sh. The "rebuilt" claim is verified
-  # by a mtime marker: only say rebuilt if the build actually wrote an output.
-  b="kosaten/build.sh"; kh=0; [ -x "$d/$b" ] && kh=1 || b="build.sh"
+  # rebuild through the canonical build. A private host carrying an overlay builds
+  # the OVERLAY variant via its own build script + env, declared GENERICALLY so no
+  # private name lives in this public repo:
+  #   EIGHT_OVERLAY_BUILD = path to the overlay build script (e.g. overlay/build.sh)
+  #   EIGHT_OVERLAY_ENV   = env the overlay build needs (e.g. OVERLAY_HOME=1)
+  # Those scripts are typically NO-OPs unless their env flag is set, so fleet-sync
+  # must pass it or it prints "rebuilt" while producing nothing (2026-10-08). Public
+  # hosts set neither and fall back to build.sh. The "rebuilt" claim is verified by
+  # a mtime marker: only say rebuilt if the build actually wrote an output.
+  b="${EIGHT_OVERLAY_BUILD:-}"; ov=0; { [ -n "$b" ] && [ -x "$d/$b" ] && ov=1; } || b="build.sh"
   if [ -x "$d/$b" ]; then
     marker="$(mktemp)"
-    if [ "$kh" = 1 ]; then ( cd "$d" && KOSATEN_HOME=1 "./$b" >/dev/null 2>&1 ); else ( cd "$d" && "./$b" >/dev/null 2>&1 ); fi
+    if [ "$ov" = 1 ]; then ( cd "$d" && env ${EIGHT_OVERLAY_ENV:-} "./$b" >/dev/null 2>&1 ); else ( cd "$d" && "./$b" >/dev/null 2>&1 ); fi
     rc=$?
     changed="$(find "$d" -type f -not -path '*/.git/*' -newer "$marker" -print 2>/dev/null | head -1)"
     rm -f "$marker"
