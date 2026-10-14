@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { panesSend } from '../lib/api';
 import { onSeatChange } from '../lib/feed';
 
 const BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
@@ -197,7 +198,7 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
     ? `${BASE}/stream?session=${encodeURIComponent(session)}${ctx ? `&context=${encodeURIComponent(ctx)}` : ''}&fps=${effFps}${lodq}`
     : '';
   useEffect(() => {
-    if (!session) return;
+    if (!session || isText) return; // text seats (tmux/daemons/nvim) render via /text, never /shot
     let alive = true;
     const cq = ctx ? `&context=${encodeURIComponent(ctx)}` : '';
     // FIREFOX stills go through /drawshot (drawSnapshot->JPEG), NOT /shot. BiDi
@@ -262,7 +263,7 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
       : (persistent ? 5000 : Math.max(600, Math.round(1000 / effFps)));
     const id = window.setInterval(tick, period);
     return () => { alive = false; clearInterval(id); };
-  }, [session, ctx, streaming, persistent, effFps, lodW, fx, fxNeedle, live]);
+  }, [session, isText, ctx, streaming, persistent, effFps, lodW, fx, fxNeedle, live]);
   // FIGMA/FIGJAM behaviour: when a seat is off-screen we stop FETCHING (the poll
   // effect gates on `streaming`, the live stream unmounts) — but we keep showing
   // its LAST frame frozen, so panning the board shows what's there, not blanks.
@@ -442,7 +443,10 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
                 <div style={{ opacity: 0.6, marginBottom: 2 }}>— recent said —</div>
                 {(focusPkt?.material?.recent_said || []).map((s: string, i: number) => <div key={i} style={{ marginBottom: 3, opacity: 0.9 }}>· {s}</div>)}
               </div>
-            : <pre className="vp-text vp-tmux" style={{ overflow: 'auto' }}>{tmuxText || 'reading…'}</pre>)
+            : <div className="vp-tmux-wrap" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+                <pre className="vp-text vp-tmux" style={{ overflow: 'auto', flex: 1, minHeight: 0, margin: 0 }}>{tmuxText || 'reading…'}</pre>
+                {isTmux && fixedCtx && <PaneSendBar pane={fixedCtx} />}
+              </div>)
         : seeing === 'pixels'
         ? ((frameSrc || useFx)
             ? <div className="vp-stage">
@@ -462,5 +466,44 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
             : <div className="empty">{!session ? 'no session' : 'paused · off-screen (aperture)'}</div>)
         : <pre className="vp-text">{text || 'reading…'}</pre>}
     </section>
+  );
+}
+
+// PaneSendBar (T19) — type INTO the tmux pane you're looking at. POSTs
+// /panes/send {panes:[this pane], text, force} through the guarded send throat
+// (force reaches BUSY claude/codex panes, which queue it as a follow-up). Pointer
+// and wheel events are stopped so typing here never triggers the canvas pan/zoom
+// under the card. Local %N works today; cross-host panes await /panes/send host
+// routing (via /resolve) — a separate backend step noted on T19.
+function PaneSendBar({ pane }: { pane: string }) {
+  const [text, setText] = useState('');
+  const [force, setForce] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
+  const send = async () => {
+    if (!text.trim() || busy) return;
+    setBusy(true); setNote('');
+    try {
+      const r = await panesSend(text, [pane], false, force);
+      const landed = r.targets.find((t) => t.pane === pane)?.sent ?? (r.sent > 0);
+      setNote(landed ? 'sent ✓' : `not sent${force ? '' : ' — try force'}`);
+      if (landed) setText('');
+    } catch (e) {
+      setNote(String(e instanceof Error ? e.message : e).slice(0, 72));
+    }
+    setBusy(false);
+  };
+  return (
+    <div className="vp-send" style={{ display: 'flex', gap: 4, padding: 4, borderTop: '1px solid rgba(128,128,128,0.25)', alignItems: 'center' }}
+      onPointerDown={(e) => e.stopPropagation()} onWheel={(e) => e.stopPropagation()}>
+      <input className="vp-send-in" value={text} placeholder={`type → ${pane} · Enter sends`} style={{ flex: 1, minWidth: 0, font: '11px ui-monospace,monospace' }}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }} />
+      <label className="vp-send-force" title="reach a BUSY pane — claude/codex queue it as a follow-up" style={{ fontSize: 10, display: 'flex', alignItems: 'center', gap: 2, opacity: 0.85 }}>
+        <input type="checkbox" checked={force} onChange={() => setForce((f) => !f)} />force
+      </label>
+      <button className="vp-send-btn" disabled={busy || !text.trim()} onClick={send} style={{ fontSize: 11 }}>{busy ? '…' : 'send'}</button>
+      {note && <span className="vp-send-note" style={{ fontSize: 10, opacity: 0.8, whiteSpace: 'nowrap' }}>{note}</span>}
+    </div>
   );
 }

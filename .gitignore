@@ -25,3 +25,31 @@ iam_witness.py
 web/.env
 # identity scripts are being folded into the Go collector; don't ship stray python
 /scripts/*.py
+
+# operator content, not witness machinery (#321) — the higgsfield movie pipeline
+# lives at ~/.8/higgsfield (#356); on this host a compat SYMLINK sits here so
+# stale path references keep resolving. No trailing slash: the dir-only pattern
+# would miss the symlink. See higgsfield-relocated.md
+/higgsfield
+
+# built binary — build from source (go build ./collector); never track a host binary
+/collector/.bin-collector
+
+# private design-system reference — never public
+/web/design-reference/_ds/
+
+# tsc -b incremental state — per-checkout, never tracked (#1146c/#1147)
+web/*.tsbuildinfo
+
+# scratch design reference (never ship — see CONSOLIDATED-v0.0.2 MF#1)
+web/design-reference/
+
+# operator-local host bring-up bundle — archived from git (#1096 MF#3); the portable successor is collector/up.go
+up-omarchy.sh
+watchdog-omarchy.sh
+scripts/watchdog-omarchy.sh
+watchdog-firefox.sh
+start-auto-firefox.sh
+.playwright-mcp/
+# private keepalive (auth path) — kept local
+scripts/apk-keepalive.sh
