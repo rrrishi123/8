@@ -4684,6 +4684,7 @@ func main() {
 		go c.staleLoop()                 // #472b: revert 6h-silent doing items — the WIP lane self-heals
 		go c.epochLoop()                 // #645: the operator-epoch clock — ledger locked to operator-time
 		go c.innerHostLoop()             // #850: poll docker stats + colima list off the request path
+		go c.brokerHealLoop()            // #3863: the witness heals its own CHANNEL arm — re-wire a broken-pipe chrome broker
 		go func() {                      // project eight.db every 30s so DBeaver always sees fresh data
 			if _, err := exec.LookPath("sqlite3"); err != nil {
 				return
