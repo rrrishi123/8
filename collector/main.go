@@ -3430,6 +3430,10 @@ func (c *collector) actChannel(w http.ResponseWriter, r *http.Request, b *broker
 		http.Error(w, `{"error":"no tab context"}`, http.StatusBadGateway)
 		return
 	}
+	if b.id != "fox" { // CDP seat (chrome / attached node): BiDi input can't drive it — use CDP Input
+		c.actCDP(w, r, b, ctx, in.Action, in.Text, in.X, in.Y, in.X2, in.Y2, in.Xr, in.Yr)
+		return
+	}
 	// RESOLUTION-INDEPENDENT coords: the cockpit sends 0..1 ratios of where in the frame
 	// you clicked (the /drawshot frame's LOD scale is irrelevant). Resolve to the CSS px
 	// input.performActions expects via the tab's REAL viewport. This replaces the old
