@@ -25,7 +25,7 @@ import (
 const stuckAfter = 30 * time.Minute
 
 type tuiState struct {
-	State     string    `json:"state"`             // working|idle|capped|stuck|shell
+	State     string    `json:"state"`             // working|idle|typing|waiting|capped|stuck|shell|unknown
 	Resets    string    `json:"resets,omitempty"`  // "Resets 2:30pm" etc., verbatim from the modal
 	SameSince time.Time `json:"-"`                 // when this screen hash was first seen
 	SameForS  int64     `json:"screen_same_for_s"` // derived at read time
@@ -76,7 +76,9 @@ func wordsOf(pane string) []string {
 	return out
 }
 
-// classifyScreen — PURE: the state a screen text implies, and its reset note.
+// classifyScreen — PURE: the state a screen implies, and its reset note. The
+// screen may be a plain or an ANSI (`capture-pane -e`) capture; with ANSI, dim
+// placeholder text in the composer is told apart from a real draft.
 func classifyScreen(screen, cmd string) (state, resets string) {
 	switch harnessKind(cmd) {
 	case "codex":
@@ -84,25 +86,71 @@ func classifyScreen(screen, cmd string) (state, resets string) {
 	case "":
 		return "shell", ""
 	}
-	if m := cappedRe.FindString(screen); m != "" {
-		if r := resetsRe.FindString(screen); r != "" {
+	plain := stripANSI(screen)
+	if m := cappedRe.FindString(plain); m != "" {
+		if r := resetsRe.FindString(plain); r != "" {
 			resets = strings.Join(strings.Fields(r), " ")
 		}
 		return "capped", resets
 	}
-	if strings.Contains(screen, "esc to interrupt") {
+	if claudeWorking(plain) {
 		return "working", ""
 	}
+	if hasUnsentInput(screen) {
+		return "typing", ""
+	}
 	return "idle", ""
+}
+
+// claudeSpinnerRe — Claude Code's live spinner line: "✳ Osmosing… (6s · esc to
+// interrupt)". A finished turn reads "✻ Sautéed for 1m 54s" (no ellipsis), which
+// must NOT count as working.
+var claudeSpinnerRe = regexp.MustCompile(`^[✳✻✽✶✢✺·*+] +[A-Z][\p{L}'-]+…`)
+
+// claudeWorking — the working indicator in the live region at the bottom of the
+// screen (not a quoted "esc to interrupt" far up in the transcript).
+func claudeWorking(plain string) bool {
+	lines := strings.Split(strings.TrimRight(plain, "\n "), "\n")
+	if len(lines) > 14 {
+		lines = lines[len(lines)-14:]
+	}
+	for _, l := range lines {
+		t := strings.TrimSpace(l)
+		if strings.Contains(t, "esc to interrupt") || claudeSpinnerRe.MatchString(t) {
+			return true
+		}
+	}
+	return false
+}
+
+// codexPlaceholder — Codex's known composer hints, for plain captures only.
+func codexPlaceholder(d string) bool {
+	if d == "" {
+		return true
+	}
+	for _, p := range []string{"Ask Codex to do anything", "Claim and complete coding tasks",
+		"Explain this codebase", "Summarize recent commits", "Implement {feature}",
+		"Find and fix a bug in @filename", "Write tests for @filename",
+		"Improve documentation in @filename", "Run /review on my current changes",
+		"Use /skills to list available skills"} {
+		if d == p {
+			return true
+		}
+	}
+	return false
 }
 
 // Codex's active controls are at the bottom. Don't confuse quoted tool output
 // elsewhere in the transcript with a cap or spinner, and treat a nonempty
 // composer as typing even when its contents have stopped changing.
 func classifyCodexScreen(screen string) (string, string) {
-	lines := strings.Split(strings.TrimSpace(screen), "\n")
-	if len(lines) > 16 {
-		lines = lines[len(lines)-16:]
+	raw := strings.Split(strings.TrimRight(screen, "\n "), "\n")
+	if len(raw) > 16 {
+		raw = raw[len(raw)-16:]
+	}
+	lines := make([]string, len(raw))
+	for i, l := range raw {
+		lines[i], _ = styledLine(l)
 	}
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := strings.TrimSpace(lines[i])
@@ -122,11 +170,9 @@ func classifyCodexScreen(screen string) (string, string) {
 			return "waiting", ""
 		}
 	}
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(line, "›") {
-			draft := strings.TrimSpace(strings.TrimPrefix(line, "›"))
-			if draft == "" || draft == "Ask Codex to do anything" || draft == "Claim and complete coding tasks" {
+	for i := len(raw) - 1; i >= 0; i-- {
+		if draft, ok := composerDraft(raw[i], "›", codexPlaceholder); ok {
+			if draft == "" {
 				return "idle", ""
 			}
 			return "typing", ""
@@ -144,7 +190,7 @@ func probeTUI(panes []tmuxPaneRec, now time.Time) {
 	live := map[string]bool{}
 	for _, p := range panes {
 		live[p.ID] = true
-		out, err := tmuxOut(tb, "capture-pane", "-p", "-t", p.ID)
+		out, err := tmuxOut(tb, "capture-pane", "-e", "-p", "-t", p.ID)
 		if err != nil {
 			continue
 		}
@@ -163,7 +209,7 @@ func probeTUI(panes []tmuxPaneRec, now time.Time) {
 		st.State, st.Resets, st.ProbedAt = state, resets, now.UTC().Format(time.RFC3339)
 		tuiMu.Unlock()
 		if state == "working" {
-			if mm := wordRe.FindAllStringSubmatch(string(out), -1); len(mm) > 0 {
+			if mm := wordRe.FindAllStringSubmatch(stripANSI(string(out)), -1); len(mm) > 0 {
 				word := mm[len(mm)-1][1] // the last gerund on screen = the current one
 				wordsMu.Lock()
 				if wordsByPane[p.ID] == nil {
