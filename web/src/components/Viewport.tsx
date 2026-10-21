@@ -192,7 +192,11 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
   // caps ~6 persistent connections per host: N permanent streams black out the
   // tail seats (youtube, lambdatest never get a connection). Poll keeps it to ~1
   // live stream + cheap stills, so every seat is seen. (Foveation + the cap.)
-  const persistent = streaming && effFps >= 2;
+  // Only FIREFOX holds a persistent MJPEG /stream. CHROME must NOT: CDP screencast
+  // only emits frames for the VISIBLE/foreground tab, so a persistent stream on any
+  // background chrome tab goes BLACK. /shot (captureScreenshot) works on hidden tabs,
+  // so chrome 'live' polls /shot instead — engine behaviour on the shared state.
+  const persistent = streaming && effFps >= 2 && fx;
   const [shot, setShot] = useState('');
   const lodq = lodW ? `&w=${lodW}` : ''; // LOD: ask for only the pixels we display
   const streamSrc = session && persistent
