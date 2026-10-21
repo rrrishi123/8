@@ -53,3 +53,6 @@ start-auto-firefox.sh
 .playwright-mcp/
 # private keepalive (auth path) — kept local
 scripts/apk-keepalive.sh
+
+# python bytecode
+**/__pycache__/

@@ -215,10 +215,21 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
           const key = f.session + (f.context || '');
           setPinnedKey(key);
           setCam((c) => ({ ...c, z: 0.85 })); // tabs level; the card exists after the next render
-          window.setTimeout(() => {
+          // The worked tab is often an off-screen GHOST that only MOUNTS once we pin it,
+          // so its rect isn't ready in a single tick — one check silently no-ops and the
+          // tab stays off-screen (the "I can't see the tab an agent is driving" blocker).
+          // Retry until the pinned card has a laid-out rect, then pan to center it.
+          let tries = 0;
+          const panToKey = () => {
             const rect = rectsRef.current[key];
-            if (rect && vpRef.current.w) { const z = 0.85; setCam({ z, x: vpRef.current.w / 2 - (rect.x + rect.w / 2) * z, y: vpRef.current.h / 2 - (rect.y + rect.h / 2) * z }); }
-          }, 140);
+            if (rect && vpRef.current.w) {
+              const z = 0.85;
+              setCam({ z, x: vpRef.current.w / 2 - (rect.x + rect.w / 2) * z, y: vpRef.current.h / 2 - (rect.y + rect.h / 2) * z });
+            } else if (alive && tries++ < 12) {
+              window.setTimeout(panToKey, 120);
+            }
+          };
+          window.setTimeout(panToKey, 140);
         }
       }
       if (alive) window.setTimeout(poll, 1500);
