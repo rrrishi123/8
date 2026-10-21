@@ -79,25 +79,33 @@ func (c *collector) findVisibleTab(b *broker) string {
 // it changes so the cockpit can move the "you are here" marker.
 func (c *collector) watchHumanForeground() {
 	for {
-		time.Sleep(3 * time.Second)
 		b := c.find("chrome")
-		if b == nil {
-			continue
-		}
-		c.hfMu.Lock()
-		cur := c.humanForeground
-		c.hfMu.Unlock()
-		next := cur
-		if cur == "" || !c.tabVisible(b, cur) {
-			next = c.findVisibleTab(b)
-		}
-		if next != cur {
+		next := ""
+		if b != nil {
 			c.hfMu.Lock()
-			c.humanForeground = next
+			cur := c.humanForeground
 			c.hfMu.Unlock()
-			if next != "" {
-				c.publish(fmt.Sprintf(`{"session":"chrome","origin":"COLLECTOR","frame":{"method":"human.here","params":{"context":%q}}}`, next))
+			if cur != "" && c.tabVisible(b, cur) {
+				next = cur // cheap path: the human stayed — ONE probe
+			} else {
+				next = c.findVisibleTab(b) // the costly sweep — only on a switch / when none known
 			}
+			if next != cur {
+				c.hfMu.Lock()
+				c.humanForeground = next
+				c.hfMu.Unlock()
+				if next != "" {
+					c.publish(fmt.Sprintf(`{"session":"chrome","origin":"COLLECTOR","frame":{"method":"human.here","params":{"context":%q}}}`, next))
+				}
+			}
+		}
+		// ADAPTIVE: fast + cheap while we're tracking a visible tab; back off hard when
+		// nothing is visible (the human is outside Chrome) so we don't sweep 27 tabs
+		// every few seconds for no one.
+		if next != "" {
+			time.Sleep(3 * time.Second)
+		} else {
+			time.Sleep(20 * time.Second)
 		}
 	}
 }
