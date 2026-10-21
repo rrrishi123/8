@@ -244,7 +244,7 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
       const shotUrl = fx
         ? `${BASE}/drawshot?session=${encodeURIComponent(session)}&needle=${encodeURIComponent(fxNeedle || '')}&s=${computeFxScale()}&q=${q}`
         : `${BASE}/shot?session=${encodeURIComponent(session)}${cq}${lodq}`;
-      try { const _r = await fetch(shotUrl); const j = await _r.json(); (((window as unknown) as { __shotLog?: Record<string, unknown> }).__shotLog ||= {})[`${session}|${ctx || ''}`] = { url: shotUrl.replace(BASE, ''), status: _r.status, bytes: (j.data || '').length, err: j.error, fx }; if (alive && j.data) { setShot(j.data); if (!persistent) setErr(false); } } catch (e) { (((window as unknown) as { __shotLog?: Record<string, unknown> }).__shotLog ||= {})[`${session}|${ctx || ''}`] = { url: shotUrl.replace(BASE, ''), err: String(e), fx }; if (alive && !persistent) setErr(true); }
+      try { const j = await (await fetch(shotUrl)).json(); if (alive && j.data) { setShot(j.data); if (!persistent) setErr(false); } } catch { if (alive && !persistent) setErr(true); }
     };
     // SEED one still ALWAYS — even off-screen — so zooming out / bird's-eye shows
     // every card's LAST FRAME instead of a blank "paused" placeholder. You asked:

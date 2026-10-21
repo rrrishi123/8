@@ -1,7 +1,7 @@
 name: ci
 
 # The same gate http-mcp has carried since July, now on every arm of the
-# four-system (v0.0.2 audit: CI to all arms). The Go module is collector/;
+# four-system (CI to all arms). The Go module is collector/;
 # build.sh at the root is the canonical build (ONE bundled binary), so CI
 # builds through it, then vets, tests and gofmt-checks the module.
 # The `web` job gates the cockpit (web/): npm run build IS tsc -b && vite build,
