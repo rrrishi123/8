@@ -34,9 +34,12 @@
   <div class="foot" id="foot"></div>
 
 <script>
+// This host first; peers come from ?hosts=name=url,name=url (no host names or addresses ship in the repo).
 const HOSTS = [
-  { name: 'mac · lt-mbp-490',   base: 'http://127.0.0.1:7070',      kind: 'origin (local)' },
-  { name: 'omarchy · home',     base: 'http://100.83.251.102:7070', kind: 'tailscale' },
+  { name: 'this host', base: 'http://127.0.0.1:7070', kind: 'origin (local)' },
+  ...(new URLSearchParams(location.search).get('hosts') || '').split(',').filter(Boolean).map(h => {
+    const i = h.indexOf('='); return { name: h.slice(0, i), base: h.slice(i + 1), kind: 'peer' };
+  }),
 ];
 const CEIL = 0.5; // the <50% action gate
 
