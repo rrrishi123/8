@@ -471,7 +471,7 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
                 {(youHere || controller) && (
                   <div style={{ position: 'absolute', top: 4, right: 4, display: 'flex', gap: 4, zIndex: 5, pointerEvents: 'none' }}>
                     {youHere && <span style={{ background: '#1e88e5', color: '#fff', fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 3, boxShadow: '0 1px 3px rgba(0,0,0,.4)' }} title="your current tab">● you are here</span>}
-                    {controller && <span style={{ background: '#8e24aa', color: '#fff', fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 3, boxShadow: '0 1px 3px rgba(0,0,0,.4)' }} title={`driven by ${controller}`}>◆ {controller}</span>}
+                    {controller && <span style={{ background: controller === 'cockpit' ? '#1e88e5' : '#8e24aa', color: '#fff', fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 3, boxShadow: '0 1px 3px rgba(0,0,0,.4)' }} title={`driven by ${controller}`}>◆ {controller === 'cockpit' ? 'you' : controller}</span>}
                   </div>
                 )}
                 {useFx
