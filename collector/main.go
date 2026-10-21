@@ -252,6 +252,29 @@ func (c *collector) witnessHeaders(w http.ResponseWriter, ledgerID int64, physic
 }
 
 func (c *collector) handleFocus(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		// DIRECTED ATTENTION (the efferent half): an agent tells the HUMAN "look HERE"
+		// by setting 8's focus to a context WITHOUT driving it — the cockpit already
+		// polls /focus and heroes the focused card, so a POST pins the human's gaze on
+		// exactly one card. This is 8 pointing the human, not just following an agent.
+		var in struct{ Session, Context string }
+		json.NewDecoder(r.Body).Decode(&in)
+		if in.Context == "" {
+			in.Context = r.URL.Query().Get("context")
+		}
+		if in.Session == "" {
+			in.Session = r.URL.Query().Get("session")
+		}
+		if in.Session == "" {
+			in.Session = "chrome"
+		}
+		if in.Context == "" {
+			http.Error(w, `{"error":"need context (the card to point the human at)"}`, http.StatusBadRequest)
+			return
+		}
+		c.setFocus(in.Session, in.Context)
+		c.record(reqRec{TS: nowNano(), Physics: "call", Session: in.Session, Method: "focus.point", URL: in.Context, Status: 200, Actor: actorOf(r, "")})
+	}
 	c.focusMu.Lock()
 	s, ctx, seq := c.focusSession, c.focusContext, c.focusSeq
 	c.focusMu.Unlock()
