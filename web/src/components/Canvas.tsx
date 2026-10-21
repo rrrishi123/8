@@ -74,6 +74,11 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   // the witness dims its own eyes BEFORE the collector must flush/park and long
   // before the watchdog's 4500 recycle: hero 3fps → 1fps, ambient 0.4 → frozen.
   const [parentMem, setParentMem] = useState(0);
+  // R1/#9425(1): which engine's signal parentMem currently holds — 'rss' (Firefox
+  // procinfo, real resident memory) or 'heap' (a Chrome cockpit reading its OWN
+  // usedJSHeapSize, ~1/3 of RSS). Each carries its own threshold so the adaptive
+  // aperture engages on BOTH engines, not just Firefox. 'none' = no signal yet.
+  const [memKind, setMemKind] = useState<'rss' | 'heap' | 'none'>('none');
   const [pinnedKey, setPinnedKey] = useState(''); // the HERO card (explicit pin, not center)
   useEffect(() => { if (focusKey) setPinnedKey(focusKey); }, [focusKey]);
   const [spreadBy, setSpreadBy] = useLocal<Record<string, boolean>>('spreadBy', {}); // false = solitaire-stacked lane
@@ -170,6 +175,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
         }));
         setTabsBy(tb);
         const fox = live.find((s) => s.physics === 'channel' && s.stream !== 'cdp' && s.stream !== 'text');
+        let gotRss = false;
         if (fox) {
           const p = await procinfo(fox.id);
           if (p) {
@@ -183,6 +189,18 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
             });
             setHudBy(map);
             setParentMem(p.parent_mem_mb || 0);
+            setMemKind('rss');
+            gotRss = true;
+          }
+        }
+        // R1/#9425(1): engine-agnostic fallback. When the Firefox RSS signal is absent
+        // (a Chrome cockpit — procinfo 502s on CDP), read the cockpit's OWN heap so the
+        // adaptive aperture still engages instead of climbing unbounded past 3.6 GB.
+        if (!gotRss) {
+          const pm = (performance as unknown as { memory?: { usedJSHeapSize?: number } }).memory;
+          if (pm?.usedJSHeapSize) {
+            setParentMem(Math.round(pm.usedJSHeapSize / 1048576));
+            setMemKind('heap');
           }
         }
       } catch { /* keep last */ }
@@ -607,7 +625,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
             const streams = !isParked && (isText ? true : (isFox ? inSet : p.top)) && vis;
             body = <Viewport session={s} context={tab?.context} title={c.title} url={tab?.url}
               parked={isParked} visible={streams} live={!isParked && live}
-              fps={parentMem > 3500 ? (hero ? 1 : 0) : (hero ? 3 : (streams ? 0.4 : 0))} pinned={hero}
+              fps={(memKind === 'heap' ? parentMem > 1200 : parentMem > 3500) ? (hero ? 1 : 0) : (hero ? 3 : (streams ? 0.4 : 0))} pinned={hero}
               lodW={lodBucket(p.w * cam.z)}
               fx={isFox} fxNeedle={tab?.url ? hostOf(tab.url) : ''}
               onPin={() => setPinnedKey(c.key)}
