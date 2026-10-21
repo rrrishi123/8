@@ -103,8 +103,19 @@ export async function recordCtl(action: 'start' | 'stop' | '', name = '', seat =
 }
 // getFocus — the last seat anything acted on. 8 polls this and auto-foveates to
 // it (attention follows action): driving a tab from the wire zooms 8 to its card.
-export async function getFocus(): Promise<{ session: string; context: string; seq: number }> {
+export async function getFocus(): Promise<{ session: string; context: string; seq: number; human_here?: string }> {
   try { const r = await fetch(`${BASE}/focus`); return r.json(); } catch { return { session: '', context: '', seq: 0 }; }
+}
+
+// getControlledBy — ctx → the actor DRIVING that tab now (#9425(2) presence), read
+// from the manifest so the cockpit can light the controlling agent on the card.
+export async function getControlledBy(): Promise<Record<string, string>> {
+  try {
+    const r = await (await fetch(`${BASE}/manifest`)).json();
+    const m: Record<string, string> = {};
+    for (const t of (r.tabs || [])) if (t.controlled_by) m[t.ctx] = t.controlled_by;
+    return m;
+  } catch { return {}; }
 }
 // addTab — open a new tab in a browser seat, protocol-aware. Firefox (BiDi)
 // creates a context then navigates; Chrome (CDP) creates a target at the url.

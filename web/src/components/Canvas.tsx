@@ -10,7 +10,7 @@ import { useInstruments, WorkBody, ClockBody, InnerBody, PortalBody } from './In
 import { useWireRows, WireRows } from './WireLog';
 import { CardFrame, HostBody, ProfileBody, BudgetBody } from './Card';
 import { useLocal } from './Dock';
-import { procinfo, recordCtl, listSeries, replaySeries, addTab, getFocus, type SeriesInfo, type CapFrame } from '../lib/api';
+import { procinfo, recordCtl, listSeries, replaySeries, addTab, getFocus, getControlledBy, type SeriesInfo, type CapFrame } from '../lib/api';
 import { GRID, SeqLedger, packWorld, onScreen, syncFontFromCSS, setUnit, levelForZoom, LEVELS, type Card, type Lane, type Level, type CardKind } from '../lib/cards';
 import { fetchNodes, buildTree, liveView, type BrowserNode, type Seat, type Tab, type HostNode, type ProfileNode } from '../lib/nodes';
 import { useReportedTexts, textOf } from '../lib/cardText';
@@ -79,6 +79,10 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   // usedJSHeapSize, ~1/3 of RSS). Each carries its own threshold so the adaptive
   // aperture engages on BOTH engines, not just Firefox. 'none' = no signal yet.
   const [memKind, setMemKind] = useState<'rss' | 'heap' | 'none'>('none');
+  // the three attention layers, painted on the cards: where YOU are (human_here),
+  // which agent drives each tab (controlled_by), and where 8 points (the hero).
+  const [humanHere, setHumanHere] = useState('');
+  const [ctlBy, setCtlBy] = useState<Record<string, string>>({});
   const [pinnedKey, setPinnedKey] = useState(''); // the HERO card (explicit pin, not center)
   useEffect(() => { if (focusKey) setPinnedKey(focusKey); }, [focusKey]);
   const [spreadBy, setSpreadBy] = useLocal<Record<string, boolean>>('spreadBy', {}); // false = solitaire-stacked lane
@@ -226,6 +230,8 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
       hidTick++;
       if (!document.hidden || hidTick % 4 === 0) {
         const f = await getFocus();
+        setHumanHere(f.human_here || '');       // "you are here" marker
+        getControlledBy().then(setCtlBy).catch(() => {}); // agent presence per tab
         if (f.seq > 0 && f.seq !== lastFocusSeq.current) {
           lastFocusSeq.current = f.seq;
           // an explicit hosts/profiles pick is the operator's choice of altitude: keep it
@@ -630,7 +636,9 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
               fx={isFox} fxNeedle={tab?.url ? hostOf(tab.url) : ''}
               onPin={() => setPinnedKey(c.key)}
               onAspect={(r) => setAspectBy((prev) => (Math.abs((prev[c.key] || 0) - r) > 0.01 ? { ...prev, [c.key]: r } : prev))}
-              hud={tab?.url ? hudBy[tab.url] : undefined} />;
+              hud={tab?.url ? hudBy[tab.url] : undefined}
+              youHere={!!tab?.context && tab.context === humanHere}
+              controller={tab?.context ? ctlBy[tab.context] : undefined} />;
           }
           return (
             <Fragment key={c.key}>

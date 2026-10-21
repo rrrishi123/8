@@ -12,9 +12,10 @@ type Seeing = 'pixels' | 'channel' | 'request';
 // live stream stops being a mirror and becomes hands: a click on the <img> maps
 // to the target's pixels and fires /act (tap), keystrokes fire /act (type). Same
 // surface drives a Firefox tab (BiDi) OR a real device (Appium) — one wire.
-export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAspect, hud, visible, live, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle, hiRes, parked }:
+export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAspect, hud, visible, live, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle, hiRes, parked, youHere, controller }:
   { session: string | null; title?: string; url?: string; context?: string;
-    onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; live?: boolean; fps?: number; act?: boolean; pinned?: boolean; onPin?: () => void; lodW?: number; fx?: boolean; fxNeedle?: string; hiRes?: boolean; parked?: boolean }) {
+    onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; live?: boolean; fps?: number; act?: boolean; pinned?: boolean; onPin?: () => void; lodW?: number; fx?: boolean; fxNeedle?: string; hiRes?: boolean; parked?: boolean;
+    youHere?: boolean; controller?: string }) {
   // MANIFEST: the card's identity — who opened it, why, when — matched by URL
   // (manifest keys by chrome bcid, cards by BiDi ctx, so URL is the join key).
   const [man, setMan] = useState<{ opened_by?: string; why?: string; first_seen?: string } | null>(null);
@@ -457,6 +458,13 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
                   <span className="hud-fps">{useFx ? 'webm' : `${effFps} fps`}</span>
                   {dims && <span className="hud-dim">{dims.w}×{dims.h}</span>}
                 </div>
+                {/* ATTENTION MARKERS (#9425(2) + you-are-here): where YOU are (blue) and which agent drives this tab (purple) */}
+                {(youHere || controller) && (
+                  <div style={{ position: 'absolute', top: 4, right: 4, display: 'flex', gap: 4, zIndex: 5, pointerEvents: 'none' }}>
+                    {youHere && <span style={{ background: '#1e88e5', color: '#fff', fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 3, boxShadow: '0 1px 3px rgba(0,0,0,.4)' }} title="your current tab">● you are here</span>}
+                    {controller && <span style={{ background: '#8e24aa', color: '#fff', fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 3, boxShadow: '0 1px 3px rgba(0,0,0,.4)' }} title={`driven by ${controller}`}>◆ {controller}</span>}
+                  </div>
+                )}
                 {useFx
                   ? <video ref={videoRef} className="vp-img vp-video" autoPlay muted playsInline onError={() => setErr(true)} />
                   : <img ref={imgRef} key={persistent ? streamSrc : 'poll'} className={`vp-img${interact ? ' vp-interactive' : ''}`} src={frameSrc} alt="live"
