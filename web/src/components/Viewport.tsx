@@ -259,9 +259,14 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
     // until focused. The real fix for live-all is content-side capture (Chrome CDP
     // screencast), which Firefox's drawSnapshot can't do.
     if (fx && !live) return () => { alive = false; }; // not in the live set -> frozen
+    // GUARD effFps=0: the memory gate can throttle a non-hero tab to 0 fps, and
+    // 1000/0 = Infinity made setInterval never fire → the card went BLACK instead of
+    // freezing on its last frame. Floor the divisor so a throttled tab still refetches
+    // (slowly) and stays VISIBLE — seeing all the tabs beats a black hole.
+    const rate = Math.max(0.2, effFps)
     const period = fx
-      ? (persistent ? Math.max(300, Math.round(1000 / effFps)) : 2000) // hero fluid, live periphery sips
-      : (persistent ? 5000 : Math.max(600, Math.round(1000 / effFps)));
+      ? (persistent ? Math.max(300, Math.round(1000 / rate)) : 2000) // hero fluid, live periphery sips
+      : (persistent ? 5000 : Math.max(600, Math.round(1000 / rate)));
     const id = window.setInterval(tick, period);
     return () => { alive = false; clearInterval(id); };
   }, [session, isText, ctx, streaming, persistent, effFps, lodW, fx, fxNeedle, live]);
