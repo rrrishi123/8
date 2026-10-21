@@ -123,6 +123,9 @@ type collector struct {
 	focusContext string
 	focusSeq     int64
 
+	hfMu            sync.Mutex // "you are here" — the human's own foreground tab (distinct from agent focus)
+	humanForeground string
+
 	// FIREFOX STREAM (the efficient, leak-free path): the HiddenFrame driver POSTs
 	// WebM clusters to /fxchunk; the collector relays them to the cockpit's MSE via
 	// /fxstream. 8 only relays — capture lives in adapters/browser/firefox-stream.js.
@@ -278,8 +281,13 @@ func (c *collector) handleFocus(w http.ResponseWriter, r *http.Request) {
 	c.focusMu.Lock()
 	s, ctx, seq := c.focusSession, c.focusContext, c.focusSeq
 	c.focusMu.Unlock()
+	c.hfMu.Lock()
+	hf := c.humanForeground
+	c.hfMu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"session": s, "context": ctx, "seq": seq})
+	// human_here = the human's OWN foreground tab ("you are here"); context = where 8
+	// is pointing the gaze (the hero). Three attention layers in one reply.
+	json.NewEncoder(w).Encode(map[string]any{"session": s, "context": ctx, "seq": seq, "human_here": hf})
 }
 
 func newCollector(brokers []broker) *collector {
@@ -4735,6 +4743,7 @@ func main() {
 		go c.epochLoop()                 // #645: the operator-epoch clock — ledger locked to operator-time
 		go c.innerHostLoop()             // #850: poll docker stats + colima list off the request path
 		go c.brokerHealLoop()            // #3863: the witness heals its own CHANNEL arm — re-wire a broken-pipe chrome broker
+		go c.watchHumanForeground()      // "you are here": track the human's foreground tab (cache-first, lean)
 		go func() {                      // project eight.db every 30s so DBeaver always sees fresh data
 			if _, err := exec.LookPath("sqlite3"); err != nil {
 				return
