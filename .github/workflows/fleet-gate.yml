@@ -17,25 +17,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: rrrishi123/8
-          ref: ${{ github.repository == 'rrrishi123/8' && github.sha || 'release/v0.0.2' }}
+          ref: ${{ github.repository == 'rrrishi123/8' && github.sha || 'main' }}
           path: 8
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
           repository: rrrishi123/http-mcp
-          ref: ${{ github.repository == 'rrrishi123/http-mcp' && github.sha || 'release/v0.0.2' }}
+          ref: ${{ github.repository == 'rrrishi123/http-mcp' && github.sha || 'main' }}
           path: http-mcp
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
           repository: rrrishi123/pilot
-          ref: ${{ github.repository == 'rrrishi123/pilot' && github.sha || 'release/v0.0.2' }}
+          ref: ${{ github.repository == 'rrrishi123/pilot' && github.sha || 'main' }}
           path: pilot
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
           repository: rrrishi123/adapters
-          ref: ${{ github.repository == 'rrrishi123/adapters' && github.sha || 'release/v0.0.2' }}
+          ref: ${{ github.repository == 'rrrishi123/adapters' && github.sha || 'main' }}
           path: adapters
           persist-credentials: false
       - uses: actions/setup-go@v5
