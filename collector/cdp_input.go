@@ -82,7 +82,8 @@ func (c *collector) actCDP(w http.ResponseWriter, r *http.Request, b *broker, ct
 			y = int(math.Round(yr * vh))
 		}
 	}
-	c.setFocus(b.id, ctx) // 8 auto-zooms to the tab being driven
+	c.setFocus(b.id, ctx)                  // 8 auto-zooms to the tab being driven
+	c.setControlledBy(ctx, actorOf(r, "")) // #9425(2): and records WHO is driving it (presence)
 	mouse := func(typ string, px, py int, extra map[string]any) {
 		p := map[string]any{"type": typ, "x": px, "y": py}
 		for k, v := range extra {

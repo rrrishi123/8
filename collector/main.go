@@ -154,6 +154,23 @@ func (c *collector) setFocus(session, context string) {
 	c.focusMu.Unlock()
 }
 
+// setControlledBy stamps PRESENCE on a tab (#9425(2)): the actor whose drive act
+// just targeted ctx is "here now". It generalizes opened_by (who BORN the tab) to
+// controlled_by (who is DRIVING it now), so the card can light with the live
+// controller — the whole four-system showing who is where. A blank actor is an
+// undeclared drive; we never fabricate a controller (honest, like opened_by).
+func (c *collector) setControlledBy(ctx, actor string) {
+	if ctx == "" || actor == "" {
+		return
+	}
+	c.tmu.Lock()
+	if rec := c.manifest[ctx]; rec != nil {
+		rec.ControlledBy = actor
+		rec.ControlledAt = nowNano()
+	}
+	c.tmu.Unlock()
+}
+
 // activateCockpit brings Firefox HOME to 8 on startup: it finds the cockpit tab
 // (the :8088 context) on the fox channel and activates it, so every collector
 // (re)start returns the view to the seer instead of leaving Firefox on whatever
@@ -1953,6 +1970,8 @@ type tabRec struct {
 	ClaimedBy     string `json:"claimed_by,omitempty"`     // an agent CURRENTLY using this tab (a lease)
 	ClaimAt       string `json:"claim_at,omitempty"`       // heartbeat — a claim is LIVE only if fresh (<90s)
 	ClaimVerified bool   `json:"claim_verified,omitempty"` // #83 the lease was granted against a host-resolved credential (not a free-text name)
+	ControlledBy  string `json:"controlled_by,omitempty"`  // #9425(2) presence: the actor whose LAST drive act targeted this tab (who is HERE now — generalizes opened_by from birth to live control)
+	ControlledAt  string `json:"controlled_at,omitempty"`  // when that drive landed; presence is fresh only if recent (the card lights for the live controller, decays like a claim)
 }
 
 // claimLive reports whether a tab's lease is fresh — the FALSIFIABLE basis for
@@ -3455,7 +3474,8 @@ func (c *collector) actChannel(w http.ResponseWriter, r *http.Request, b *broker
 		in.X2 = int(math.Round(float64(in.X2) / dpr))
 		in.Y2 = int(math.Round(float64(in.Y2) / dpr))
 	}
-	c.setFocus(b.id, ctx) // 8 auto-zooms to the tab being driven
+	c.setFocus(b.id, ctx)                        // 8 auto-zooms to the tab being driven
+	c.setControlledBy(ctx, actorOf(r, in.Actor)) // #9425(2): and records WHO is driving it (presence)
 	pointer := func(acts string) string {
 		return fmt.Sprintf(`{"method":"input.performActions","params":{"context":%q,"actions":[{"type":"pointer","id":"m","parameters":{"pointerType":"mouse"},"actions":[%s]}]}}`, ctx, acts)
 	}
