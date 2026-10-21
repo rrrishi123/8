@@ -13,7 +13,7 @@
 # authed for remote hosts (a broken door is reported, not fatal to the others).
 set -uo pipefail
 DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
-FLEET="${FLEET:-local rishi@omarchy:/home/rishi/Work}"
+FLEET="${FLEET:-local}"   # add remote hosts as "user@host:ROOT", space-separated
 LR="${LR:-$HOME/Desktop/repos}"                       # local repos root
 sc(){ printf '\033[32m%s\033[0m\n' "$*"; }; rd(){ printf '\033[31m%s\033[0m\n' "$*"; }
 

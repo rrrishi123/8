@@ -266,7 +266,7 @@ fi
 # 10. federation heartbeats — this host AND the inner colima VM beat the rendezvous
 # so they appear on the portal (#886 is push-based: stop beating -> age out after
 # 90s). Without these /peers is empty and NO host shows. Idempotent via peer-beat's
-# per-host singleton lock; the watchdog keeps them alive after this. (omarchy beats
+# per-host singleton lock; the watchdog keeps them alive after this. (a Linux peer beats
 # to mac's tailscale ip and is started by fleet-deploy, not here.)
 for spec in "mac:" "colima:HOSTRES_CMD=$REPO/8/scripts/colima-hostres.sh"; do
   ph="${spec%%:*}"; extra="${spec#*:}"; lock="/tmp/8-peerbeat.$ph.lockdir"

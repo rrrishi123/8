@@ -6,7 +6,7 @@
 # draw load/mem per host. This is the missing organ: the rendezvous existed but
 # nobody was beating, so /peers was empty and no host — outer or inner — showed.
 #
-#   RENDEZVOUS=http://<mac-tailscale-ip>:7070 PEER_HOST=omarchy ./peer-beat.sh &
+#   RENDEZVOUS=http://<mac-tailscale-ip>:7070 PEER_HOST=linux-box ./peer-beat.sh &
 #   ./peer-beat.sh &        # mac: defaults to the local collector as rendezvous
 #
 # Detached:  nohup ./scripts/peer-beat.sh >/tmp/peer-beat.log 2>&1 &
@@ -37,7 +37,7 @@ while :; do
   [ -n "$hr" ] || hr='{}'
   # BUDGET: carry this host's collective usage-left in the heartbeat, so /peers is
   # the ONE place that shows every host+provider's 5h/7d limits — the number that
-  # decides who can be given work. Each host reports its OWN account (omarchy's is
+  # decides who can be given work. Each host reports its OWN account (a Linux peer's is
   # a different Claude account than mac's; codex is a separate provider).
   if [ -z "$SELF" ] || [ "${SKIP_BUDGET:-0}" = 1 ]; then bud='{}'   # no sensor for this host's own account
   else

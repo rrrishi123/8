@@ -40,7 +40,7 @@ recovery, and refusal to build staged, unstaged or untracked source additions.
 Reinstallation also retries launchd's asynchronous bootout/bootstrap race.
 
 Scope: this proves automatic deployment on Colima. The native-host installer
-exists but its unattended deployment has not been proven on Mac or Omarchy.
+exists but its unattended deployment has not been proven on Mac or Linux.
 Peer chips compare with the local running collector: a newer Colima build
 correctly appears as drift in an older Mac cockpit, while the runtime's own
 build chip identifies its new binary. This is not fleet-wide convergence.

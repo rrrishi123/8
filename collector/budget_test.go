@@ -20,7 +20,7 @@ func TestBudgetWorkingDir(t *testing.T) {
 	}
 	t.Setenv("EIGHT_REPO", work)
 	if got, err := budgetWorkingDir(); err != nil || got != work {
-		t.Fatalf("omarchy root = %q, %v", got, err)
+		t.Fatalf("linux root = %q, %v", got, err)
 	}
 	t.Setenv("EIGHT_BUDGET_DIR", home)
 	if got, err := budgetWorkingDir(); err != nil || got != home {

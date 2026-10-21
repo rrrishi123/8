@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { localBudgetHost, observedAge, peerProvider, remoteBudgetPeers, type BudgetPeer } from './budget';
 
-const peer = (budget: BudgetPeer['extra'] = {}): BudgetPeer => ({ host: 'omarchy', age_s: 1, stale: false, extra: budget });
+const peer = (budget: BudgetPeer['extra'] = {}): BudgetPeer => ({ host: 'linux-box', age_s: 1, stale: false, extra: budget });
 
 describe('federated budget readings', () => {
   it('preserves zero usage and unknown windows/providers independently', () => {
@@ -22,11 +22,11 @@ describe('federated budget readings', () => {
   });
   it('renders peers without sensors and excludes only the local host aliases', () => {
     const peers = [peer(), { ...peer(), host: 'colima-runtime' }, { ...peer(), host: 'mac' }, { ...peer(), host: 'admin-MacBook-Pro' }];
-    expect(remoteBudgetPeers(peers, { host: 'admin-MacBook-Pro', os: 'darwin' }).map((p) => p.host)).toEqual(['colima-runtime', 'omarchy']);
+    expect(remoteBudgetPeers(peers, { host: 'admin-MacBook-Pro', os: 'darwin' }).map((p) => p.host)).toEqual(['colima-runtime', 'linux-box']);
     expect(peerProvider(peers[1], 'claude')).toBeNull();
   });
   it('does not label a non-Mac local collector as mac', () => {
-    expect(localBudgetHost({ host: 'omarchy', os: 'linux' })).toBe('omarchy');
+    expect(localBudgetHost({ host: 'linux-box', os: 'linux' })).toBe('linux-box');
     expect(localBudgetHost(null)).toBe('local');
   });
 });

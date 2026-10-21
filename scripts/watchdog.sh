@@ -148,9 +148,9 @@ while true; do
   # portal never loses a node to a crashed beat (same per-host singleton lock the
   # beat holds). cwd here is the 8 repo root (cd at top).
   # per-host override: ~/.8/peer-beat.env may set BEAT_SPECS so a NON-HUB host
-  # (e.g. omarchy) revives ITS OWN beat to the hub's address — the rendezvous/IP
+  # (e.g. a Linux peer) revives ITS OWN beat to the hub's address — the rendezvous/IP
   # lives in that host-local env, never in this public repo. Default = the mac +
-  # colima hub pair. (Fixes: omarchy's beat had no supervisor entry, so a crash/
+  # colima hub pair. (Fixes: the Linux peer's beat had no supervisor entry, so a crash/
   # reboot dropped it from /peers with nothing to revive it.)
   _specs="mac: colima:HOSTRES_CMD=$(pwd)/scripts/colima-hostres.sh"
   [ -f "$HOME/.8/peer-beat.env" ] && . "$HOME/.8/peer-beat.env"
