@@ -2936,17 +2936,21 @@ func (c *collector) handleDedup(w http.ResponseWriter, r *http.Request) {
 	c.tmu.Lock()
 	byURL := map[string][]*tabRec{}
 	for _, rec := range c.manifest {
-		if rec.Status == "live" && rec.Session == "fox" {
-			byURL[rec.URL] = append(byURL[rec.URL], rec)
+		// R2/#1226: every live engine, not just fox — group by NORMALIZED url so a
+		// chrome dup is seen too; dedupeSkip keeps :8088/about:/extensions out.
+		if rec.Status == "live" && !dedupeSkip(strings.ToLower(rec.URL)) {
+			u := normTabURL(rec.URL)
+			byURL[u] = append(byURL[u], rec)
 		}
 	}
 	type cand struct {
-		URL, Ctx, ClaimedBy string
-		Claimed             bool
-		Kept                bool
+		URL, Ctx, Session, ClaimedBy string
+		Claimed                      bool
+		Kept                         bool
 	}
+	type killT struct{ ctx, session string }
 	var out []cand
-	var toClose []string
+	var toClose []killT
 	for url, recs := range byURL {
 		if len(recs) < 2 {
 			continue
@@ -2964,20 +2968,19 @@ func (c *collector) handleDedup(w http.ResponseWriter, r *http.Request) {
 		}
 		for i, rec := range recs {
 			busyByOther := claimLive(rec) && rec.ClaimedBy != me
-			out = append(out, cand{url, rec.Ctx, rec.ClaimedBy, claimLive(rec), i == keepIdx})
+			out = append(out, cand{url, rec.Ctx, rec.Session, rec.ClaimedBy, claimLive(rec), i == keepIdx})
 			if doClose && i != keepIdx && !busyByOther {
-				toClose = append(toClose, rec.Ctx)
+				toClose = append(toClose, killT{rec.Ctx, rec.Session})
 			}
 		}
 	}
 	c.tmu.Unlock()
 	closed := []string{}
 	if doClose {
-		if b := c.find("fox"); b != nil {
-			for _, ctx := range toClose {
-				if _, err := c.command(b, fmt.Sprintf(`{"method":"browsingContext.close","params":{"context":%q}}`, ctx)); err == nil {
-					closed = append(closed, ctx)
-				}
+		for _, k := range toClose {
+			if c.closeTab(k.session, k.ctx) { // engine-agnostic close BEHAVIOUR
+				closed = append(closed, k.ctx)
+				c.publish(fmt.Sprintf(`{"session":%q,"origin":"COLLECTOR","frame":{"method":"tab.deduped","params":{"context":%q}}}`, k.session, k.ctx))
 			}
 		}
 	}

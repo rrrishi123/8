@@ -116,6 +116,29 @@ type chromeTab struct {
 	Sel   bool   `json:"sel"`
 }
 
+// closeTab is the engine-agnostic close BEHAVIOUR (R2/#1226 + operator's "nothing
+// is a static mapping — an engine is a behaviour on the shared state"). The dedup
+// LOGIC is one path; HOW a tab is closed is per-engine: CDP Target.closeTarget for
+// a chrome/CDP seat, BiDi browsingContext.close for a fox seat. A new engine adds a
+// case here, not a new dedup path. ctx must come from the manifest (inscribed →
+// actionable); the broker is resolved from the tab's own session.
+func (c *collector) closeTab(session, ctx string) bool {
+	b := c.find(session)
+	if b == nil {
+		if b = c.find("fox"); b == nil { // legacy fox tabs may record session!="fox"
+			return false
+		}
+	}
+	var body string
+	if session != "fox" && c.cdpSeat(*b) {
+		body = fmt.Sprintf(`{"method":"Target.closeTarget","params":{"targetId":%q}}`, ctx)
+	} else {
+		body = fmt.Sprintf(`{"method":"browsingContext.close","params":{"context":%q}}`, ctx)
+	}
+	_, err := c.command(b, body)
+	return err == nil
+}
+
 // autoDedupe collapses duplicate tabs, holder-guarded. Keeper preference: the
 // SELECTED tab (never yank the operator's focus), else the first enumerated
 // (window order — the elder). Runs only after the manifest is seeded, so the
