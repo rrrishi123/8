@@ -39,12 +39,12 @@ else red "8/web: tsc FAIL"; fi
 # --- version-literal lockstep (the drift guard, as a gate) ---
 echo "-- version lockstep --"
 lit() { grep -cE "$3" "$ROOT/$1/$2" 2>/dev/null; }   # read the CHECKED-OUT file (HEAD) — works on release/v0.0.2 or a private overlay branch that merged it
-c=$(lit http-mcp contract/contract.go 'Version = "v0.0.2"')
-a=$(lit adapters trace/trace.go 'Version = "v0.0.2"')
-p=$(lit pilot main.go 'fallbackVersion = "v0.0.2"')
-s=$(lit 8 collector/main.go 'seriesContractVersion = "v0.0.2"')
+c=$(lit http-mcp contract/contract.go 'Version = "v0.0.3"')
+a=$(lit adapters trace/trace.go 'Version = "v0.0.3"')
+p=$(lit pilot main.go 'fallbackVersion = "v0.0.3"')
+s=$(lit 8 collector/main.go 'seriesContractVersion = "v0.0.3"')
 v=$(lit 8 install.sh 'VER="v0.0.3"')
-if [ "$c$a$p$s$v" = "11111" ]; then grn "lockstep ok (4x v0.0.2 + install.sh v0.0.3-ahead)"; else red "lockstep DRIFT: contract=$c adapters=$a pilot=$p series=$s install=$v"; fi
+if [ "$c$a$p$s$v" = "11111" ]; then grn "lockstep ok (4x v0.0.3 + install.sh v0.0.3)"; else red "lockstep DRIFT: contract=$c adapters=$a pilot=$p series=$s install=$v"; fi
 
 # --- composed tips (the release object) ---
 echo "-- composed release --"

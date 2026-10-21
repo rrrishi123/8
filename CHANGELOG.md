@@ -4,7 +4,7 @@ All four arms of the four-system (8, http-mcp, pilot, adapters) version
 independently; the wire contract carries its own version (`contract.Version`
 in http-mcp). Tags are unsigned.
 
-## v0.0.3 (unreleased, branch `release/v0.0.2`)
+## v0.0.3 — 2026-10-21
 
 Release-readiness follow-ups to the v0.0.2 line:
 
@@ -41,6 +41,7 @@ Release-readiness follow-ups to the v0.0.2 line:
   in `~/.8/poke.env` (chmod 600), rate-limited by `EIGHT_POKE_MIN_S`.
 - **`scripts/demo.sh`**: the pieces in action, narrated.
 - This changelog.
+- `seriesContractVersion` is `v0.0.3`; `system-smoke.sh` checks the four literals at v0.0.3.
 
 ## v0.0.2 — 2026-09
 

@@ -4303,9 +4303,9 @@ func seriesPath(name string) string {
 // version, so a future replayer can identify the format a trace was written in
 // (D1: this is the cheap half of the contract's value — drift-identifiability —
 // without adopting the Frame type or importing the contract package). It tracks
-// http-mcp contract.Version, currently v0.0.2; 8 deliberately does not import the
+// http-mcp contract.Version, currently v0.0.3; 8 deliberately does not import the
 // contract (the no-arrow decoupling), so bump this in lockstep at the release cut.
-const seriesContractVersion = "v0.0.2"
+const seriesContractVersion = "v0.0.3"
 
 // seriesFile is the on-disk series envelope: the contract version + the frames.
 type seriesFile struct {
