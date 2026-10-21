@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
+	"strings"
 )
 
 // ── CHROME/CDP INPUT — "Live" control for chrome seats (the #1 cockpit gap) ───
@@ -109,6 +111,40 @@ func (c *collector) actCDP(w http.ResponseWriter, r *http.Request, b *broker, ct
 		http.Error(w, `{"error":"act(cdp): unknown action"}`, http.StatusBadRequest)
 		return
 	}
+	// PER-AGENT POINTER: draw this actor's own labeled cursor where it just acted, so
+	// the human SEES who is driving (HeyClicky-style, from the witness's who+where). The
+	// overlay lives in the tab, so it shows on the real tab AND in 8's card; it fades
+	// and self-removes. A blank actor draws nothing — an undeclared drive has no one.
+	if js := agentPointerJS(actorOf(r, ""), x, y); js != "" {
+		c.cdpCall(b, "Runtime.evaluate", map[string]any{"expression": js}, sid)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"ok":true,"via":"cdp","action":"` + action + `"}`))
+}
+
+// agentPointerJS builds a self-removing cursor overlay at (x,y), colored and labeled
+// by the actor so each agent gets a stable, distinct pointer. Only single-quotes in
+// the DOM-built JS; the label is JSON-encoded so any actor string is safe.
+func agentPointerJS(actor string, x, y int) string {
+	if strings.TrimSpace(actor) == "" {
+		return ""
+	}
+	colors := []string{"#8e24aa", "#1e88e5", "#e53935", "#43a047", "#fb8c00", "#00897b", "#5e35b1"}
+	h := 0
+	for _, c := range actor {
+		h = h*31 + int(c)
+	}
+	if h < 0 {
+		h = -h
+	}
+	col := colors[h%len(colors)]
+	safe := ""
+	for _, c := range actor {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			safe += string(c)
+		}
+	}
+	lbl, _ := json.Marshal("◆ " + actor)
+	return fmt.Sprintf(`(function(){var id='__ptr_%s';var o=document.getElementById(id);if(o)o.remove();var w=document.createElement('div');w.id=id;w.style.cssText='position:fixed;left:%dpx;top:%dpx;z-index:2147483647;pointer-events:none;transform:translate(-50%%,-50%%);font-family:system-ui;text-align:center;transition:opacity .6s';var d=document.createElement('div');d.style.cssText='width:16px;height:16px;border-radius:50%%;background:%s;box-shadow:0 0 0 6px %s55;margin:0 auto';var l=document.createElement('div');l.textContent=%s;l.style.cssText='margin-top:4px;background:%s;color:#fff;font-weight:700;font-size:12px;padding:2px 8px;border-radius:10px;white-space:nowrap';w.appendChild(d);w.appendChild(l);document.body.appendChild(w);setTimeout(function(){w.style.opacity=0},1400);setTimeout(function(){w.remove()},2200)})()`,
+		safe, x, y, col, col, string(lbl), col)
 }
