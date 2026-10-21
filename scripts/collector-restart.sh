@@ -41,7 +41,7 @@ else cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'); fi # ma
 
 # a collector-reviving watchdog? (mac watchdog.sh is verified to revive :7070;
 # match the peer variant too — if it turns out not to revive, the safety net fires)
-wd=$(pgrep -f 'scripts/watchdog(-omarchy)?\.sh' | head -1)
+wd=$(pgrep -f 'scripts/watchdog(-[a-z0-9-]*)?\.sh' | head -1)
 if [ -n "$wd" ]; then mode="watchdog(pid $wd) revives; self-relaunch only if still down after ${GRACE}s"
 else mode="no watchdog — self-relaunch immediately"; GRACE=0; fi
 

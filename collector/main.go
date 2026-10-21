@@ -154,6 +154,23 @@ func (c *collector) setFocus(session, context string) {
 	c.focusMu.Unlock()
 }
 
+// setControlledBy stamps PRESENCE on a tab (#9425(2)): the actor whose drive act
+// just targeted ctx is "here now". It generalizes opened_by (who BORN the tab) to
+// controlled_by (who is DRIVING it now), so the card can light with the live
+// controller — the whole four-system showing who is where. A blank actor is an
+// undeclared drive; we never fabricate a controller (honest, like opened_by).
+func (c *collector) setControlledBy(ctx, actor string) {
+	if ctx == "" || actor == "" {
+		return
+	}
+	c.tmu.Lock()
+	if rec := c.manifest[ctx]; rec != nil {
+		rec.ControlledBy = actor
+		rec.ControlledAt = nowNano()
+	}
+	c.tmu.Unlock()
+}
+
 // activateCockpit brings Firefox HOME to 8 on startup: it finds the cockpit tab
 // (the :8088 context) on the fox channel and activates it, so every collector
 // (re)start returns the view to the seer instead of leaving Firefox on whatever
@@ -1953,6 +1970,8 @@ type tabRec struct {
 	ClaimedBy     string `json:"claimed_by,omitempty"`     // an agent CURRENTLY using this tab (a lease)
 	ClaimAt       string `json:"claim_at,omitempty"`       // heartbeat — a claim is LIVE only if fresh (<90s)
 	ClaimVerified bool   `json:"claim_verified,omitempty"` // #83 the lease was granted against a host-resolved credential (not a free-text name)
+	ControlledBy  string `json:"controlled_by,omitempty"`  // #9425(2) presence: the actor whose LAST drive act targeted this tab (who is HERE now — generalizes opened_by from birth to live control)
+	ControlledAt  string `json:"controlled_at,omitempty"`  // when that drive landed; presence is fresh only if recent (the card lights for the live controller, decays like a claim)
 }
 
 // claimLive reports whether a tab's lease is fresh — the FALSIFIABLE basis for
@@ -2936,17 +2955,21 @@ func (c *collector) handleDedup(w http.ResponseWriter, r *http.Request) {
 	c.tmu.Lock()
 	byURL := map[string][]*tabRec{}
 	for _, rec := range c.manifest {
-		if rec.Status == "live" && rec.Session == "fox" {
-			byURL[rec.URL] = append(byURL[rec.URL], rec)
+		// R2/#1226: every live engine, not just fox — group by NORMALIZED url so a
+		// chrome dup is seen too; dedupeSkip keeps :8088/about:/extensions out.
+		if rec.Status == "live" && !dedupeSkip(strings.ToLower(rec.URL)) {
+			u := normTabURL(rec.URL)
+			byURL[u] = append(byURL[u], rec)
 		}
 	}
 	type cand struct {
-		URL, Ctx, ClaimedBy string
-		Claimed             bool
-		Kept                bool
+		URL, Ctx, Session, ClaimedBy string
+		Claimed                      bool
+		Kept                         bool
 	}
+	type killT struct{ ctx, session string }
 	var out []cand
-	var toClose []string
+	var toClose []killT
 	for url, recs := range byURL {
 		if len(recs) < 2 {
 			continue
@@ -2964,20 +2987,19 @@ func (c *collector) handleDedup(w http.ResponseWriter, r *http.Request) {
 		}
 		for i, rec := range recs {
 			busyByOther := claimLive(rec) && rec.ClaimedBy != me
-			out = append(out, cand{url, rec.Ctx, rec.ClaimedBy, claimLive(rec), i == keepIdx})
+			out = append(out, cand{url, rec.Ctx, rec.Session, rec.ClaimedBy, claimLive(rec), i == keepIdx})
 			if doClose && i != keepIdx && !busyByOther {
-				toClose = append(toClose, rec.Ctx)
+				toClose = append(toClose, killT{rec.Ctx, rec.Session})
 			}
 		}
 	}
 	c.tmu.Unlock()
 	closed := []string{}
 	if doClose {
-		if b := c.find("fox"); b != nil {
-			for _, ctx := range toClose {
-				if _, err := c.command(b, fmt.Sprintf(`{"method":"browsingContext.close","params":{"context":%q}}`, ctx)); err == nil {
-					closed = append(closed, ctx)
-				}
+		for _, k := range toClose {
+			if c.closeTab(k.session, k.ctx) { // engine-agnostic close BEHAVIOUR
+				closed = append(closed, k.ctx)
+				c.publish(fmt.Sprintf(`{"session":%q,"origin":"COLLECTOR","frame":{"method":"tab.deduped","params":{"context":%q}}}`, k.session, k.ctx))
 			}
 		}
 	}
@@ -3452,7 +3474,8 @@ func (c *collector) actChannel(w http.ResponseWriter, r *http.Request, b *broker
 		in.X2 = int(math.Round(float64(in.X2) / dpr))
 		in.Y2 = int(math.Round(float64(in.Y2) / dpr))
 	}
-	c.setFocus(b.id, ctx) // 8 auto-zooms to the tab being driven
+	c.setFocus(b.id, ctx)                        // 8 auto-zooms to the tab being driven
+	c.setControlledBy(ctx, actorOf(r, in.Actor)) // #9425(2): and records WHO is driving it (presence)
 	pointer := func(acts string) string {
 		return fmt.Sprintf(`{"method":"input.performActions","params":{"context":%q,"actions":[{"type":"pointer","id":"m","parameters":{"pointerType":"mouse"},"actions":[%s]}]}}`, ctx, acts)
 	}
@@ -4711,6 +4734,7 @@ func main() {
 	mux.HandleFunc("/drawshot", c.handleDrawShot) // leak-free Firefox periphery still (replaces /shot)
 	mux.HandleFunc("/tabs", c.handleTabs)
 	mux.HandleFunc("/procinfo", c.handleProcInfo)
+	mux.HandleFunc("/tabcost", c.handleTabCost) // R4/#4421: engine-agnostic per-tab cost state (chromium heap+dom via CDP; firefox RSS stays /procinfo)
 	mux.HandleFunc("/drawprobe", c.handleDrawProbe)
 	mux.HandleFunc("/fxchunk", c.handleFxChunk)   // HiddenFrame driver POSTs WebM here
 	mux.HandleFunc("/fxstream", c.handleFxStream) // cockpit MSE consumes WebM here
