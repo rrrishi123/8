@@ -25,3 +25,6 @@ iam_witness.py
 web/.env
 # identity scripts are being folded into the Go collector; don't ship stray python
 /scripts/*.py
+
+# private design-system reference — never public (same guard as release/v0.0.2, d182a57)
+/web/design-reference/_ds/
