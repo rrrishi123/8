@@ -19,12 +19,14 @@ Run it after every deploy that touches the cockpit. Usage:
     python3 scripts/verify-live.py            # soft+hard reload + full check
     python3 scripts/verify-live.py --no-hard  # soft reload only (keep accumulated RAM)
 """
-import json, sys, time, urllib.request
+import json, re, subprocess, sys, time, urllib.request
 
 COLLECTOR = "http://127.0.0.1:7070"
 BROKER = "http://127.0.0.1:4446"
+COCKPIT_URL = "http://localhost:8088/"
 SETTLE_S = 12          # time for the reloaded app to mount, stream, and let the gate poll
 FOOTPRINT_CEIL_MB = 3600  # a cockpit over this after a fresh hard-reload is a regression
+FRESH_CEIL_MB = 800    # a FRESH renderer (close+reopen) over this is a real memory regression
 
 
 def get(url, timeout=6):
@@ -88,6 +90,38 @@ def drive_latency_ms(ctx):
     except Exception:
         return -1
     return int((time.time() - t0) * 1000)
+
+
+def _renderer_pids():
+    out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True).stdout
+    return {int(ln.split()[0]) for ln in out.splitlines() if "(Renderer)" in ln and "Chromium" in ln}
+
+
+def _footprint(pid):
+    try:
+        out = subprocess.run(["footprint", str(pid)], capture_output=True, text=True).stdout
+        m = re.search(r"phys_footprint:\s+(\d+)\s*MB", out)
+        return int(m.group(1)) if m else -1
+    except Exception:
+        return -1
+
+
+def fresh_cockpit_footprint():
+    """Open a BRAND-NEW cockpit renderer, measure ITS phys_footprint, close it. This is the
+    only honest per-change memory number: a reload/refresh reuses the renderer, which holds
+    committed high-water memory from before a fix, so it hides any reduction. A fresh process
+    builds only what today's code builds. Returns (fresh_mb, old_heaviest_mb)."""
+    before = _renderer_pids()
+    r = bro({"method": "Target.createTarget", "params": {"url": COCKPIT_URL}})
+    tid = r.get("result", {}).get("targetId")
+    old_heavy = max((_footprint(p) for p in before), default=-1)
+    if not tid:
+        return -1, old_heavy
+    time.sleep(SETTLE_S + 8)  # a fresh load needs longer to mount + stream + settle
+    new = _renderer_pids() - before
+    fresh = max((_footprint(p) for p in new), default=-1)
+    bro({"method": "Target.closeTarget", "params": {"targetId": tid}})  # don't leave a duplicate
+    return fresh, old_heavy
 
 
 def dup_groups():
@@ -154,6 +188,15 @@ def main():
     shadows = sum(n - 1 for n in dups.values())
     checks.append(("dedup: duplicates collapse to 1 observer each", True,
                    f"{len(dups)} group(s), {shadows} shadow(s): {list(dups.items())[:3]}"))
+
+    # --fresh: the TRUE per-change memory number. The running cockpit's footprint is sticky
+    # (committed high-water that a refresh can't return); a fresh renderer shows what today's
+    # code actually costs. Opt-in because it opens+closes a probe tab (~20s).
+    if "--fresh" in sys.argv:
+        print("  opening a fresh cockpit renderer to measure today's true footprint…")
+        fresh, old = fresh_cockpit_footprint()
+        checks.append((f"fresh-renderer footprint ≤ {FRESH_CEIL_MB}MB", 0 < fresh <= FRESH_CEIL_MB,
+                       f"fresh {fresh} MB vs running {old} MB (a close+reopen sheds the sticky high-water)"))
 
     print("\n  ── PIPELINE RESULT ──")
     allok = True

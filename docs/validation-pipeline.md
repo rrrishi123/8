@@ -62,22 +62,39 @@ Steps:
      act (the first act after a reload pays a one-time cold viewport-cache round-trip).
    - **dedup** — duplicate-URL tabs collapse to one live observer each (`/manifest`).
 
-Run it standalone any time: `python3 scripts/verify-live.py` (add `--no-hard` to keep the
-accumulated RAM and only soft-reload).
+Run it standalone any time: `python3 scripts/verify-live.py` (`--no-hard` = soft reload only;
+`--fresh` = also open a throwaway cockpit renderer and report today's TRUE footprint, ~20s).
 
-## Honest findings this pipeline has surfaced (and why they matter)
+## The crux: a refresh does NOT reclaim RAM — only a fresh renderer does
 
-- **A reload does NOT reclaim RAM.** Measured: cockpit `phys_footprint` 2826 MB before, a
-  transient spike to ~4100 MB *during* a soft reload (the new page allocates before the old is
-  torn down), settling at ~2950 MB after a hard reload — i.e. right back to its resting size.
-  The 2.9 GB is **structural** (the zoomable canvas + its live streams + GPU compositor), so a
-  refresh rebuilds it. The footprint **gate** caps the *climb* (it was peaking ~5 GB) but does
-  not shrink the *base*. **Reducing the resting ~2.9 GB is a separate structural change**
-  (tracked on ledger #9492; needs a heap snapshot to find the retained holders).
-- **Control is ~1 ms warm** (steady state), after a ~450 ms cold-cache first act — the async
-  ordered-gesture + cached browser-side viewport fix holds across reloads.
+This is the single most important thing the pipeline taught, and it changes how "did RAM go
+down" must be measured:
+
+- **`phys_footprint` is sticky.** A soft/hard reload *reuses the same renderer process*, which
+  holds committed high-water memory from before a fix. Measured: after the ledger-cap fix, the
+  running cockpit's DOM collapsed from **117,214 → 2,160 nodes** and JS heap from **303 → 29 MB**,
+  yet `phys_footprint` stayed ~2.9 GB. Even `Memory.forciblyPurgeJavaScriptMemory` returned only
+  ~35 MB. Chrome does not hand committed pages back to the OS on a same-process reload.
+- **A fresh renderer (close + reopen the tab) starts clean** — it builds only what today's code
+  builds. Measured on a fresh cockpit with the fixes in place: **98–134 MB vs the old renderer's
+  2604–2616 MB — a ~20–26× reduction.**
+
+So: **`deploy.sh` / a hard-refresh picks up new code, but to actually shed the RAM on the
+running cockpit you must close and reopen the tab.** `verify-live.py --fresh` measures a fresh
+renderer precisely so a memory change can be proven even while the running tab's high-water
+hides it.
+
+## Honest findings this pipeline has surfaced
+
+- **The ~2.9 GB holder was the work ledger**, not the canvas/GPU: it rendered every one of
+  9,000+ ledger items as a DOM row (`work-row ×9495`, ~66 k nodes). Capping it to open + newest
+  40 done drops a fresh cockpit to **~100 MB** (#9492). The footprint **gate** still caps the
+  *climb* for the long-running process (it was peaking ~5 GB); the cap prevents the climb at the
+  source.
+- **Control is ~0–1 ms warm** (steady state), after a one-time ~450 ms cold viewport-cache act —
+  the async ordered-gesture + browser-side cached viewport fix holds across reloads.
 - **Dedup works** — two `pretext/bubbles` tabs collapse to one live stream + one `↔dup` shadow.
 
-The point of writing RAM/latency as **checks**: the next time a change claims to lower RAM or
-keep control fast, `deploy.sh` says PASS/FAIL with the honest before/after numbers — no
-assertion without measurement.
+The point of writing RAM/latency/DOM as **checks**: the next time a change claims to lower RAM
+or keep control fast, `deploy.sh --fresh` says PASS/FAIL with the honest numbers — no assertion
+without measurement.
