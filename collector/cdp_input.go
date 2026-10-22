@@ -159,27 +159,51 @@ func cdpKey(name string) (key, code string, vk int) {
 }
 
 // cdpViewport reads the tab's CSS viewport so the cockpit's 0..1 ratio coords resolve
-// to real pixels (same contract as the BiDi path's chanViewport).
-func (c *collector) cdpViewport(b *broker, sid string) (float64, float64) {
-	out, err := c.cdpCall(b, "Runtime.evaluate", map[string]any{
-		"expression": `JSON.stringify([innerWidth,innerHeight])`, "returnByValue": true}, sid)
+// to real pixels (same contract as the BiDi path's chanViewport). It is CACHED in the
+// shared vpCache (keyed by ctx, like chanViewport): only the first act on a tab pays a
+// round-trip. CRUCIAL for smooth control — the old path ran Runtime.evaluate(innerWidth)
+// EVERY act, and Chrome THROTTLES page JS on a backgrounded tab (the pretext tab behind
+// the cockpit), so each drive waited ~5s for the tab's JS scheduler. Page.getLayoutMetrics
+// is browser-side (not throttled) and we cache it, so drives are instant.
+func (c *collector) cdpViewport(b *broker, ctx, sid string) (float64, float64) {
+	if ctx != "" {
+		c.dmu.Lock()
+		if v, ok := c.vpCache[ctx]; ok && v[0] > 0 {
+			c.dmu.Unlock()
+			return v[0], v[1]
+		}
+		c.dmu.Unlock()
+	}
+	out, err := c.cdpCall(b, "Page.getLayoutMetrics", map[string]any{}, sid)
 	if err != nil {
 		return 0, 0
 	}
 	var r struct {
 		Result struct {
-			Result struct {
-				Value string `json:"value"`
-			} `json:"result"`
+			CSSVisualViewport struct {
+				ClientWidth  float64 `json:"clientWidth"`
+				ClientHeight float64 `json:"clientHeight"`
+			} `json:"cssVisualViewport"`
+			CSSLayoutViewport struct {
+				ClientWidth  float64 `json:"clientWidth"`
+				ClientHeight float64 `json:"clientHeight"`
+			} `json:"cssLayoutViewport"`
 		} `json:"result"`
 	}
 	if json.Unmarshal(out, &r) != nil {
 		return 0, 0
 	}
-	var wh []float64
-	json.Unmarshal([]byte(r.Result.Result.Value), &wh)
-	if len(wh) == 2 {
-		return wh[0], wh[1]
+	vw, vh := r.Result.CSSVisualViewport.ClientWidth, r.Result.CSSVisualViewport.ClientHeight
+	if vw == 0 {
+		vw, vh = r.Result.CSSLayoutViewport.ClientWidth, r.Result.CSSLayoutViewport.ClientHeight
+	}
+	if vw > 0 && vh > 0 {
+		if ctx != "" {
+			c.dmu.Lock()
+			c.vpCache[ctx] = [2]float64{vw, vh}
+			c.dmu.Unlock()
+		}
+		return vw, vh
 	}
 	return 0, 0
 }
@@ -201,11 +225,11 @@ func (c *collector) actCDP(w http.ResponseWriter, r *http.Request, b *broker, ct
 	}
 	// NO per-action detach — the session is cached so repeated control is smooth.
 	if xr > 0 || yr > 0 { // resolution-independent coords → real pixels
-		vw, vh := c.cdpViewport(b, sid)
+		vw, vh := c.cdpViewport(b, ctx, sid)
 		if vw == 0 { // the cached session may be stale (tab navigated/closed) → re-attach once
 			c.cdpInvalidate(b, ctx)
 			sid = c.cdpSession(b, ctx)
-			vw, vh = c.cdpViewport(b, sid)
+			vw, vh = c.cdpViewport(b, ctx, sid)
 		}
 		if vw > 0 && vh > 0 {
 			x = int(math.Round(xr * vw))
@@ -274,8 +298,13 @@ func (c *collector) actCDP(w http.ResponseWriter, r *http.Request, b *broker, ct
 	// the human SEES who is driving (HeyClicky-style, from the witness's who+where). The
 	// overlay lives in the tab, so it shows on the real tab AND in 8's card; it fades
 	// and self-removes. A blank actor draws nothing — an undeclared drive has no one.
+	// FIRE-AND-FORGET: the overlay is cosmetic and runs PAGE JS (Runtime.evaluate), which
+	// Chrome throttles on a backgrounded tab — doing it inline made every drive wait ~5s
+	// for the tab's JS scheduler. Async so the human's act returns instantly; the cursor
+	// lands a beat later. Input.dispatch* (the actual gesture) is browser-side and already
+	// landed above.
 	if js := agentPointerJS(actorOf(r, ""), x, y); js != "" {
-		c.cdpCall(b, "Runtime.evaluate", map[string]any{"expression": js}, sid)
+		go c.cdpCall(b, "Runtime.evaluate", map[string]any{"expression": js}, sid)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"ok":true,"via":"cdp","action":"` + action + `"}`))
