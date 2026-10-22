@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"net/http"
+	"testing"
+	"time"
+)
 
 // TestCdpKey guards the key mapping that backs the "press"/"key" action — so CI
 // catches a regression in Enter/Tab/arrow/char handling without a live browser.
@@ -35,7 +39,7 @@ func TestCdpKey(t *testing.T) {
 // never resolves, so a real attach returns "" — we seed the cache directly and assert
 // reuse + eviction, the pure cache behaviour that keeps control from re-attaching.
 func TestCdpSessionCache(t *testing.T) {
-	c := &collector{cdpSes: map[string]string{}}
+	c := &collector{cdpSes: map[string]string{}, client: &http.Client{Timeout: time.Second}}
 	b := &broker{id: "chrome", base: "http://127.0.0.1:0"} // unreachable: attach yields ""
 	c.cdpSes["chrome|CTX"] = "SID1"                          // seed as if already attached
 	if got := c.cdpSession(b, "CTX"); got != "SID1" {
