@@ -4772,6 +4772,7 @@ func main() {
 	mux.HandleFunc("/tabs", c.handleTabs)
 	mux.HandleFunc("/procinfo", c.handleProcInfo)
 	mux.HandleFunc("/tabcost", c.handleTabCost) // R4/#4421: engine-agnostic per-tab cost state (chromium heap+dom via CDP; firefox RSS stays /procinfo)
+	mux.HandleFunc("/rss", c.handleRSS)         // the REAL renderer RSS (ps) that CDP heap metrics miss — so 8 sees the 3.6GB
 	mux.HandleFunc("/drawprobe", c.handleDrawProbe)
 	mux.HandleFunc("/fxchunk", c.handleFxChunk)   // HiddenFrame driver POSTs WebM here
 	mux.HandleFunc("/fxstream", c.handleFxStream) // cockpit MSE consumes WebM here
