@@ -10,7 +10,7 @@ import { useInstruments, WorkBody, ClockBody, InnerBody, PortalBody } from './In
 import { useWireRows, WireRows } from './WireLog';
 import { CardFrame, HostBody, ProfileBody, BudgetBody } from './Card';
 import { useLocal } from './Dock';
-import { procinfo, rssFootprint, recordCtl, listSeries, replaySeries, addTab, getFocus, getControlledBy, type SeriesInfo, type CapFrame } from '../lib/api';
+import { procinfo, rssFootprint, recordCtl, listSeries, replaySeries, addTab, getFocus, getControlledBy, peers, type Peer, type SeriesInfo, type CapFrame } from '../lib/api';
 import { GRID, SeqLedger, packWorld, onScreen, syncFontFromCSS, setUnit, levelForZoom, LEVELS, type Card, type Lane, type Level, type CardKind } from '../lib/cards';
 import { fetchNodes, buildTree, liveView, type BrowserNode, type Seat, type Tab, type HostNode, type ProfileNode } from '../lib/nodes';
 import { useReportedTexts, textOf } from '../lib/cardText';
@@ -50,6 +50,19 @@ const KIND_TITLE: Record<string, string> = {
 };
 
 const hostOf = (u: string) => { try { return new URL(u).host.replace(/^www\./, ''); } catch { return u || 'tab'; } };
+
+// RemoteTab — a tab on ANOTHER host (a /peers mesh member). It is not locally streamable
+// (no inbound route to a NAT'd peer), so it shows as metadata; control flows the only way
+// the networking allows — a command queued via /relay that the peer PULLS and runs (#1267).
+function RemoteTab({ host, url, stale }: { host: string; url: string; stale?: boolean }) {
+  return (
+    <div style={{ padding: '10px 12px', fontSize: 12, lineHeight: 1.5, color: '#cdd', fontFamily: 'system-ui' }}>
+      <div style={{ color: stale ? '#c88' : '#6d8', fontWeight: 600 }}>☍ {host}{stale ? ' · stale' : ' · live'}</div>
+      <div style={{ color: '#9aa', wordBreak: 'break-all', marginTop: 2 }}>{url || 'no browser tabs'}</div>
+      <div style={{ color: '#789', marginTop: 4, fontSize: 11 }}>remote · drive via /relay?peer={host} (pull)</div>
+    </div>
+  );
+}
 // zoom bounds — Figma-grade so the wheel/pinch feels endless: deep enough to
 // read a single tile huge (Z_MAX) and far enough to fit the whole world (Z_MIN).
 // Every clamp (wheel, bird's-eye) reads THESE so nothing caps zoom-in early.
@@ -156,6 +169,19 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     return () => { alive = false; clearInterval(t); };
   }, []);
 
+  // FEDERATION MESH (#1267): the OTHER hosts (colima, a peer mac, a sandbox) that beat
+  // into /peers. Each carries its own manifest; we render it on THIS canvas so you SEE
+  // every host's browser — the mesh — and can drive it through the pull-relay. Without
+  // this, a peer is invisible and uncontrollable; with it, every 8 shows every 8.
+  const [peerList, setPeerList] = useState<Peer[]>([]);
+  useEffect(() => {
+    let alive = true;
+    const pull = () => peers().then((d) => { if (alive) setPeerList(d.peers || []); }).catch(() => {});
+    pull();
+    const t = window.setInterval(() => { if (!document.hidden) pull(); }, 8000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
   useEffect(() => {
     const load = async () => {
       try {
@@ -228,7 +254,16 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   }, [showSelf]);
 
   // ── the tree: hosts → profiles → tabs ────────────────────────────────────────
-  const tree = useMemo(() => buildTree(nodes, seats, tabsBy), [nodes, seats, tabsBy]);
+  // DROP DEAD-EMPTY HOSTS: a host with no tabs, no live view, and nothing to attach
+  // offers nothing but noise — e.g. host-firefox lingering because `fox` is still in the
+  // collector's -brokers though this host is chrome-only now. Keep attachable containers
+  // (dormant on purpose) and anything with tabs or a live view.
+  const tree = useMemo(() => buildTree(nodes, seats, tabsBy).filter((h) => {
+    const tabs = h.profiles.reduce((n, p) => n + p.tabs.length, 0);
+    const attachable = h.profiles.some((p) => p.node?.attachable);
+    const live = liveView(h.node) || h.profiles.some((p) => liveView(p.node));
+    return tabs > 0 || attachable || live;
+  }), [nodes, seats, tabsBy]);
   const level: Level = levelPick === 'auto' ? levelForZoom(cam.z) : levelPick;
 
   // ATTENTION FOLLOWS ACTION: poll /focus; when it changes, pin that card as hero
@@ -341,6 +376,30 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
         badge: p.seat ? `${nTabs} tab${nTabs === 1 ? '' : 's'}${live ? ' · live' : ''}` : (live ? 'live · no session' : 'no session'), cards });
     }
   }
+  // PEER HOSTS (the mesh, #1267): every other 8 that beats into /peers gets a lane here,
+  // showing its browser tabs so you SEE and (via the pull-relay) can drive it. A peer's
+  // tabs are REMOTE — rendered as metadata cards (no local stream); the ☍ marks the mesh.
+  for (const pr of peerList) {
+    const m = (pr.manifest || {}) as { tabs?: { ctx?: string; url?: string; title?: string; status?: string }[] };
+    const ptabs = (m.tabs || []).filter((t) => t.status === 'live' && t.url);
+    const laneKey = 'peer:' + pr.host;
+    const cards: Card[] = ptabs.length
+      ? ptabs.map((t, i) => ({
+          key: laneKey + ':' + (t.ctx || i), lane: laneKey, kind: 'profile' as const,
+          title: hostOf(t.url || ''), meta: `☍ ${pr.host} · ${t.url}`, measure: 'dom' as const,
+          node: <RemoteTab host={pr.host} url={t.url || ''} stale={pr.stale} />,
+        }))
+      : [{
+          key: laneKey + ':host', lane: laneKey, kind: 'profile' as const,
+          title: '☍ ' + pr.host, meta: `remote · ${pr.stale ? 'stale' : 'live'} · no browser tabs`, measure: 'dom' as const,
+          node: <RemoteTab host={pr.host} url="" stale={pr.stale} />,
+        }];
+    lanes.push({
+      key: laneKey, label: `☍ ${pr.host}`, kind: 'host', tone: 'seat', cols: 2,
+      badge: `remote · ${ptabs.length} tab${ptabs.length === 1 ? '' : 's'}${pr.stale ? ' · stale' : ''}`, cards,
+    });
+  }
+
   // type lanes (the gauges) — at every level, so the cockpit never loses its instruments
   const typeCards: Record<string, Card> = {
     panes: { key: 'panes', lane: 'type:minds', kind: 'panes', title: KIND_TITLE.panes, meta: 'broadcast one prompt to chosen claude panes', measure: 'dom', node: <PaneCockpit cardKey="panes" /> },
