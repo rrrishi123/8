@@ -4695,7 +4695,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	persistBootArgs() // #347: record the wired argv so `up` boots and `watch` revives NON-bare
+	peerJoin.self = selfBaseFromListen(*listen) // #1267: where this peer runs the commands it pulls
+	persistBootArgs()                           // #347: record the wired argv so `up` boots and `watch` revives NON-bare
 
 	var brokers []broker
 	for _, part := range strings.Split(*spec, ",") {
@@ -4863,6 +4864,7 @@ func main() {
 	mux.HandleFunc("/identity", c.handleIdentity)         // #437: live identity — GET derives, POST declares
 	mux.HandleFunc("/container", c.handleContainer)       // #850: inner-host — docker stats + colima list
 	mux.HandleFunc("/peers", c.handlePeers)               // #886: federation rendezvous — push register/heartbeat
+	mux.HandleFunc("/relay", c.handleRelay)               // #1267: queue a command a NAT'd peer pulls on its beat
 	mux.HandleFunc("/db", c.handleDB)                     // project the scattered stores into ~/.8/eight.db for DBeaver
 	mux.HandleFunc("/stopwatch", c.handleStopwatch)       // experiri: the witness's staleness made readable
 	mux.HandleFunc("/event", c.handleEvent)               // T5: witnessed reply-event bus (per-tab CDP watcher posts here; any host polls ?since=)

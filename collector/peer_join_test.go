@@ -90,7 +90,7 @@ func TestPeerJoinRoundTripAndRetry(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		c.peerJoinLoop(ctx, peerJoinConfig{server.URL + "/prefix/peers", host, "test-token"}, 10*time.Millisecond)
+		c.peerJoinLoop(ctx, peerJoinConfig{endpoint: server.URL + "/prefix/peers", host: host, token: "test-token"}, 10*time.Millisecond)
 	}()
 	defer func() { cancel(); <-done }()
 	for i := 0; i < 2; i++ {
@@ -158,7 +158,7 @@ func TestPeerJoinRejectsFailuresAndRedirects(t *testing.T) {
 			w.WriteHeader(status)
 		}))
 		client := newPeerJoinClient()
-		err := sendPeerHeartbeat(context.Background(), client, peerJoinConfig{server.URL, "test", "secret"}, peer{Host: "test"})
+		_, err := sendPeerHeartbeat(context.Background(), client, peerJoinConfig{endpoint: server.URL, host: "test", token: "secret"}, peer{Host: "test"})
 		client.CloseIdleConnections()
 		server.Close()
 		if err == nil {
@@ -185,7 +185,8 @@ func TestPeerJoinCancelsInflightRequest(t *testing.T) {
 	client := newPeerJoinClient()
 	defer client.CloseIdleConnections()
 	go func() {
-		done <- sendPeerHeartbeat(ctx, client, peerJoinConfig{endpoint: server.URL}, peer{Host: "test"})
+		_, e := sendPeerHeartbeat(ctx, client, peerJoinConfig{endpoint: server.URL}, peer{Host: "test"})
+		done <- e
 	}()
 	select {
 	case <-started:
