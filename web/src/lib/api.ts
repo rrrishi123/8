@@ -88,6 +88,20 @@ export async function procinfo(session = 'fox'): Promise<ProcInfo | null> {
   } catch { return null; }
 }
 
+// rssFootprint reads the HONEST committed memory (phys_footprint) of the heaviest
+// Chrome renderer — the number a human sees in Chrome's Task Manager, which the
+// cockpit's own usedJSHeapSize (GPU/bitmaps/compositor excluded) cannot see. This is
+// what lets the adaptive aperture engage on a Chrome cockpit instead of climbing to
+// ~3 GB unnoticed. 0 when unavailable (non-mac collector, probe failed).
+export async function rssFootprint(): Promise<number> {
+  try {
+    const r = await fetch(`${BASE}/rss`);
+    if (!r.ok) return 0;
+    const j = await r.json();
+    return j.heaviest_footprint_mb || 0;
+  } catch { return 0; }
+}
+
 // ── record → replay series (control driven through the wire, seat-attributed) ──
 export interface SeriesInfo { name: string; frames: number; seats: string[]; modes: string[]; }
 // CapFrame — one captured command, shown live IN the canvas (the recording deck)

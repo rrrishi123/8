@@ -10,7 +10,7 @@ import { useInstruments, WorkBody, ClockBody, InnerBody, PortalBody } from './In
 import { useWireRows, WireRows } from './WireLog';
 import { CardFrame, HostBody, ProfileBody, BudgetBody } from './Card';
 import { useLocal } from './Dock';
-import { procinfo, recordCtl, listSeries, replaySeries, addTab, getFocus, getControlledBy, type SeriesInfo, type CapFrame } from '../lib/api';
+import { procinfo, rssFootprint, recordCtl, listSeries, replaySeries, addTab, getFocus, getControlledBy, type SeriesInfo, type CapFrame } from '../lib/api';
 import { GRID, SeqLedger, packWorld, onScreen, syncFontFromCSS, setUnit, levelForZoom, LEVELS, type Card, type Lane, type Level, type CardKind } from '../lib/cards';
 import { fetchNodes, buildTree, liveView, type BrowserNode, type Seat, type Tab, type HostNode, type ProfileNode } from '../lib/nodes';
 import { useReportedTexts, textOf } from '../lib/cardText';
@@ -78,7 +78,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   // procinfo, real resident memory) or 'heap' (a Chrome cockpit reading its OWN
   // usedJSHeapSize, ~1/3 of RSS). Each carries its own threshold so the adaptive
   // aperture engages on BOTH engines, not just Firefox. 'none' = no signal yet.
-  const [memKind, setMemKind] = useState<'rss' | 'heap' | 'none'>('none');
+  const [memKind, setMemKind] = useState<'rss' | 'heap' | 'footprint' | 'none'>('none');
   // the three attention layers, painted on the cards: where YOU are (human_here),
   // which agent drives each tab (controlled_by), and where 8 points (the hero).
   const [humanHere, setHumanHere] = useState('');
@@ -198,13 +198,24 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
           }
         }
         // R1/#9425(1): engine-agnostic fallback. When the Firefox RSS signal is absent
-        // (a Chrome cockpit — procinfo 502s on CDP), read the cockpit's OWN heap so the
-        // adaptive aperture still engages instead of climbing unbounded past 3.6 GB.
+        // (a Chrome cockpit — procinfo 502s on CDP), the aperture must still engage.
+        // usedJSHeapSize is BLIND to the real bloat (GPU textures + decoded bitmaps +
+        // compositor layers live outside JS heap), so a Chrome cockpit measured 2838 MB
+        // phys_footprint while its heap sat ~200 MB — the gate NEVER fired and memory
+        // climbed to ~3 GB unnoticed. Prefer the HONEST footprint (/rss, phys_footprint
+        // of the heaviest renderer = THIS cockpit); fall back to heap only if the probe
+        // is unavailable (non-mac collector).
         if (!gotRss) {
-          const pm = (performance as unknown as { memory?: { usedJSHeapSize?: number } }).memory;
-          if (pm?.usedJSHeapSize) {
-            setParentMem(Math.round(pm.usedJSHeapSize / 1048576));
-            setMemKind('heap');
+          const fp = await rssFootprint();
+          if (fp > 0) {
+            setParentMem(fp);
+            setMemKind('footprint');
+          } else {
+            const pm = (performance as unknown as { memory?: { usedJSHeapSize?: number } }).memory;
+            if (pm?.usedJSHeapSize) {
+              setParentMem(Math.round(pm.usedJSHeapSize / 1048576));
+              setMemKind('heap');
+            }
           }
         }
       } catch { /* keep last */ }
@@ -631,7 +642,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
             const streams = !isParked && (isText ? true : (isFox ? inSet : p.top)) && vis;
             body = <Viewport session={s} context={tab?.context} title={c.title} url={tab?.url}
               parked={isParked} visible={streams} live={!isParked && live}
-              fps={(memKind === 'heap' ? parentMem > 1200 : parentMem > 3500) ? (hero ? 1 : 0) : (hero ? 3 : (streams ? 0.4 : 0))} pinned={hero}
+              fps={(memKind === 'heap' ? parentMem > 1200 : memKind === 'footprint' ? parentMem > 1500 : parentMem > 3500) ? (hero ? 1 : 0) : (hero ? 3 : (streams ? 0.4 : 0))} pinned={hero}
               lodW={lodBucket(p.w * cam.z)}
               fx={isFox} fxNeedle={tab?.url ? hostOf(tab.url) : ''}
               onPin={() => setPinnedKey(c.key)}
