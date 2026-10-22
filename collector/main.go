@@ -114,6 +114,8 @@ type collector struct {
 	dmu      sync.Mutex
 	dprCache map[string]float64    // context -> devicePixelRatio (act coord scaling)
 	vpCache  map[string][2]float64 // context -> [innerWidth, innerHeight] CSS px (ratio act coords)
+	cdpSesMu sync.Mutex            // guards cdpSes
+	cdpSes   map[string]string     // (brokerID|context) -> cached CDP sessionId: repeat drives REUSE the session instead of attach+detach per action (the smooth-control fix)
 
 	// ATTENTION FOLLOWS ACTION: the last seat anything acted on. 8 polls /focus and
 	// auto-foveates (pin + fan + zoom) to it, so driving a tab from the wire makes
@@ -291,7 +293,7 @@ func (c *collector) handleFocus(w http.ResponseWriter, r *http.Request) {
 }
 
 func newCollector(brokers []broker) *collector {
-	return &collector{brokers: brokers, client: &http.Client{}, geckoClient: &http.Client{Timeout: 25 * time.Second}, subs: map[int]chan string{}, dprCache: map[string]float64{}, vpCache: map[string][2]float64{}, fxRecv: map[string]*fxStream{}, manifest: map[string]*tabRec{}, panesSeen: map[string]string{}}
+	return &collector{brokers: brokers, client: &http.Client{}, geckoClient: &http.Client{Timeout: 25 * time.Second}, subs: map[int]chan string{}, dprCache: map[string]float64{}, vpCache: map[string][2]float64{}, cdpSes: map[string]string{}, fxRecv: map[string]*fxStream{}, manifest: map[string]*tabRec{}, panesSeen: map[string]string{}}
 }
 
 // chanDPR is a tab's devicePixelRatio (cached per context). The /stream screenshot
@@ -530,6 +532,9 @@ func (c *collector) recoverGecko() bool {
 			c.dmu.Lock() // context ids changed with the new session — drop the caches
 			c.dprCache = map[string]float64{}
 			c.vpCache = map[string][2]float64{}
+			c.cdpSesMu.Lock()
+			c.cdpSes = map[string]string{}
+			c.cdpSesMu.Unlock()
 			c.dmu.Unlock()
 			log.Printf("collector: recovered gecko session -> %s", sid)
 			return true

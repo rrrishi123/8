@@ -43,6 +43,76 @@ func (c *collector) cdpAttach(b *broker, targetID string) string {
 	return a.Result.SessionID
 }
 
+// cdpSession returns a CACHED session for (b, ctx): it attaches ONCE and reuses the
+// sessionId across drives, so interactive control doesn't pay an attach+detach round
+// trip on every action — the cause of the multi-second lag. A stale session (tab
+// navigated/closed) is evicted by cdpInvalidate and re-attached on the next call.
+func (c *collector) cdpSession(b *broker, ctx string) string {
+	key := b.id + "|" + ctx
+	c.cdpSesMu.Lock()
+	sid := c.cdpSes[key]
+	c.cdpSesMu.Unlock()
+	if sid != "" {
+		return sid
+	}
+	sid = c.cdpAttach(b, ctx)
+	if sid != "" {
+		c.cdpSesMu.Lock()
+		c.cdpSes[key] = sid
+		c.cdpSesMu.Unlock()
+	}
+	return sid
+}
+
+func (c *collector) cdpInvalidate(b *broker, ctx string) {
+	c.cdpSesMu.Lock()
+	delete(c.cdpSes, b.id+"|"+ctx)
+	c.cdpSesMu.Unlock()
+}
+
+// cdpKey maps a key name (Enter, Tab, ArrowDown, a single char…) to the CDP
+// key/code/virtualKeyCode so the cockpit can send real keys, not just insertText.
+func cdpKey(name string) (key, code string, vk int) {
+	switch name {
+	case "Enter", "enter", "return":
+		return "Enter", "Enter", 13
+	case "Tab", "tab":
+		return "Tab", "Tab", 9
+	case "Escape", "esc":
+		return "Escape", "Escape", 27
+	case "Backspace":
+		return "Backspace", "Backspace", 8
+	case "Delete", "del":
+		return "Delete", "Delete", 46
+	case "ArrowUp", "Up":
+		return "ArrowUp", "ArrowUp", 38
+	case "ArrowDown", "Down":
+		return "ArrowDown", "ArrowDown", 40
+	case "ArrowLeft", "Left":
+		return "ArrowLeft", "ArrowLeft", 37
+	case "ArrowRight", "Right":
+		return "ArrowRight", "ArrowRight", 39
+	case "Space", "space", " ":
+		return " ", "Space", 32
+	case "Home":
+		return "Home", "Home", 36
+	case "End":
+		return "End", "End", 35
+	case "PageUp":
+		return "PageUp", "PageUp", 33
+	case "PageDown":
+		return "PageDown", "PageDown", 34
+	}
+	if len(name) == 1 {
+		up := name[0]
+		if up >= 'a' && up <= 'z' {
+			up = up - 'a' + 'A'
+		}
+		return name, "Key" + string(up), int(up)
+	}
+	return name, "", 0
+}
+
 // cdpViewport reads the tab's CSS viewport so the cockpit's 0..1 ratio coords resolve
 // to real pixels (same contract as the BiDi path's chanViewport).
 func (c *collector) cdpViewport(b *broker, sid string) (float64, float64) {
@@ -72,14 +142,20 @@ func (c *collector) cdpViewport(b *broker, sid string) (float64, float64) {
 // actCDP drives a chrome/CDP seat's tab for the cockpit's Live gestures (ctx = the
 // tab's CDP target id, which is what the manifest carries for a chrome seat).
 func (c *collector) actCDP(w http.ResponseWriter, r *http.Request, b *broker, ctx, action, text string, x, y, x2, y2 int, xr, yr float64) {
-	sid := c.cdpAttach(b, ctx)
+	sid := c.cdpSession(b, ctx) // CACHED: attach once, reuse across drives — NO per-action attach/detach
 	if sid == "" {
 		http.Error(w, `{"error":"act(cdp): cannot attach target"}`, http.StatusBadGateway)
 		return
 	}
-	defer c.cdpCall(b, "Target.detachFromTarget", map[string]any{"sessionId": sid}, "")
+	// NO per-action detach — the session is cached so repeated control is smooth.
 	if xr > 0 || yr > 0 { // resolution-independent coords → real pixels
-		if vw, vh := c.cdpViewport(b, sid); vw > 0 && vh > 0 {
+		vw, vh := c.cdpViewport(b, sid)
+		if vw == 0 { // the cached session may be stale (tab navigated/closed) → re-attach once
+			c.cdpInvalidate(b, ctx)
+			sid = c.cdpSession(b, ctx)
+			vw, vh = c.cdpViewport(b, sid)
+		}
+		if vw > 0 && vh > 0 {
 			x = int(math.Round(xr * vw))
 			y = int(math.Round(yr * vh))
 		}
@@ -93,11 +169,24 @@ func (c *collector) actCDP(w http.ResponseWriter, r *http.Request, b *broker, ct
 		}
 		c.cdpCall(b, "Input.dispatchMouseEvent", p, sid)
 	}
+	key := func(typ, kn, kc string, vk int) {
+		c.cdpCall(b, "Input.dispatchKeyEvent", map[string]any{"type": typ, "key": kn, "code": kc, "windowsVirtualKeyCode": vk}, sid)
+	}
 	switch action {
 	case "tap", "click":
 		mouse("mouseMoved", x, y, nil)
 		mouse("mousePressed", x, y, map[string]any{"button": "left", "clickCount": 1})
 		mouse("mouseReleased", x, y, map[string]any{"button": "left", "clickCount": 1})
+	case "dblclick", "doubleclick":
+		mouse("mouseMoved", x, y, nil)
+		mouse("mousePressed", x, y, map[string]any{"button": "left", "clickCount": 2})
+		mouse("mouseReleased", x, y, map[string]any{"button": "left", "clickCount": 2})
+	case "rightclick", "contextmenu":
+		mouse("mouseMoved", x, y, nil)
+		mouse("mousePressed", x, y, map[string]any{"button": "right", "clickCount": 1})
+		mouse("mouseReleased", x, y, map[string]any{"button": "right", "clickCount": 1})
+	case "move", "hover":
+		mouse("mouseMoved", x, y, nil)
 	case "scroll": // CDP wheel: deltas in CSS px (x2,y2)
 		mouse("mouseWheel", x, y, map[string]any{"deltaX": x2, "deltaY": y2})
 	case "swipe", "drag":
@@ -107,6 +196,10 @@ func (c *collector) actCDP(w http.ResponseWriter, r *http.Request, b *broker, ct
 		mouse("mouseReleased", x2, y2, map[string]any{"button": "left", "clickCount": 1})
 	case "sendkeys", "type":
 		c.cdpCall(b, "Input.insertText", map[string]any{"text": text}, sid)
+	case "press", "key": // a named key (Enter, Tab, Escape, ArrowDown…) in `text`
+		kn, kc, vk := cdpKey(text)
+		key("keyDown", kn, kc, vk)
+		key("keyUp", kn, kc, vk)
 	default:
 		http.Error(w, `{"error":"act(cdp): unknown action"}`, http.StatusBadRequest)
 		return
