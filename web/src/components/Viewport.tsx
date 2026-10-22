@@ -12,10 +12,10 @@ type Seeing = 'pixels' | 'channel' | 'request';
 // live stream stops being a mirror and becomes hands: a click on the <img> maps
 // to the target's pixels and fires /act (tap), keystrokes fire /act (type). Same
 // surface drives a Firefox tab (BiDi) OR a real device (Appium) — one wire.
-export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAspect, hud, visible, live, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle, hiRes, parked, youHere, controller }:
+export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAspect, hud, visible, live, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle, hiRes, parked, youHere, controller, dup }:
   { session: string | null; title?: string; url?: string; context?: string;
     onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; live?: boolean; fps?: number; act?: boolean; pinned?: boolean; onPin?: () => void; lodW?: number; fx?: boolean; fxNeedle?: string; hiRes?: boolean; parked?: boolean;
-    youHere?: boolean; controller?: string }) {
+    youHere?: boolean; controller?: string; dup?: boolean }) {
   // MANIFEST: the card's identity — who opened it, why, when — matched by URL
   // (manifest keys by chrome bcid, cards by BiDi ctx, so URL is the join key).
   const [man, setMan] = useState<{ opened_by?: string; why?: string; first_seen?: string } | null>(null);
@@ -390,6 +390,7 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
       <div className="panel-h">
         {onPin && <button className={`vp-pin${pinned ? ' on' : ''}`} onClick={onPin} title={pinned ? 'pinned as hero' : 'pin as hero (live)'}>{pinned ? '📌' : '📍'}</button>}
         <span className={`vp-title${pinned ? ' pinned' : ''}`} onClick={onPin} title={onPin ? 'pin as hero (live)' : undefined}>{title || 'viewport'}</span> {err ? '· ✗' : streaming ? '· ●' : '· ◌'}
+        {dup && <span style={{ background: '#6d4c41', color: '#fff', fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 3, marginLeft: 4 }} title="duplicate of another tab at the same URL — this card seeds once and does NOT stream (one live observer per URL)">↔ dup</span>}
         {ageMs >= 0 && <span className={`vp-age ${ageCls}`} title="staleness of what this card shows — time since its frame landed">{(ageMs / 1000).toFixed(1)}s</span>}
         {/* browser chrome: back · reload · full URL — a card is a real tab now */}
         {session === 'nvim' && fixedCtx && (

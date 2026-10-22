@@ -373,6 +373,19 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   }, [heroKey]);
   const liveSet = new Set([heroKey, ...liveKeys, hoverKey].filter(Boolean));
 
+  // LEAN DEDUP (#9492): "observe->act on duplicate tabs". Two browser tabs at the SAME
+  // url cost TWO live observers (two streams, two compositor surfaces). Elect ONE primary
+  // per url (the hero wins, else first-seen) and mark the rest SHADOW: they still show
+  // their cached still (you keep seeing every tab) but never stream/poll — one observer
+  // per unique url, not per tab. Non-destructive: the real tabs stay open.
+  const normU = (u?: string) => (u || '').replace(/[#/]+$/, '').replace(/^https?:\/\//, '');
+  const dupShadow = new Set<string>();
+  {
+    const byUrl = new Map<string, string[]>();
+    for (const c of tabCards) { if (c.kind !== 'tab' || !c.meta) continue; const u = normU(c.meta); if (!u) continue; const a = byUrl.get(u) || []; a.push(c.key); byUrl.set(u, a); }
+    byUrl.forEach((keys) => { if (keys.length < 2) return; const prim = keys.find((k) => k === heroKey) || keys[0]; for (const k of keys) if (k !== prim) dupShadow.add(k); });
+  }
+
   // ── PACK ────────────────────────────────────────────────────────────────────
   const world = packWorld(ordered, heroKey, posBy);
   rectsRef.current = {};
@@ -639,9 +652,10 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
             const live = isFox ? inSet : (p.top && vis);
             const isParked = tab?.parked === 'true';
             const isText = seat?.stream === 'text';
-            const streams = !isParked && (isText ? true : (isFox ? inSet : p.top)) && vis;
+            const shadow = dupShadow.has(c.key); // a duplicate-url tab: seed-once, no stream
+            const streams = !isParked && !shadow && (isText ? true : (isFox ? inSet : p.top)) && vis;
             body = <Viewport session={s} context={tab?.context} title={c.title} url={tab?.url}
-              parked={isParked} visible={streams} live={!isParked && live}
+              parked={isParked} visible={streams} live={!isParked && !shadow && live} dup={shadow}
               fps={(memKind === 'heap' ? parentMem > 1200 : memKind === 'footprint' ? parentMem > 1500 : parentMem > 3500) ? (hero ? 1 : 0) : (hero ? 3 : (streams ? 0.4 : 0))} pinned={hero}
               lodW={lodBucket(p.w * cam.z)}
               fx={isFox} fxNeedle={tab?.url ? hostOf(tab.url) : ''}
