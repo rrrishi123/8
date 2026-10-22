@@ -40,7 +40,8 @@ type peer struct {
 	Manifest  json.RawMessage `json:"manifest,omitempty"`
 	Thumbnail string          `json:"thumbnail,omitempty"` // data-URI or url
 	Extra     json.RawMessage `json:"extra,omitempty"`
-	Addr      string          `json:"addr,omitempty"` // the peer's collector base URL (from its beat's source IP), for a cross-host budget poke — the per-peer refresh
+	Addr      string          `json:"addr,omitempty"`    // the peer's collector base URL (from its beat's source IP), for a cross-host budget poke — the per-peer refresh
+	Results   []relayResult   `json:"results,omitempty"` // #1267: results of relay commands this peer pulled last beat and ran locally
 	lastBeat  time.Time
 	// per-organ freshness, so a merged card ages a dead contributor's organ out
 	// instead of lingering forever (see the merge in handlePeers).
@@ -135,11 +136,15 @@ func (c *collector) handlePeers(w http.ResponseWriter, r *http.Request) {
 		} else if prev, ok := peers[p.Host]; ok && budgetPopulated(prev.Extra) && now.Sub(prev.budgetAt) < peerStaleAfter {
 			p.Extra, p.budgetAt = prev.Extra, prev.budgetAt
 		}
+		results := p.Results // #1267: carry-back from the peer's last pull
+		p.Results = nil      // don't store the results ON the peer record; they go to the relay log
 		peers[p.Host] = &p
 		n := len(peers)
 		peerMu.Unlock()
+		relayRecordResults(p.Host, results) // record what the peer ran for us
+		pending := relayDrain(p.Host)       // and hand it its next batch to pull
 		c.publish(`{"session":"peers","origin":"COLLECTOR","frame":{"method":"peer.heartbeat","params":{"host":` + jsonStr(p.Host) + `}}}`)
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "host": p.Host, "peers": n})
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "host": p.Host, "peers": n, "pending": pending})
 		return
 	}
 	// GET — the live roster, each with a stale flag re-verified against the clock.

@@ -10,7 +10,7 @@ import { useInstruments, WorkBody, ClockBody, InnerBody, PortalBody } from './In
 import { useWireRows, WireRows } from './WireLog';
 import { CardFrame, HostBody, ProfileBody, BudgetBody } from './Card';
 import { useLocal } from './Dock';
-import { procinfo, recordCtl, listSeries, replaySeries, addTab, getFocus, type SeriesInfo, type CapFrame } from '../lib/api';
+import { procinfo, rssFootprint, recordCtl, listSeries, replaySeries, addTab, getFocus, getControlledBy, peers, type Peer, type SeriesInfo, type CapFrame } from '../lib/api';
 import { GRID, SeqLedger, packWorld, onScreen, syncFontFromCSS, setUnit, levelForZoom, LEVELS, type Card, type Lane, type Level, type CardKind } from '../lib/cards';
 import { fetchNodes, buildTree, liveView, type BrowserNode, type Seat, type Tab, type HostNode, type ProfileNode } from '../lib/nodes';
 import { useReportedTexts, textOf } from '../lib/cardText';
@@ -50,6 +50,19 @@ const KIND_TITLE: Record<string, string> = {
 };
 
 const hostOf = (u: string) => { try { return new URL(u).host.replace(/^www\./, ''); } catch { return u || 'tab'; } };
+
+// RemoteTab — a tab on ANOTHER host (a /peers mesh member). It is not locally streamable
+// (no inbound route to a NAT'd peer), so it shows as metadata; control flows the only way
+// the networking allows — a command queued via /relay that the peer PULLS and runs (#1267).
+function RemoteTab({ host, url, stale }: { host: string; url: string; stale?: boolean }) {
+  return (
+    <div style={{ padding: '10px 12px', fontSize: 12, lineHeight: 1.5, color: '#cdd', fontFamily: 'system-ui' }}>
+      <div style={{ color: stale ? '#c88' : '#6d8', fontWeight: 600 }}>☍ {host}{stale ? ' · stale' : ' · live'}</div>
+      <div style={{ color: '#9aa', wordBreak: 'break-all', marginTop: 2 }}>{url || 'no browser tabs'}</div>
+      <div style={{ color: '#789', marginTop: 4, fontSize: 11 }}>remote · drive via /relay?peer={host} (pull)</div>
+    </div>
+  );
+}
 // zoom bounds — Figma-grade so the wheel/pinch feels endless: deep enough to
 // read a single tile huge (Z_MAX) and far enough to fit the whole world (Z_MIN).
 // Every clamp (wheel, bird's-eye) reads THESE so nothing caps zoom-in early.
@@ -74,6 +87,15 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   // the witness dims its own eyes BEFORE the collector must flush/park and long
   // before the watchdog's 4500 recycle: hero 3fps → 1fps, ambient 0.4 → frozen.
   const [parentMem, setParentMem] = useState(0);
+  // R1/#9425(1): which engine's signal parentMem currently holds — 'rss' (Firefox
+  // procinfo, real resident memory) or 'heap' (a Chrome cockpit reading its OWN
+  // usedJSHeapSize, ~1/3 of RSS). Each carries its own threshold so the adaptive
+  // aperture engages on BOTH engines, not just Firefox. 'none' = no signal yet.
+  const [memKind, setMemKind] = useState<'rss' | 'heap' | 'footprint' | 'none'>('none');
+  // the three attention layers, painted on the cards: where YOU are (human_here),
+  // which agent drives each tab (controlled_by), and where 8 points (the hero).
+  const [humanHere, setHumanHere] = useState('');
+  const [ctlBy, setCtlBy] = useState<Record<string, string>>({});
   const [pinnedKey, setPinnedKey] = useState(''); // the HERO card (explicit pin, not center)
   useEffect(() => { if (focusKey) setPinnedKey(focusKey); }, [focusKey]);
   const [spreadBy, setSpreadBy] = useLocal<Record<string, boolean>>('spreadBy', {}); // false = solitaire-stacked lane
@@ -147,6 +169,19 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     return () => { alive = false; clearInterval(t); };
   }, []);
 
+  // FEDERATION MESH (#1267): the OTHER hosts (colima, a peer mac, a sandbox) that beat
+  // into /peers. Each carries its own manifest; we render it on THIS canvas so you SEE
+  // every host's browser — the mesh — and can drive it through the pull-relay. Without
+  // this, a peer is invisible and uncontrollable; with it, every 8 shows every 8.
+  const [peerList, setPeerList] = useState<Peer[]>([]);
+  useEffect(() => {
+    let alive = true;
+    const pull = () => peers().then((d) => { if (alive) setPeerList(d.peers || []); }).catch(() => {});
+    pull();
+    const t = window.setInterval(() => { if (!document.hidden) pull(); }, 8000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
   useEffect(() => {
     const load = async () => {
       try {
@@ -170,6 +205,7 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
         }));
         setTabsBy(tb);
         const fox = live.find((s) => s.physics === 'channel' && s.stream !== 'cdp' && s.stream !== 'text');
+        let gotRss = false;
         if (fox) {
           const p = await procinfo(fox.id);
           if (p) {
@@ -183,6 +219,29 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
             });
             setHudBy(map);
             setParentMem(p.parent_mem_mb || 0);
+            setMemKind('rss');
+            gotRss = true;
+          }
+        }
+        // R1/#9425(1): engine-agnostic fallback. When the Firefox RSS signal is absent
+        // (a Chrome cockpit — procinfo 502s on CDP), the aperture must still engage.
+        // usedJSHeapSize is BLIND to the real bloat (GPU textures + decoded bitmaps +
+        // compositor layers live outside JS heap), so a Chrome cockpit measured 2838 MB
+        // phys_footprint while its heap sat ~200 MB — the gate NEVER fired and memory
+        // climbed to ~3 GB unnoticed. Prefer the HONEST footprint (/rss, phys_footprint
+        // of the heaviest renderer = THIS cockpit); fall back to heap only if the probe
+        // is unavailable (non-mac collector).
+        if (!gotRss) {
+          const fp = await rssFootprint();
+          if (fp > 0) {
+            setParentMem(fp);
+            setMemKind('footprint');
+          } else {
+            const pm = (performance as unknown as { memory?: { usedJSHeapSize?: number } }).memory;
+            if (pm?.usedJSHeapSize) {
+              setParentMem(Math.round(pm.usedJSHeapSize / 1048576));
+              setMemKind('heap');
+            }
           }
         }
       } catch { /* keep last */ }
@@ -195,7 +254,16 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   }, [showSelf]);
 
   // ── the tree: hosts → profiles → tabs ────────────────────────────────────────
-  const tree = useMemo(() => buildTree(nodes, seats, tabsBy), [nodes, seats, tabsBy]);
+  // DROP DEAD-EMPTY HOSTS: a host with no tabs, no live view, and nothing to attach
+  // offers nothing but noise — e.g. host-firefox lingering because `fox` is still in the
+  // collector's -brokers though this host is chrome-only now. Keep attachable containers
+  // (dormant on purpose) and anything with tabs or a live view.
+  const tree = useMemo(() => buildTree(nodes, seats, tabsBy).filter((h) => {
+    const tabs = h.profiles.reduce((n, p) => n + p.tabs.length, 0);
+    const attachable = h.profiles.some((p) => p.node?.attachable);
+    const live = liveView(h.node) || h.profiles.some((p) => liveView(p.node));
+    return tabs > 0 || attachable || live;
+  }), [nodes, seats, tabsBy]);
   const level: Level = levelPick === 'auto' ? levelForZoom(cam.z) : levelPick;
 
   // ATTENTION FOLLOWS ACTION: poll /focus; when it changes, pin that card as hero
@@ -208,6 +276,8 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
       hidTick++;
       if (!document.hidden || hidTick % 4 === 0) {
         const f = await getFocus();
+        setHumanHere(f.human_here || '');       // "you are here" marker
+        getControlledBy().then(setCtlBy).catch(() => {}); // agent presence per tab
         if (f.seq > 0 && f.seq !== lastFocusSeq.current) {
           lastFocusSeq.current = f.seq;
           // an explicit hosts/profiles pick is the operator's choice of altitude: keep it
@@ -306,6 +376,30 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
         badge: p.seat ? `${nTabs} tab${nTabs === 1 ? '' : 's'}${live ? ' · live' : ''}` : (live ? 'live · no session' : 'no session'), cards });
     }
   }
+  // PEER HOSTS (the mesh, #1267): every other 8 that beats into /peers gets a lane here,
+  // showing its browser tabs so you SEE and (via the pull-relay) can drive it. A peer's
+  // tabs are REMOTE — rendered as metadata cards (no local stream); the ☍ marks the mesh.
+  for (const pr of peerList) {
+    const m = (pr.manifest || {}) as { tabs?: { ctx?: string; url?: string; title?: string; status?: string }[] };
+    const ptabs = (m.tabs || []).filter((t) => t.status === 'live' && t.url);
+    const laneKey = 'peer:' + pr.host;
+    const cards: Card[] = ptabs.length
+      ? ptabs.map((t, i) => ({
+          key: laneKey + ':' + (t.ctx || i), lane: laneKey, kind: 'profile' as const,
+          title: hostOf(t.url || ''), meta: `☍ ${pr.host} · ${t.url}`, measure: 'dom' as const,
+          node: <RemoteTab host={pr.host} url={t.url || ''} stale={pr.stale} />,
+        }))
+      : [{
+          key: laneKey + ':host', lane: laneKey, kind: 'profile' as const,
+          title: '☍ ' + pr.host, meta: `remote · ${pr.stale ? 'stale' : 'live'} · no browser tabs`, measure: 'dom' as const,
+          node: <RemoteTab host={pr.host} url="" stale={pr.stale} />,
+        }];
+    lanes.push({
+      key: laneKey, label: `☍ ${pr.host}`, kind: 'host', tone: 'seat', cols: 2,
+      badge: `remote · ${ptabs.length} tab${ptabs.length === 1 ? '' : 's'}${pr.stale ? ' · stale' : ''}`, cards,
+    });
+  }
+
   // type lanes (the gauges) — at every level, so the cockpit never loses its instruments
   const typeCards: Record<string, Card> = {
     panes: { key: 'panes', lane: 'type:minds', kind: 'panes', title: KIND_TITLE.panes, meta: 'broadcast one prompt to chosen claude panes', measure: 'dom', node: <PaneCockpit cardKey="panes" /> },
@@ -337,6 +431,19 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
     setLiveKeys((prev) => (prev[0] === heroKey ? prev : [heroKey, ...prev.filter((k) => k !== heroKey)].slice(0, 3)));
   }, [heroKey]);
   const liveSet = new Set([heroKey, ...liveKeys, hoverKey].filter(Boolean));
+
+  // LEAN DEDUP (#9492): "observe->act on duplicate tabs". Two browser tabs at the SAME
+  // url cost TWO live observers (two streams, two compositor surfaces). Elect ONE primary
+  // per url (the hero wins, else first-seen) and mark the rest SHADOW: they still show
+  // their cached still (you keep seeing every tab) but never stream/poll — one observer
+  // per unique url, not per tab. Non-destructive: the real tabs stay open.
+  const normU = (u?: string) => (u || '').replace(/[#/]+$/, '').replace(/^https?:\/\//, '');
+  const dupShadow = new Set<string>();
+  {
+    const byUrl = new Map<string, string[]>();
+    for (const c of tabCards) { if (c.kind !== 'tab' || !c.meta) continue; const u = normU(c.meta); if (!u) continue; const a = byUrl.get(u) || []; a.push(c.key); byUrl.set(u, a); }
+    byUrl.forEach((keys) => { if (keys.length < 2) return; const prim = keys.find((k) => k === heroKey) || keys[0]; for (const k of keys) if (k !== prim) dupShadow.add(k); });
+  }
 
   // ── PACK ────────────────────────────────────────────────────────────────────
   const world = packWorld(ordered, heroKey, posBy);
@@ -604,15 +711,18 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
             const live = isFox ? inSet : (p.top && vis);
             const isParked = tab?.parked === 'true';
             const isText = seat?.stream === 'text';
-            const streams = !isParked && (isText ? true : (isFox ? inSet : p.top)) && vis;
+            const shadow = dupShadow.has(c.key); // a duplicate-url tab: seed-once, no stream
+            const streams = !isParked && !shadow && (isText ? true : (isFox ? inSet : p.top)) && vis;
             body = <Viewport session={s} context={tab?.context} title={c.title} url={tab?.url}
-              parked={isParked} visible={streams} live={!isParked && live}
-              fps={parentMem > 3500 ? (hero ? 1 : 0) : (hero ? 3 : (streams ? 0.4 : 0))} pinned={hero}
+              parked={isParked} visible={streams} live={!isParked && !shadow && live} dup={shadow}
+              fps={(memKind === 'heap' ? parentMem > 1200 : memKind === 'footprint' ? parentMem > 1500 : parentMem > 3500) ? (hero ? 1 : 0) : (hero ? 3 : (streams ? 0.4 : 0))} pinned={hero}
               lodW={lodBucket(p.w * cam.z)}
               fx={isFox} fxNeedle={tab?.url ? hostOf(tab.url) : ''}
               onPin={() => setPinnedKey(c.key)}
               onAspect={(r) => setAspectBy((prev) => (Math.abs((prev[c.key] || 0) - r) > 0.01 ? { ...prev, [c.key]: r } : prev))}
-              hud={tab?.url ? hudBy[tab.url] : undefined} />;
+              hud={tab?.url ? hudBy[tab.url] : undefined}
+              youHere={!!tab?.context && tab.context === humanHere}
+              controller={tab?.context ? ctlBy[tab.context] : undefined} />;
           }
           return (
             <Fragment key={c.key}>

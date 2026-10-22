@@ -114,6 +114,8 @@ type collector struct {
 	dmu      sync.Mutex
 	dprCache map[string]float64    // context -> devicePixelRatio (act coord scaling)
 	vpCache  map[string][2]float64 // context -> [innerWidth, innerHeight] CSS px (ratio act coords)
+	cdpSesMu sync.Mutex            // guards cdpSes
+	cdpSes   map[string]string     // (brokerID|context) -> cached CDP sessionId: repeat drives REUSE the session instead of attach+detach per action (the smooth-control fix)
 
 	// ATTENTION FOLLOWS ACTION: the last seat anything acted on. 8 polls /focus and
 	// auto-foveates (pin + fan + zoom) to it, so driving a tab from the wire makes
@@ -122,6 +124,9 @@ type collector struct {
 	focusSession string
 	focusContext string
 	focusSeq     int64
+
+	hfMu            sync.Mutex // "you are here" — the human's own foreground tab (distinct from agent focus)
+	humanForeground string
 
 	// FIREFOX STREAM (the efficient, leak-free path): the HiddenFrame driver POSTs
 	// WebM clusters to /fxchunk; the collector relays them to the cockpit's MSE via
@@ -252,15 +257,43 @@ func (c *collector) witnessHeaders(w http.ResponseWriter, ledgerID int64, physic
 }
 
 func (c *collector) handleFocus(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		// DIRECTED ATTENTION (the efferent half): an agent tells the HUMAN "look HERE"
+		// by setting 8's focus to a context WITHOUT driving it — the cockpit already
+		// polls /focus and heroes the focused card, so a POST pins the human's gaze on
+		// exactly one card. This is 8 pointing the human, not just following an agent.
+		var in struct{ Session, Context string }
+		json.NewDecoder(r.Body).Decode(&in)
+		if in.Context == "" {
+			in.Context = r.URL.Query().Get("context")
+		}
+		if in.Session == "" {
+			in.Session = r.URL.Query().Get("session")
+		}
+		if in.Session == "" {
+			in.Session = "chrome"
+		}
+		if in.Context == "" {
+			http.Error(w, `{"error":"need context (the card to point the human at)"}`, http.StatusBadRequest)
+			return
+		}
+		c.setFocus(in.Session, in.Context)
+		c.record(reqRec{TS: nowNano(), Physics: "call", Session: in.Session, Method: "focus.point", URL: in.Context, Status: 200, Actor: actorOf(r, "")})
+	}
 	c.focusMu.Lock()
 	s, ctx, seq := c.focusSession, c.focusContext, c.focusSeq
 	c.focusMu.Unlock()
+	c.hfMu.Lock()
+	hf := c.humanForeground
+	c.hfMu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"session": s, "context": ctx, "seq": seq})
+	// human_here = the human's OWN foreground tab ("you are here"); context = where 8
+	// is pointing the gaze (the hero). Three attention layers in one reply.
+	json.NewEncoder(w).Encode(map[string]any{"session": s, "context": ctx, "seq": seq, "human_here": hf})
 }
 
 func newCollector(brokers []broker) *collector {
-	return &collector{brokers: brokers, client: &http.Client{}, geckoClient: &http.Client{Timeout: 25 * time.Second}, subs: map[int]chan string{}, dprCache: map[string]float64{}, vpCache: map[string][2]float64{}, fxRecv: map[string]*fxStream{}, manifest: map[string]*tabRec{}, panesSeen: map[string]string{}}
+	return &collector{brokers: brokers, client: &http.Client{}, geckoClient: &http.Client{Timeout: 25 * time.Second}, subs: map[int]chan string{}, dprCache: map[string]float64{}, vpCache: map[string][2]float64{}, cdpSes: map[string]string{}, fxRecv: map[string]*fxStream{}, manifest: map[string]*tabRec{}, panesSeen: map[string]string{}}
 }
 
 // chanDPR is a tab's devicePixelRatio (cached per context). The /stream screenshot
@@ -499,6 +532,9 @@ func (c *collector) recoverGecko() bool {
 			c.dmu.Lock() // context ids changed with the new session — drop the caches
 			c.dprCache = map[string]float64{}
 			c.vpCache = map[string][2]float64{}
+			c.cdpSesMu.Lock()
+			c.cdpSes = map[string]string{}
+			c.cdpSesMu.Unlock()
 			c.dmu.Unlock()
 			log.Printf("collector: recovered gecko session -> %s", sid)
 			return true
@@ -3474,8 +3510,20 @@ func (c *collector) actChannel(w http.ResponseWriter, r *http.Request, b *broker
 		in.X2 = int(math.Round(float64(in.X2) / dpr))
 		in.Y2 = int(math.Round(float64(in.Y2) / dpr))
 	}
-	c.setFocus(b.id, ctx)                        // 8 auto-zooms to the tab being driven
-	c.setControlledBy(ctx, actorOf(r, in.Actor)) // #9425(2): and records WHO is driving it (presence)
+	actor := actorOf(r, in.Actor)
+	// N-minds→1-tab + human interrupt: same lease as the chrome path (uniform arbitration).
+	if held, ttl := c.leaseAcquire(ctx, actor); held != "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		msg := "another mind holds the lease; wait for it to go idle (~90s) or release"
+		if held == "cockpit" {
+			msg = "the human interrupted and holds this tab; back off until they go idle (~90s) or release"
+		}
+		fmt.Fprintf(w, `{"error":"held","by":%q,"retry_after_s":%d,"note":%q}`, held, ttl, msg)
+		return
+	}
+	c.setFocus(b.id, ctx)         // 8 auto-zooms to the tab being driven
+	c.setControlledBy(ctx, actor) // #9425(2): and records WHO is driving it (presence)
 	pointer := func(acts string) string {
 		return fmt.Sprintf(`{"method":"input.performActions","params":{"context":%q,"actions":[{"type":"pointer","id":"m","parameters":{"pointerType":"mouse"},"actions":[%s]}]}}`, ctx, acts)
 	}
@@ -4647,7 +4695,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	persistBootArgs() // #347: record the wired argv so `up` boots and `watch` revives NON-bare
+	peerJoin.self = selfBaseFromListen(*listen) // #1267: where this peer runs the commands it pulls
+	persistBootArgs()                           // #347: record the wired argv so `up` boots and `watch` revives NON-bare
 
 	var brokers []broker
 	for _, part := range strings.Split(*spec, ",") {
@@ -4712,6 +4761,7 @@ func main() {
 		go c.epochLoop()                 // #645: the operator-epoch clock — ledger locked to operator-time
 		go c.innerHostLoop()             // #850: poll docker stats + colima list off the request path
 		go c.brokerHealLoop()            // #3863: the witness heals its own CHANNEL arm — re-wire a broken-pipe chrome broker
+		go c.watchHumanForeground()      // "you are here": track the human's foreground tab (cache-first, lean)
 		go func() {                      // project eight.db every 30s so DBeaver always sees fresh data
 			if _, err := exec.LookPath("sqlite3"); err != nil {
 				return
@@ -4735,6 +4785,7 @@ func main() {
 	mux.HandleFunc("/tabs", c.handleTabs)
 	mux.HandleFunc("/procinfo", c.handleProcInfo)
 	mux.HandleFunc("/tabcost", c.handleTabCost) // R4/#4421: engine-agnostic per-tab cost state (chromium heap+dom via CDP; firefox RSS stays /procinfo)
+	mux.HandleFunc("/rss", c.handleRSS)         // the REAL renderer RSS (ps) that CDP heap metrics miss — so 8 sees the 3.6GB
 	mux.HandleFunc("/drawprobe", c.handleDrawProbe)
 	mux.HandleFunc("/fxchunk", c.handleFxChunk)   // HiddenFrame driver POSTs WebM here
 	mux.HandleFunc("/fxstream", c.handleFxStream) // cockpit MSE consumes WebM here
@@ -4813,6 +4864,7 @@ func main() {
 	mux.HandleFunc("/identity", c.handleIdentity)         // #437: live identity — GET derives, POST declares
 	mux.HandleFunc("/container", c.handleContainer)       // #850: inner-host — docker stats + colima list
 	mux.HandleFunc("/peers", c.handlePeers)               // #886: federation rendezvous — push register/heartbeat
+	mux.HandleFunc("/relay", c.handleRelay)               // #1267: queue a command a NAT'd peer pulls on its beat
 	mux.HandleFunc("/db", c.handleDB)                     // project the scattered stores into ~/.8/eight.db for DBeaver
 	mux.HandleFunc("/stopwatch", c.handleStopwatch)       // experiri: the witness's staleness made readable
 	mux.HandleFunc("/event", c.handleEvent)               // T5: witnessed reply-event bus (per-tab CDP watcher posts here; any host polls ?since=)

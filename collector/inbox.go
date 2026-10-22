@@ -180,13 +180,8 @@ var paneTypingProbe = 900 * time.Millisecond
 // only the known placeholders can be excluded (in lockstep with
 // scripts/self-prompt.sh's idle()).
 func hasUnsentInput(screen string) bool {
-	lines := strings.Split(screen, "\n")
-	for i := len(lines) - 1; i >= 0; i-- { // the composer is the LAST prompt line; earlier ones are transcript
-		if d, ok := composerDraft(lines[i], "❯", claudePlaceholder); ok {
-			return d != "" // a real composed-but-unsent draft
-		}
-	}
-	return false
+	d, ok := composerState(screen, "❯", claudePlaceholder) // shared: the claude composer (#4421)
+	return ok && d != ""                                   // a real composed-but-unsent draft
 }
 
 func claudePlaceholder(d string) bool {

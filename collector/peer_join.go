@@ -21,6 +21,17 @@ type peerJoinConfig struct {
 	endpoint string
 	host     string
 	token    string
+	self     string // this peer's OWN collector base URL (loopback) — where relay commands run
+}
+
+// selfBaseFromListen turns a -listen value (":7071", "0.0.0.0:7071") into the loopback
+// base URL a pulled relay command executes against on this peer.
+func selfBaseFromListen(listen string) string {
+	listen = strings.TrimSpace(listen)
+	if i := strings.LastIndex(listen, ":"); i >= 0 {
+		return "http://127.0.0.1:" + listen[i+1:]
+	}
+	return "http://127.0.0.1:7070"
 }
 
 func peerJoinFromEnv() (peerJoinConfig, error) {
@@ -104,16 +115,16 @@ func (c *collector) peerHeartbeat(host string) (peer, error) {
 	return peer{Host: host, Actor: "peer-join/" + host, HostRes: hr, Manifest: manifest, Extra: extra}, nil
 }
 
-func sendPeerHeartbeat(ctx context.Context, client *http.Client, cfg peerJoinConfig, p peer) error {
+func sendPeerHeartbeat(ctx context.Context, client *http.Client, cfg peerJoinConfig, p peer) ([]relayCmd, error) {
 	body, err := json.Marshal(p)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.endpoint, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-8-Actor", p.Actor)
@@ -122,14 +133,19 @@ func sendPeerHeartbeat(ctx context.Context, client *http.Client, cfg peerJoinCon
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("peer hub returned HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("peer hub returned HTTP %d", resp.StatusCode)
 	}
-	return nil
+	// #1267: the hub's response hands us the commands queued for us to PULL and run.
+	var ack struct {
+		Pending []relayCmd `json:"pending"`
+	}
+	_ = json.Unmarshal(rb, &ack)
+	return ack.Pending, nil
 }
 
 func newPeerJoinClient() *http.Client {
@@ -143,13 +159,31 @@ func newPeerJoinClient() *http.Client {
 func (c *collector) peerJoinLoop(ctx context.Context, cfg peerJoinConfig, interval time.Duration) {
 	client := newPeerJoinClient()
 	defer client.CloseIdleConnections()
+	execClient := &http.Client{Timeout: 8 * time.Second} // runs pulled commands on our OWN loopback
+	var carry []relayResult                              // results of last beat's pull, sent on the next beat
 	for ctx.Err() == nil {
 		p, err := c.peerHeartbeat(cfg.host)
+		var pending []relayCmd
 		if err == nil {
-			err = sendPeerHeartbeat(ctx, client, cfg, p)
+			p.Results = carry // carry back what we ran since the last beat
+			pending, err = sendPeerHeartbeat(ctx, client, cfg, p)
 		}
 		if err != nil && ctx.Err() == nil {
 			log.Printf("peer join: %v; retrying in %s", err, interval)
+		} else {
+			carry = carry[:0] // the hub accepted our results; don't resend them
+			// #1267: run every command the hub queued for us, against OUR OWN collector
+			// (loopback) — the hub never reaches in; we pull and self-drive, then carry the
+			// results back on the next beat.
+			for _, cmd := range pending {
+				if cfg.self == "" {
+					break
+				}
+				carry = append(carry, relayExecute(cfg.self, execClient, cmd))
+			}
+			if len(pending) > 0 {
+				log.Printf("peer join: ran %d relayed command(s) locally", len(pending))
+			}
 		}
 		timer := time.NewTimer(interval)
 		select {
