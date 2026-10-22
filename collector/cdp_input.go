@@ -41,6 +41,18 @@ func (c *collector) leaseAcquire(ctx, actor string) (heldBy string, ttlS int) {
 	return "", 0
 }
 
+// leaseRelease drops the lease so a waiting mind can take it IMMEDIATELY instead of
+// waiting out the ~90s TTL — explicit hand-off. Only the holder (or the human) may
+// release it.
+func (c *collector) leaseRelease(ctx, actor string) {
+	c.tmu.Lock()
+	defer c.tmu.Unlock()
+	if rec := c.manifest[ctx]; rec != nil && (rec.ClaimedBy == actor || actor == "cockpit") {
+		rec.ClaimedBy = ""
+		rec.ClaimAt = ""
+	}
+}
+
 // ── CHROME/CDP INPUT — "Live" control for chrome seats (the #1 cockpit gap) ───
 // actChannel builds BiDi commands (input.performActions, script.callFunction) that
 // ONLY Firefox understands. A CHROME seat (b.id != "fox": mac-chromium, the colima
@@ -175,6 +187,13 @@ func (c *collector) cdpViewport(b *broker, sid string) (float64, float64) {
 // actCDP drives a chrome/CDP seat's tab for the cockpit's Live gestures (ctx = the
 // tab's CDP target id, which is what the manifest carries for a chrome seat).
 func (c *collector) actCDP(w http.ResponseWriter, r *http.Request, b *broker, ctx, action, text string, x, y, x2, y2 int, xr, yr float64) {
+	actor := actorOf(r, "")
+	if action == "release" { // explicit lease hand-off — no drive, just free the tab
+		c.leaseRelease(ctx, actor)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"released":true}`))
+		return
+	}
 	sid := c.cdpSession(b, ctx) // CACHED: attach once, reuse across drives — NO per-action attach/detach
 	if sid == "" {
 		http.Error(w, `{"error":"act(cdp): cannot attach target"}`, http.StatusBadGateway)
@@ -193,7 +212,6 @@ func (c *collector) actCDP(w http.ResponseWriter, r *http.Request, b *broker, ct
 			y = int(math.Round(yr * vh))
 		}
 	}
-	actor := actorOf(r, "")
 	// N-minds→1-tab + human interrupt: honor the exclusive lease. Another agent holding
 	// it → this drive WAITS (409 + how-long). The human ("cockpit") PREEMPTS — a human
 	// interrupt takes the tab, and the controlling agent is blocked (told the human
