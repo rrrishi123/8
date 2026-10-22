@@ -252,15 +252,24 @@ func (c *collector) actCDP(w http.ResponseWriter, r *http.Request, b *broker, ct
 	}
 	c.setFocus(b.id, ctx)         // 8 auto-zooms to the tab being driven
 	c.setControlledBy(ctx, actor) // #9425(2): and records WHO is driving it (presence)
+	// SMOOTH CONTROL: build the gesture as an ORDERED op list, then fire it in ONE
+	// goroutine without blocking the response. MEASURED: discrete events (key, mousePressed/
+	// Released) ack in ~10ms, but MOTION events (mouseWheel, mouseMoved) take ~5–22s for the
+	// renderer's compositor to ack on a backgrounded tab — and the gesture LANDS regardless
+	// (the page scrolls), so waiting on that ack is pure lag. One goroutine keeps order
+	// (move→press→release, keyDown→keyUp) while the operator's act returns instantly.
+	var ops []func()
 	mouse := func(typ string, px, py int, extra map[string]any) {
 		p := map[string]any{"type": typ, "x": px, "y": py}
 		for k, v := range extra {
 			p[k] = v
 		}
-		c.cdpCall(b, "Input.dispatchMouseEvent", p, sid)
+		ops = append(ops, func() { c.cdpCall(b, "Input.dispatchMouseEvent", p, sid) })
 	}
 	key := func(typ, kn, kc string, vk int) {
-		c.cdpCall(b, "Input.dispatchKeyEvent", map[string]any{"type": typ, "key": kn, "code": kc, "windowsVirtualKeyCode": vk}, sid)
+		ops = append(ops, func() {
+			c.cdpCall(b, "Input.dispatchKeyEvent", map[string]any{"type": typ, "key": kn, "code": kc, "windowsVirtualKeyCode": vk}, sid)
+		})
 	}
 	switch action {
 	case "tap", "click":
@@ -285,7 +294,7 @@ func (c *collector) actCDP(w http.ResponseWriter, r *http.Request, b *broker, ct
 		mouse("mouseMoved", x2, y2, map[string]any{"button": "left"})
 		mouse("mouseReleased", x2, y2, map[string]any{"button": "left", "clickCount": 1})
 	case "sendkeys", "type":
-		c.cdpCall(b, "Input.insertText", map[string]any{"text": text}, sid)
+		ops = append(ops, func() { c.cdpCall(b, "Input.insertText", map[string]any{"text": text}, sid) })
 	case "press", "key": // a named key (Enter, Tab, Escape, ArrowDown…) in `text`
 		kn, kc, vk := cdpKey(text)
 		key("keyDown", kn, kc, vk)
@@ -294,18 +303,18 @@ func (c *collector) actCDP(w http.ResponseWriter, r *http.Request, b *broker, ct
 		http.Error(w, `{"error":"act(cdp): unknown action"}`, http.StatusBadRequest)
 		return
 	}
-	// PER-AGENT POINTER: draw this actor's own labeled cursor where it just acted, so
-	// the human SEES who is driving (HeyClicky-style, from the witness's who+where). The
-	// overlay lives in the tab, so it shows on the real tab AND in 8's card; it fades
-	// and self-removes. A blank actor draws nothing — an undeclared drive has no one.
-	// FIRE-AND-FORGET: the overlay is cosmetic and runs PAGE JS (Runtime.evaluate), which
-	// Chrome throttles on a backgrounded tab — doing it inline made every drive wait ~5s
-	// for the tab's JS scheduler. Async so the human's act returns instantly; the cursor
-	// lands a beat later. Input.dispatch* (the actual gesture) is browser-side and already
-	// landed above.
-	if js := agentPointerJS(actorOf(r, ""), x, y); js != "" {
-		go c.cdpCall(b, "Runtime.evaluate", map[string]any{"expression": js}, sid)
+	// PER-AGENT POINTER: draw this actor's own labeled cursor where it just acted, so the
+	// human SEES who is driving (HeyClicky-style). The overlay runs PAGE JS, which is
+	// throttled on a backgrounded tab, so it's the LAST op in the same async gesture — never
+	// blocking the response. A blank actor draws nothing (an undeclared drive has no one).
+	if js := agentPointerJS(actor, x, y); js != "" {
+		ops = append(ops, func() { c.cdpCall(b, "Runtime.evaluate", map[string]any{"expression": js}, sid) })
 	}
+	go func() { // fire the whole gesture in order, off the request path
+		for _, op := range ops {
+			op()
+		}
+	}()
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"ok":true,"via":"cdp","action":"` + action + `"}`))
 }
