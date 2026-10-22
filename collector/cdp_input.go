@@ -6,7 +6,40 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"time"
 )
+
+// leaseAcquire enforces the N-minds→1-tab lease — the crux of many-to-many. 1→N and
+// N→N don't contend; N→1 does, so one mind holds an exclusive lease on the tab. It
+// returns ("",0) and TAKES/refreshes the lease for `actor` when the tab is free, is
+// already theirs, or they are the human ("cockpit", who preempts). When ANOTHER
+// actor holds a LIVE lease it returns (holder, seconds-left) and the caller does NOT
+// drive — the contender waits that long, or until the holder goes idle (the lease
+// lapses after ~90s of no drive). Active control keeps the lease; idle releases it.
+func (c *collector) leaseAcquire(ctx, actor string) (heldBy string, ttlS int) {
+	if ctx == "" {
+		return "", 0
+	}
+	c.tmu.Lock()
+	defer c.tmu.Unlock()
+	rec := c.manifest[ctx]
+	if rec == nil {
+		return "", 0
+	}
+	if claimLive(rec) && rec.ClaimedBy != "" && rec.ClaimedBy != actor && actor != "cockpit" {
+		if t, e := time.Parse(time.RFC3339, rec.ClaimAt); e == nil {
+			if ttlS = int((90*time.Second - time.Since(t)).Seconds()); ttlS < 0 {
+				ttlS = 0
+			}
+		}
+		return rec.ClaimedBy, ttlS
+	}
+	if actor != "" { // free, mine, or human preempting → take/refresh the lease
+		rec.ClaimedBy = actor
+		rec.ClaimAt = time.Now().Format(time.RFC3339)
+	}
+	return "", 0
+}
 
 // ── CHROME/CDP INPUT — "Live" control for chrome seats (the #1 cockpit gap) ───
 // actChannel builds BiDi commands (input.performActions, script.callFunction) that
@@ -160,8 +193,23 @@ func (c *collector) actCDP(w http.ResponseWriter, r *http.Request, b *broker, ct
 			y = int(math.Round(yr * vh))
 		}
 	}
-	c.setFocus(b.id, ctx)                  // 8 auto-zooms to the tab being driven
-	c.setControlledBy(ctx, actorOf(r, "")) // #9425(2): and records WHO is driving it (presence)
+	actor := actorOf(r, "")
+	// N-minds→1-tab + human interrupt: honor the exclusive lease. Another agent holding
+	// it → this drive WAITS (409 + how-long). The human ("cockpit") PREEMPTS — a human
+	// interrupt takes the tab, and the controlling agent is blocked (told the human
+	// interrupted) until the human goes idle (~90s) or releases.
+	if held, ttl := c.leaseAcquire(ctx, actor); held != "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		msg := "another mind holds the lease; wait for it to go idle (~90s) or release"
+		if held == "cockpit" {
+			msg = "the human interrupted and holds this tab; back off until they go idle (~90s) or release"
+		}
+		fmt.Fprintf(w, `{"error":"held","by":%q,"retry_after_s":%d,"note":%q}`, held, ttl, msg)
+		return
+	}
+	c.setFocus(b.id, ctx)         // 8 auto-zooms to the tab being driven
+	c.setControlledBy(ctx, actor) // #9425(2): and records WHO is driving it (presence)
 	mouse := func(typ string, px, py int, extra map[string]any) {
 		p := map[string]any{"type": typ, "x": px, "y": py}
 		for k, v := range extra {
