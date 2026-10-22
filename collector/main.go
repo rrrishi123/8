@@ -3510,8 +3510,20 @@ func (c *collector) actChannel(w http.ResponseWriter, r *http.Request, b *broker
 		in.X2 = int(math.Round(float64(in.X2) / dpr))
 		in.Y2 = int(math.Round(float64(in.Y2) / dpr))
 	}
-	c.setFocus(b.id, ctx)                        // 8 auto-zooms to the tab being driven
-	c.setControlledBy(ctx, actorOf(r, in.Actor)) // #9425(2): and records WHO is driving it (presence)
+	actor := actorOf(r, in.Actor)
+	// N-minds→1-tab + human interrupt: same lease as the chrome path (uniform arbitration).
+	if held, ttl := c.leaseAcquire(ctx, actor); held != "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		msg := "another mind holds the lease; wait for it to go idle (~90s) or release"
+		if held == "cockpit" {
+			msg = "the human interrupted and holds this tab; back off until they go idle (~90s) or release"
+		}
+		fmt.Fprintf(w, `{"error":"held","by":%q,"retry_after_s":%d,"note":%q}`, held, ttl, msg)
+		return
+	}
+	c.setFocus(b.id, ctx)         // 8 auto-zooms to the tab being driven
+	c.setControlledBy(ctx, actor) // #9425(2): and records WHO is driving it (presence)
 	pointer := func(acts string) string {
 		return fmt.Sprintf(`{"method":"input.performActions","params":{"context":%q,"actions":[{"type":"pointer","id":"m","parameters":{"pointerType":"mouse"},"actions":[%s]}]}}`, ctx, acts)
 	}
