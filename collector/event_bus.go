@@ -26,7 +26,8 @@ type replyEvent struct {
 	Host   string `json:"host,omitempty"`
 	Tab    string `json:"tab,omitempty"` // tab identity: a ctx uuid, a url, or host/browser/tab
 	Kind   string `json:"kind"`          // reply-complete | network-idle | stop-gone | …
-	Detail string `json:"detail,omitempty"`
+	Detail string `json:"detail,omitempty"` // tab title at settle
+	Tail   string `json:"tail,omitempty"`   // T11/#1233: last ~160 chars of the settled reply — the CONTENT a subscriber carries into the next tab (CHANNEL = subscribe to the reply)
 	By     string `json:"by,omitempty"`
 }
 

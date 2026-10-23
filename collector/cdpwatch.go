@@ -59,7 +59,7 @@ func (c *collector) watchStep(ctx, prev, rawValue, substrate string) {
 		c.publish(fmt.Sprintf(`{"session":%q,"origin":"COLLECTOR","frame":{"method":"tab.changed","params":{"context":%q,"title":%q,"len":%d}}}`, substrate, ctx, d.T, d.N))
 	}
 	if settled {
-		c.recordReplyEvent(replyEvent{Kind: "reply-complete", Tab: ctx, Detail: d.T, By: "cdpwatch:" + substrate})
+		c.recordReplyEvent(replyEvent{Kind: "reply-complete", Tab: ctx, Detail: d.T, Tail: d.Tail, By: "cdpwatch:" + substrate})
 	}
 }
 

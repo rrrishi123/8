@@ -1445,6 +1445,24 @@ func (c *collector) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 //
 // Only panes whose current command is claude are auto-targeted; an explicit
 // list is sent as-given (the operator chose it). Reply is per-pane {pane,sent}.
+// splitPaneHost parses a possibly host-qualified pane target (#1267). A bare tmux
+// pane id ("%8") is local and returns qualified=false. "<host>/%8" or
+// "<host>/<seat>/%8" returns the host prefix and the peer-LOCAL pane id (the last
+// "/"-segment, which is what the peer's own /panes/send expects against its tmux).
+func splitPaneHost(t string) (host, pane string, qualified bool) {
+	i := strings.Index(t, "/")
+	if i < 0 || strings.HasPrefix(t, "%") { // bare "%N" (or no slash) → local
+		return "", t, false
+	}
+	host = t[:i]
+	rest := t[i+1:]
+	pane = rest
+	if j := strings.LastIndex(rest, "/"); j >= 0 { // "seat/%N" → peer-local "%N"
+		pane = rest[j+1:]
+	}
+	return host, pane, host != ""
+}
+
 func (c *collector) handlePanesSend(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
@@ -1469,22 +1487,58 @@ func (c *collector) handlePanesSend(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// #1267: a pane target may be HOST-QUALIFIED ("<host>/%N" or "<host>/<seat>/%N")
+	// so a peer's pane can be driven from its card. Partition remote targets (host
+	// is a KNOWN peer, not us) from local ones. A bare "%N" has no "/" and is never
+	// misclassified, so the existing local path is byte-identical. The hub can't PUSH
+	// to a NAT'd peer, so a remote send is QUEUED on the relay — the peer pulls it on
+	// its next beat and runs /panes/send against its OWN loopback (see relay.go).
+	localHost := firstNonEmpty(os.Getenv("PEER_HOST"), "local")
+	var local []string
+	remote := map[string][]string{} // peer host -> peer-local pane ids
+	for _, t := range targets {
+		host, pane, qualified := splitPaneHost(t)
+		if qualified && host != localHost {
+			peerMu.Lock()
+			_, known := peers[host]
+			peerMu.Unlock()
+			if known {
+				remote[host] = append(remote[host], pane)
+				continue
+			}
+		}
+		if qualified && host == localHost { // "local/%N" → drive it here
+			local = append(local, pane)
+		} else {
+			local = append(local, t)
+		}
+	}
 	type res struct {
 		Pane string `json:"pane"`
 		Sent bool   `json:"sent"`
 	}
-	out := make([]res, 0, len(targets))
+	out := make([]res, 0, len(local))
 	n := 0
-	for _, p := range targets {
+	for _, p := range local {
 		ok := sendPane(p, req.Text, nil, !req.Force) // force -> idleGuard off: reach BUSY panes too (they queue it)
 		if ok {
 			n++
 		}
 		out = append(out, res{Pane: p, Sent: ok})
 	}
-	c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"panes.send","params":{"sent":%d,"total":%d}}}`, n, len(targets)))
+	// relay the remote targets — one queued /panes/send command per peer host.
+	queued := map[string]int{}
+	for host, panes := range remote {
+		body, _ := json.Marshal(map[string]any{"panes": panes, "text": req.Text, "force": req.Force})
+		relayEnqueue(host, relayCmd{
+			ID: newRelayID(), Method: "post", Path: "/panes/send", Body: body,
+			By: actorOf(r, ""), At: time.Now().UTC().Format(time.RFC3339),
+		})
+		queued[host] = len(panes)
+	}
+	c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"panes.send","params":{"sent":%d,"total":%d}}}`, n, len(local)))
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"sent": n, "total": len(targets), "targets": out})
+	json.NewEncoder(w).Encode(map[string]any{"sent": n, "total": len(local), "targets": out, "queued": queued})
 }
 
 // handleFetch executes one raw HTTP request server-side (the "curl hit"), and
@@ -2406,7 +2460,7 @@ func (c *collector) seatWatchLoop() {
 							c.publish(fmt.Sprintf(`{"session":"fox","origin":"COLLECTOR","frame":{"method":"tab.changed","params":{"context":%q,"title":%q,"len":%d}}}`, ctx, d.T, d.N))
 						}
 						if settled { // T5: the DOM settled after activity → witnessed reply-complete
-							c.recordReplyEvent(replyEvent{Kind: "reply-complete", Tab: ctx, Detail: d.T, By: "cdpwatch"})
+							c.recordReplyEvent(replyEvent{Kind: "reply-complete", Tab: ctx, Detail: d.T, Tail: d.Tail, By: "cdpwatch"})
 						}
 					}
 				}
