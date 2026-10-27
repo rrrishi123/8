@@ -15,8 +15,8 @@ func TestSplitPaneHost(t *testing.T) {
 		{"%8", "", "%8", false},                         // bare local pane — unchanged path
 		{"%12", "", "%12", false},                       // bare local pane
 		{"local/%8", "local", "%8", true},               // self-qualified → drive here
-		{"omarchy/%12", "omarchy", "%12", true},         // host/pane
-		{"omarchy/kosaten-0/%3", "omarchy", "%3", true}, // host/seat/pane → peer-local %3
+		{"peerhost/%12", "peerhost", "%12", true},       // host/pane
+		{"peerhost/fleet-0/%3", "peerhost", "%3", true}, // host/seat/pane → peer-local %3
 		{"", "", "", false},                             // empty → local no-op
 	}
 	for _, c := range cases {
