@@ -41,7 +41,7 @@ func TestCdpKey(t *testing.T) {
 func TestCdpSessionCache(t *testing.T) {
 	c := &collector{cdpSes: map[string]string{}, client: &http.Client{Timeout: time.Second}}
 	b := &broker{id: "chrome", base: "http://127.0.0.1:0"} // unreachable: attach yields ""
-	c.cdpSes["chrome|CTX"] = "SID1"                          // seed as if already attached
+	c.cdpSes["chrome|CTX"] = "SID1"                        // seed as if already attached
 	if got := c.cdpSession(b, "CTX"); got != "SID1" {
 		t.Fatalf("cached session not reused: got %q want SID1", got)
 	}
