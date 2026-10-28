@@ -97,7 +97,17 @@ export function ClockBody({ cardKey, i }: { cardKey?: string; i: Inst }) {
   );
 }
 export function WorkBody({ cardKey, i }: { cardKey?: string; i: Inst }) {
-  useCardText(cardKey, [`work · ${i.openCount} open · drag to reorder`, ...i.ordered.map((it) => `${it.status === 'todo' ? '•' : it.status === 'doing' ? '◐' : '✓'} ${it.by || '·'} → ${it.assignee || 'pool'}  ${it.text}`), '+ add work (Enter)']);
+  // LEAN (#9492): the ledger grows without bound (9,000+ done items), and rendering EVERY
+  // row was ~66k DOM nodes — the single biggest holder of the cockpit's ~2.9GB footprint
+  // (measured: work-row ×9495). The operator only needs the live queue + recent history, so
+  // show all OPEN items + the newest DONE_SHOWN done; the rest stay in the ledger (and /work),
+  // just not in the DOM. `ordered` has done sorted id-ascending, so slice(-N) is the newest.
+  const DONE_SHOWN = 40;
+  const openRows = i.ordered.filter((it) => it.status !== 'done');
+  const doneRows = i.ordered.filter((it) => it.status === 'done');
+  const hiddenDone = Math.max(0, doneRows.length - DONE_SHOWN);
+  const shown = [...openRows, ...doneRows.slice(-DONE_SHOWN)];
+  useCardText(cardKey, [`work · ${i.openCount} open · drag to reorder`, ...shown.map((it) => `${it.status === 'todo' ? '•' : it.status === 'doing' ? '◐' : '✓'} ${it.by || '·'} → ${it.assignee || 'pool'}  ${it.text}`), '+ add work (Enter)']);
   return (
     <div className="inst-work">
       <div className="inst-h">
@@ -105,7 +115,8 @@ export function WorkBody({ cardKey, i }: { cardKey?: string; i: Inst }) {
         <button className={`work-play${i.playlist ? ' on' : ''}`} title={i.playlist ? 'playlist ON — the queue runs itself, one by one' : '▶ run all: pick→do→done→pick, hands-free'}
           onClick={i.togglePlaylist}>{i.playlist ? '⏸ playing' : '▶ run all'}</button>
       </div>
-      {i.ordered.map((it) => (
+      {hiddenDone > 0 && <div className="work-row done" style={{ opacity: 0.5, fontStyle: 'italic' }}><span className="work-text">… {hiddenDone} older done hidden (in the ledger, not the DOM) — lean #9492</span></div>}
+      {shown.map((it) => (
         <div key={it.id} className={`work-row ${it.status}`}
           draggable={it.status === 'todo'}
           onDragStart={() => { i.dragId.current = it.id; }}

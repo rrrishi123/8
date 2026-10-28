@@ -34,6 +34,9 @@ web/.env
 
 # built binary — build from source (go build ./collector); never track a host binary
 /collector/.bin-collector
+# cross-compiled collector binaries (linux/arm64, etc.) — build from source, never track
+/collector-linux-*
+/collector-*-arm64
 
 # private design-system reference — never public
 /web/design-reference/_ds/

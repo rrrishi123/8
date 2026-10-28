@@ -127,7 +127,7 @@ for p in $PANES; do
     src="ledger"
   else
     # empty ledger -> default self-check so the agent never goes silent
-    next="Self-check (plan ahead): what were you doing, and how have things changed since? Use http-mcp (never curl) to read 127.0.0.1:7070/work/by-pane and 127.0.0.1:7070/budget, skim your own recent work and your siblings' panes, then do OR dispatch the single next useful step toward v0.0.2 release-readiness (the audit: committed-binary boot fix, tag/branch split, CI to all arms, wire-contract module). Append your next planned step as one line to $f. You have autonomy while 5h<50%."
+    next="Self-check (plan ahead): what were you doing, and how have things changed since? Use http-mcp (never curl) to read 127.0.0.1:7070/work/by-pane and 127.0.0.1:7070/budget, skim your own recent work and your siblings' panes, then do OR dispatch the single next useful step toward the NEXT RELEASE per 8/docs/branch-and-release-convention.md (work on next -> PR next->main with ci.yml + fleet gate green -> tag v0.0.x) and the conductor's standing NEXT-RELEASE item (#9488 today); never re-open the closed v0.0.2 audit — see #3782 and contract/trace/reqRec-mapping.md (D1). Append your next planned step as one line to $f — that file is the nudge FIFO (~/.8/ledger/<pane>.plan since 62ba019; the inscription ledger <pane>.txt is separate). You have autonomy while 5h<50%."
     src="nudge"
   fi
   [ -z "${next// /}" ] && continue

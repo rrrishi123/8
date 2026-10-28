@@ -3,9 +3,26 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
+	"strings"
+	"time"
 )
+
+// tabcostClient bounds every probe call so ONE unresponsive renderer can't wedge
+// the whole request (the collector's own c.command has NO timeout by design — the
+// SSE pump needs that — so the cost probe must not borrow it).
+var tabcostClient = &http.Client{Timeout: 2 * time.Second}
+
+func tabcostCmd(base, body string) ([]byte, error) {
+	resp, err := tabcostClient.Post(base+"/command", "application/json", strings.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
+}
 
 // TabCost is the engine-AGNOSTIC per-tab resource STATE (#4421/#4427). Operator's
 // principle: "nothing is a static mapping — it is state-managed; if something is
@@ -60,7 +77,7 @@ func (p chromeProbe) capture(c *collector) ([]TabCost, error) {
 	if b == nil {
 		return nil, fmt.Errorf("no %q broker", p.brokerID)
 	}
-	raw, err := c.command(b, `{"method":"Target.getTargets","params":{}}`)
+	raw, err := tabcostCmd(b.base, `{"method":"Target.getTargets","params":{}}`)
 	if err != nil {
 		return nil, err
 	}
@@ -77,18 +94,29 @@ func (p chromeProbe) capture(c *collector) ([]TabCost, error) {
 	if err := json.Unmarshal(raw, &tg); err != nil {
 		return nil, fmt.Errorf("getTargets: %w", err)
 	}
+	// LEAN probe: cap the targets and bound the whole pass with a deadline, returning
+	// PARTIAL results rather than hang — measuring cost must itself be cheap. Combined
+	// with tabcostClient's 2s per-call timeout, one dead renderer costs 2s, not forever.
+	const maxTargets = 40
+	deadline := time.Now().Add(8 * time.Second)
 	out := make([]TabCost, 0, len(tg.Result.TargetInfos))
+	probed := 0
 	for _, t := range tg.Result.TargetInfos {
 		if t.Type != "page" {
 			continue
 		}
+		if probed >= maxTargets || time.Now().After(deadline) {
+			break
+		}
+		probed++
 		tc := TabCost{
 			Ctx: t.TargetID, URL: tabcostClip(t.URL, 120), Title: tabcostClip(t.Title, 80),
 			Engine: "chromium", Derived: true, Source: "cdp:Performance.getMetrics",
 			Measured: []string{"js_heap", "dom_nodes", "listeners"},
 		}
-		ar, err := c.command(b, fmt.Sprintf(`{"method":"Target.attachToTarget","params":{"targetId":%q,"flatten":true}}`, t.TargetID))
+		ar, err := tabcostCmd(b.base, fmt.Sprintf(`{"method":"Target.attachToTarget","params":{"targetId":%q,"flatten":true}}`, t.TargetID))
 		if err != nil {
+			out = append(out, tc) // record the tab even if its probe timed out
 			continue
 		}
 		var at struct {
@@ -97,11 +125,12 @@ func (p chromeProbe) capture(c *collector) ([]TabCost, error) {
 			} `json:"result"`
 		}
 		if json.Unmarshal(ar, &at) != nil || at.Result.SessionID == "" {
+			out = append(out, tc)
 			continue
 		}
 		sid := at.Result.SessionID
-		_, _ = c.command(b, fmt.Sprintf(`{"sessionId":%q,"method":"Performance.enable","params":{}}`, sid))
-		mr, _ := c.command(b, fmt.Sprintf(`{"sessionId":%q,"method":"Performance.getMetrics","params":{}}`, sid))
+		_, _ = tabcostCmd(b.base, fmt.Sprintf(`{"sessionId":%q,"method":"Performance.enable","params":{}}`, sid))
+		mr, _ := tabcostCmd(b.base, fmt.Sprintf(`{"sessionId":%q,"method":"Performance.getMetrics","params":{}}`, sid))
 		var mm struct {
 			Result struct {
 				Metrics []struct {
@@ -122,7 +151,7 @@ func (p chromeProbe) capture(c *collector) ([]TabCost, error) {
 				}
 			}
 		}
-		_, _ = c.command(b, fmt.Sprintf(`{"method":"Target.detachFromTarget","params":{"sessionId":%q}}`, sid))
+		_, _ = tabcostCmd(b.base, fmt.Sprintf(`{"method":"Target.detachFromTarget","params":{"sessionId":%q}}`, sid))
 		out = append(out, tc)
 	}
 	return out, nil

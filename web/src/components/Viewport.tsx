@@ -12,9 +12,10 @@ type Seeing = 'pixels' | 'channel' | 'request';
 // live stream stops being a mirror and becomes hands: a click on the <img> maps
 // to the target's pixels and fires /act (tap), keystrokes fire /act (type). Same
 // surface drives a Firefox tab (BiDi) OR a real device (Appium) — one wire.
-export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAspect, hud, visible, live, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle, hiRes, parked }:
+export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAspect, hud, visible, live, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle, hiRes, parked, youHere, controller, dup }:
   { session: string | null; title?: string; url?: string; context?: string;
-    onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; live?: boolean; fps?: number; act?: boolean; pinned?: boolean; onPin?: () => void; lodW?: number; fx?: boolean; fxNeedle?: string; hiRes?: boolean; parked?: boolean }) {
+    onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; live?: boolean; fps?: number; act?: boolean; pinned?: boolean; onPin?: () => void; lodW?: number; fx?: boolean; fxNeedle?: string; hiRes?: boolean; parked?: boolean;
+    youHere?: boolean; controller?: string; dup?: boolean }) {
   // MANIFEST: the card's identity — who opened it, why, when — matched by URL
   // (manifest keys by chrome bcid, cards by BiDi ctx, so URL is the join key).
   const [man, setMan] = useState<{ opened_by?: string; why?: string; first_seen?: string } | null>(null);
@@ -191,7 +192,11 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
   // caps ~6 persistent connections per host: N permanent streams black out the
   // tail seats (youtube, lambdatest never get a connection). Poll keeps it to ~1
   // live stream + cheap stills, so every seat is seen. (Foveation + the cap.)
-  const persistent = streaming && effFps >= 2;
+  // Only FIREFOX holds a persistent MJPEG /stream. CHROME must NOT: CDP screencast
+  // only emits frames for the VISIBLE/foreground tab, so a persistent stream on any
+  // background chrome tab goes BLACK. /shot (captureScreenshot) works on hidden tabs,
+  // so chrome 'live' polls /shot instead — engine behaviour on the shared state.
+  const persistent = streaming && effFps >= 2 && fx;
   const [shot, setShot] = useState('');
   const lodq = lodW ? `&w=${lodW}` : ''; // LOD: ask for only the pixels we display
   const streamSrc = session && persistent
@@ -258,9 +263,14 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
     // until focused. The real fix for live-all is content-side capture (Chrome CDP
     // screencast), which Firefox's drawSnapshot can't do.
     if (fx && !live) return () => { alive = false; }; // not in the live set -> frozen
+    // GUARD effFps=0: the memory gate can throttle a non-hero tab to 0 fps, and
+    // 1000/0 = Infinity made setInterval never fire → the card went BLACK instead of
+    // freezing on its last frame. Floor the divisor so a throttled tab still refetches
+    // (slowly) and stays VISIBLE — seeing all the tabs beats a black hole.
+    const rate = Math.max(0.2, effFps)
     const period = fx
-      ? (persistent ? Math.max(300, Math.round(1000 / effFps)) : 2000) // hero fluid, live periphery sips
-      : (persistent ? 5000 : Math.max(600, Math.round(1000 / effFps)));
+      ? (persistent ? Math.max(300, Math.round(1000 / rate)) : 2000) // hero fluid, live periphery sips
+      : (persistent ? 5000 : Math.max(600, Math.round(1000 / rate)));
     const id = window.setInterval(tick, period);
     return () => { alive = false; clearInterval(id); };
   }, [session, isText, ctx, streaming, persistent, effFps, lodW, fx, fxNeedle, live]);
@@ -380,6 +390,7 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
       <div className="panel-h">
         {onPin && <button className={`vp-pin${pinned ? ' on' : ''}`} onClick={onPin} title={pinned ? 'pinned as hero' : 'pin as hero (live)'}>{pinned ? '📌' : '📍'}</button>}
         <span className={`vp-title${pinned ? ' pinned' : ''}`} onClick={onPin} title={onPin ? 'pin as hero (live)' : undefined}>{title || 'viewport'}</span> {err ? '· ✗' : streaming ? '· ●' : '· ◌'}
+        {dup && <span style={{ background: '#6d4c41', color: '#fff', fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 3, marginLeft: 4 }} title="duplicate of another tab at the same URL — this card seeds once and does NOT stream (one live observer per URL)">↔ dup</span>}
         {ageMs >= 0 && <span className={`vp-age ${ageCls}`} title="staleness of what this card shows — time since its frame landed">{(ageMs / 1000).toFixed(1)}s</span>}
         {/* browser chrome: back · reload · full URL — a card is a real tab now */}
         {session === 'nvim' && fixedCtx && (
@@ -457,6 +468,13 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
                   <span className="hud-fps">{useFx ? 'webm' : `${effFps} fps`}</span>
                   {dims && <span className="hud-dim">{dims.w}×{dims.h}</span>}
                 </div>
+                {/* ATTENTION MARKERS (#9425(2) + you-are-here): where YOU are (blue) and which agent drives this tab (purple) */}
+                {(youHere || controller) && (
+                  <div style={{ position: 'absolute', top: 4, right: 4, display: 'flex', gap: 4, zIndex: 5, pointerEvents: 'none' }}>
+                    {youHere && <span style={{ background: '#1e88e5', color: '#fff', fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 3, boxShadow: '0 1px 3px rgba(0,0,0,.4)' }} title="your current tab">● you are here</span>}
+                    {controller && <span style={{ background: controller === 'cockpit' ? '#1e88e5' : '#8e24aa', color: '#fff', fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 3, boxShadow: '0 1px 3px rgba(0,0,0,.4)' }} title={`driven by ${controller}`}>◆ {controller === 'cockpit' ? 'you' : controller}</span>}
+                  </div>
+                )}
                 {useFx
                   ? <video ref={videoRef} className="vp-img vp-video" autoPlay muted playsInline onError={() => setErr(true)} />
                   : <img ref={imgRef} key={persistent ? streamSrc : 'poll'} className={`vp-img${interact ? ' vp-interactive' : ''}`} src={frameSrc} alt="live"

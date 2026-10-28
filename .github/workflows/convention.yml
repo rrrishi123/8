@@ -1,0 +1,55 @@
+name: branch convention
+
+# peer-review recs #2 (upstream-first) + #5 (measure-drift) — REPORT-ONLY.
+#
+# The four-system convention: a change lands on `next` (the integration
+# branch) first and reaches `main` only by merging `next` — `next` is
+# UPSTREAM of `main`. This job never fails a build; it surfaces two signals
+# so the convention stays visible without a brittle gate:
+#   #5 measure-drift: how far `next` leads `main` (the pending release size).
+#   #2 upstream-first: a WARNING if any non-merge commit reached `main`
+#                      without being on `next` (a direct-to-main commit).
+# A hard gate can come later, once the signal is trusted in practice.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  convention:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: measure drift + check upstream-first (report-only)
+        run: |
+          git fetch -q origin main next || true
+          # Both branches must exist to compare; a fresh repo may lack main.
+          if ! git rev-parse --verify -q origin/main >/dev/null || ! git rev-parse --verify -q origin/next >/dev/null; then
+            echo "main or next not present yet — nothing to compare"
+            exit 0
+          fi
+          ahead=$(git rev-list --count origin/main..origin/next)
+          behind=$(git rev-list --count origin/next..origin/main)
+          echo "release drift (#5): next is $ahead commit(s) ahead of main, $behind behind"
+          {
+            echo "### branch convention"
+            echo ""
+            echo "- **release drift (#5):** \`next\` is **$ahead** ahead of \`main\`, **$behind** behind"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # upstream-first (#2): every non-merge commit on main should also be
+          # on next (main advances only by merging next). The merge commit
+          # itself is excluded with --no-merges.
+          off=$(git rev-list origin/main ^origin/next --no-merges || true)
+          if [ -n "$off" ]; then
+            n=$(printf '%s\n' "$off" | wc -l | tr -d ' ')
+            echo "::warning title=upstream-first::$n non-merge commit(s) on main are not on next — upstream-first expects next -> main only"
+            echo "- **upstream-first (#2):** :warning: $n commit(s) on \`main\` not on \`next\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "upstream-first (#2): OK — main carries nothing that isn't on next"
+            echo "- **upstream-first (#2):** main is downstream of next (clean)" >> "$GITHUB_STEP_SUMMARY"
+          fi

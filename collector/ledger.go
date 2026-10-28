@@ -319,6 +319,35 @@ func liveMindPanes() []string {
 	return out
 }
 
+// dispatchCap — THE STAGGER (#4358): at most this many NEW summons per dispatch pass,
+// so the router brings family minds up a few at a time instead of a thundering herd.
+// Env-tunable (EIGHT_DISPATCH_CAP); 0 means "no cap". Default 2. WAKEs are not capped —
+// a wake only nudges a mind that already owns its lane, and the mind still decides WHEN.
+func dispatchCap() int {
+	if v := os.Getenv("EIGHT_DISPATCH_CAP"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return 2
+}
+
+// ctxNearCompaction — HEALTH GATE (#4358): a mind whose context has climbed into the
+// compaction band is about to lose its working memory, so summoning it a fresh task now
+// wastes the task (it compacts mid-turn). Skip it until it compacts/clears. The ceiling
+// is env-tunable (EIGHT_CTX_CEILING); a pane with no context reading yet (0) is allowed —
+// absence of evidence is not pressure.
+func ctxNearCompaction(pane string) bool {
+	ceil := int64(170000)
+	if v := os.Getenv("EIGHT_CTX_CEILING"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			ceil = n
+		}
+	}
+	ct := procOf(pane).CtxTokens
+	return ct > 0 && ct >= ceil
+}
+
 // pickNextForPane — the next unblocked, non-record todo whose assignee resolves to
 // THIS pane. Per-pane picking is what makes dispatch parallel: each role/pane runs
 // its own WIP=1, so the panel works concurrently rather than one-at-a-time.
@@ -476,6 +505,8 @@ func (c *collector) dispatchParallel(items []workItem, now string) bool {
 	changed := false
 	p2u := paneUUIDMap()
 	scope := playlistScope()
+	offerBudget := dispatchCap() // #4358: stagger — at most this many NEW summons this pass (0 = uncapped)
+	uncapped := offerBudget == 0
 	for _, pane := range liveMindPanes() {
 		if !c.budgetAllowsPane(pane) {
 			continue
@@ -486,10 +517,17 @@ func (c *collector) dispatchParallel(items []workItem, now string) bool {
 		if !dispatchable(pane) { // #897: a capped/stuck pane is reported on /panes, never dispatched to
 			continue
 		}
+		if ctxNearCompaction(pane) { // #4358: a mind in the compaction band would lose the task mid-turn
+			continue
+		}
 		if busy[pane] || inboxPendingForPane(pane, p2u) > 0 { // WIP=1 counts an un-answered OFFER as held
 			continue
 		}
-		if idx := pickNextForPane(items, pane, done); idx >= 0 {
+		idx := -1
+		if uncapped || offerBudget > 0 { // under the stagger budget (or uncapped)
+			idx = pickNextForPane(items, pane, done)
+		}
+		if idx >= 0 {
 			// 2026-09-15: OFFER, don't flip — the item stays todo until the mind
 			// takes it (POST /inbox take). The collector never decides for a mind
 			// and never types into a working pane (inbox.go). Legacy typed path
@@ -505,6 +543,9 @@ func (c *collector) dispatchParallel(items []workItem, now string) bool {
 				changed = true
 			}
 			busy[pane] = true
+			if !uncapped { // #4358: spent one of this pass's summons
+				offerBudget--
+			}
 		} else if family[pane] {
 			// #472 (amended #474/#475): the pane's own lane is empty but
 			// unclaimed work exists — WAKE, never assign: the router picks WHEN
