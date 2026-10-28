@@ -375,10 +375,27 @@ func packUpEngine(root, engine string, port int, bin string) {
 func bootFile() string { return os.ExpandEnv("$HOME/.8/boot.json") }
 
 func persistBootArgs() {
+	// Only the canonical :7070 witness owns the shared revive config (boot.json).
+	// An auxiliary collector (e.g. the :7199 fleet-ci smoke) starting LATER must
+	// not clobber it with its barer args — otherwise `watch` reads boot.json and
+	// "revives" the witness on the wrong port with no brokers/gecko, leaving the
+	// real witness unguarded (observed 2026-10-28: a :7199 smoke poisoned the
+	// :7070 revive path). probeAddr defaults to :7070 when -listen is unset.
+	if !ownsBootConfig(os.Args[1:]) {
+		return
+	}
 	os.MkdirAll(os.ExpandEnv("$HOME/.8"), 0o755)
 	if b, err := json.Marshal(os.Args[1:]); err == nil {
 		_ = os.WriteFile(bootFile(), b, 0o644)
 	}
+}
+
+// ownsBootConfig reports whether a collector started with these args is the
+// canonical :7070 witness — the only one allowed to own the shared boot.json
+// that `watch` revives from. Any other listener (the :7199 fleet-ci smoke, a
+// nonstandard -listen) is auxiliary and must not clobber it.
+func ownsBootConfig(args []string) bool {
+	return probeAddr(args) == "127.0.0.1:7070"
 }
 
 // collectorArgs — how up/watch start the collector: the persisted launch flags
