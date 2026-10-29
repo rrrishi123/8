@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -32,7 +33,7 @@ func paneKind(pane string) string {
 
 // The live Codex process holds its actual rollout open, including after resume
 // or /new. This avoids newest-file guesses and stale %N -> uuid registry files.
-func codexSessionForPID(pid string) string {
+func codexSessionProbe(pid string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "lsof", "-a", "-p", pid, "-Fn").Output()
@@ -80,4 +81,53 @@ func (c *collector) budgetAllowsPane(pane string) bool {
 		return cx == nil || cx["gated"] != true
 	}
 	return c.budgetAllows()
+}
+
+// codexSessionForPID — cached codexSessionProbe. A live Codex keeps the same
+// rollout open until /new or a resume, so re-running lsof on it every scan (the
+// Oct-12 inspector-port storm, reincarnated for Codex) buys nothing. A found id
+// lives codexSessTTL; a blank (rollout not open yet) is retried after
+// codexSessBlankTTL; entries not asked about for codexSessGC are dropped, which
+// is how dead pids leave the map.
+const (
+	codexSessTTL      = 60 * time.Second
+	codexSessBlankTTL = 5 * time.Second
+	codexSessGC       = 10 * time.Minute
+)
+
+type codexSessEntry struct {
+	id string
+	at time.Time
+}
+
+var (
+	cxMu       sync.Mutex
+	cxCache    = map[string]codexSessEntry{}
+	codexProbe = codexSessionProbe // swapped in tests
+)
+
+func codexSessionForPID(pid string) string {
+	now := time.Now()
+	cxMu.Lock()
+	for p, v := range cxCache { // tiny map; dead pids leave here
+		if now.Sub(v.at) > codexSessGC {
+			delete(cxCache, p)
+		}
+	}
+	if e, ok := cxCache[pid]; ok {
+		ttl := codexSessTTL
+		if e.id == "" {
+			ttl = codexSessBlankTTL
+		}
+		if now.Sub(e.at) < ttl {
+			cxMu.Unlock()
+			return e.id
+		}
+	}
+	cxMu.Unlock()
+	id := codexProbe(pid)
+	cxMu.Lock()
+	cxCache[pid] = codexSessEntry{id: id, at: time.Now()}
+	cxMu.Unlock()
+	return id
 }

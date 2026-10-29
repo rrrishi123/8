@@ -547,7 +547,7 @@ func (c *collector) handleIdentity(w http.ResponseWriter, r *http.Request) {
 
 // paneUUIDs — pane_pid -> claude session uuid, one ps scan: any child whose
 // args carry `--resume <uuid>` binds that uuid to its parent pid (the pane).
-func paneUUIDs() map[string]string {
+func paneUUIDsScan() map[string]string {
 	out := map[string]string{}
 	ps, err := exec.Command("ps", "-eo", "pid,ppid,args").Output()
 	if err != nil {
@@ -687,4 +687,34 @@ func marksArc(name string) map[string]any {
 		"last_mark": last,
 		"recent":    recent,
 	}
+}
+
+// paneUUIDs — memoized paneUUIDsScan (poll-storm recurrence, 2026-10-29). The
+// scan is one full `ps -eo` plus an lsof per Codex process, and it is called
+// from 15 sites — request handlers and loops alike — so with 14 clients it ran
+// about every 0.5s and WAS the collector's CPU (fork+wait4 at 42%, plus the
+// sysmond cost of every child). One scan per paneUUIDsTTL is the honest
+// cadence: nothing a caller asks for changes faster than that. Callers get a
+// copy, never the cached map. The lock is held across the scan on purpose: a
+// burst of callers waits for one scan instead of each forking its own.
+const paneUUIDsTTL = 2 * time.Second
+
+var (
+	puMu  sync.Mutex
+	puAt  time.Time
+	puOut map[string]string
+)
+
+func paneUUIDs() map[string]string {
+	puMu.Lock()
+	defer puMu.Unlock()
+	if puOut == nil || time.Since(puAt) >= paneUUIDsTTL {
+		puOut = paneUUIDsScan()
+		puAt = time.Now()
+	}
+	out := make(map[string]string, len(puOut))
+	for k, v := range puOut {
+		out[k] = v
+	}
+	return out
 }
