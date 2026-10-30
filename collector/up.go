@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -477,13 +478,27 @@ func runWatch() {
 	root := repoRoot()
 	fmt.Println("8 watch — supervising the collector + a seen firefox seat (Go os/exec + POSIX ps)")
 	seenFox, highMem := false, 0
+	var child *exec.Cmd // the last collector THIS watch spawned
+	misses := 0
 	for {
-		if cargs := collectorArgs(); !readyAddr(probeAddr(cargs)) { // #931: readiness, not just an open port
+		cargs := collectorArgs()
+		var verdict string
+		verdict, misses = watchDecision(readyAddr(probeAddr(cargs)), misses, procAlive(child))
+		switch verdict {
+		case "spawn":
 			cmd := exec.Command(self, cargs...)
 			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 			if err := cmd.Start(); err == nil {
-				fmt.Printf("  collector was down -> revived (pid %d) args=%v\n", cmd.Process.Pid, cargs)
+				child = cmd
+				go func(c *exec.Cmd) { _ = c.Wait() }(cmd) // reap: an exited child must not linger as a zombie
+				fmt.Printf("  collector was down -> revived (pid %d) after %d unready ticks args=%v\n", cmd.Process.Pid, misses, cargs)
+				misses = 0
 			}
+		case "kill":
+			fmt.Printf("  collector pid %d alive but unready for %d ticks -> SIGTERM (wedged, #931)\n", child.Process.Pid, misses)
+			_ = child.Process.Signal(syscall.SIGTERM)
+			child = nil
+			misses = watchSpawnAfter - 1 // the next unready tick spawns the replacement
 		}
 		if !portUp("127.0.0.1:4724") { // wire down -> revive, same contract as the collector
 			wireUp(root, probeAddr(collectorArgs()))
@@ -511,4 +526,44 @@ func runWatch() {
 		}
 		time.Sleep(15 * time.Second)
 	}
+}
+
+// watchDecision — the collector-supervision verdict for one 15s tick, pure so it
+// is testable without the loop. `ready` is whether /health answered 200,
+// `misses` the consecutive unready ticks before this one, `childAlive` whether
+// the last collector this watch spawned still exists.
+//
+//	ready                                  -> "ok"    (misses reset)
+//	unready, child gone, >=watchSpawnAfter -> "spawn" (~45s of silence)
+//	unready, child alive, >=watchKillAfter -> "kill"  (alive but not answering: the #931 wedge)
+//	otherwise                              -> "wait"
+//
+// Before this (2026-10-27..30, /private/tmp/watch-8.log) ONE slow /health under
+// host load forked a duplicate collector every 15s; it failed to bind :7070,
+// exited, and — never waited on — stayed a zombie (88 of them), while a true
+// revive dropped every witness client. Hysteresis + a liveness check on our own
+// child + reaping closes all three.
+const (
+	watchSpawnAfter = 3
+	watchKillAfter  = 8
+)
+
+func watchDecision(ready bool, misses int, childAlive bool) (string, int) {
+	if ready {
+		return "ok", 0
+	}
+	misses++
+	switch {
+	case childAlive && misses >= watchKillAfter:
+		return "kill", misses
+	case !childAlive && misses >= watchSpawnAfter:
+		return "spawn", misses
+	}
+	return "wait", misses
+}
+
+// procAlive — true while the process this watch started still exists. Once the
+// reaper goroutine has Wait()ed it, Signal reports the process as finished.
+func procAlive(cmd *exec.Cmd) bool {
+	return cmd != nil && cmd.Process != nil && cmd.Process.Signal(syscall.Signal(0)) == nil
 }
