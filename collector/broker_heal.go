@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
+	"syscall"
 	"time"
 )
 
@@ -80,7 +83,7 @@ func rewireChromeBroker() (int, error) {
 		return 0, fmt.Errorf("channel binary not found (http-mcp build.sh → .bin/channel)")
 	}
 	// drop the stale broker holding :4446 (port bound, upstream dead)
-	_ = exec.Command("sh", "-c", "lsof -ti tcp:4446 | xargs kill 2>/dev/null").Run()
+	killPortListeners(4446)
 	for i := 0; i < 20 && portUp("127.0.0.1:4446"); i++ {
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -131,4 +134,32 @@ func (c *collector) brokerHealLoop() {
 		c.publish(fmt.Sprintf(`{"session":"chrome","origin":"COLLECTOR","frame":{"method":"broker.healed","params":{"broker":"chrome","addr":"127.0.0.1:4446","pid":%d}}}`, pid))
 		fails = 0
 	}
+}
+
+// killPortListeners — SIGTERM only the LISTENER(s) on a local TCP port, never a
+// client of it. `lsof -ti tcp:PORT` lists every process holding a socket on the
+// port — which INCLUDED THIS COLLECTOR (its own connection to the broker). So the
+// chrome heal (watch-8.log, 2026-10-27..11-01) killed the witness itself on every
+// channel EOF, it exited silently on SIGTERM, and the watch "revived" it minutes
+// later. -sTCP:LISTEN plus a self-pid guard closes that.
+func killPortListeners(port int) {
+	out, _ := exec.Command("lsof", "-ti", fmt.Sprintf("tcp:%d", port), "-sTCP:LISTEN").Output()
+	for _, pid := range listenerPIDs(string(out), os.Getpid()) {
+		if p, err := os.FindProcess(pid); err == nil {
+			_ = p.Signal(syscall.SIGTERM)
+		}
+	}
+}
+
+// listenerPIDs — parse lsof -t output into pids, dropping garbage, pid<=1 and self.
+func listenerPIDs(lsofOut string, self int) []int {
+	var pids []int
+	for _, f := range strings.Fields(lsofOut) {
+		n, err := strconv.Atoi(f)
+		if err != nil || n <= 1 || n == self {
+			continue
+		}
+		pids = append(pids, n)
+	}
+	return pids
 }
