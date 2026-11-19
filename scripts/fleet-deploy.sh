@@ -34,7 +34,7 @@ one() { # host-spec
     out=$(ssh -o BatchMode=yes -o ConnectTimeout=12 "$userhost" bash -s <<BOOT 2>&1
 set -e
 cd "$rroot/8"
-git fetch -q origin ${UPSTREAM:-release/v0.0.2}
+git fetch -q origin ${UPSTREAM:-next}
 git show FETCH_HEAD:scripts/fleet-sync.sh   > /tmp/fleet-sync.sh
 git show FETCH_HEAD:scripts/system-smoke.sh > /tmp/system-smoke.sh
 ROOT="$rroot" bash /tmp/fleet-sync.sh

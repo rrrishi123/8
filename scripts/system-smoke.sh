@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # system-smoke — verify the four-system release as ONE object, not four repos in
 # isolation (the #1149 system-CI, made runnable). Builds + tests every arm at its
-# current release/v0.0.2 checkout, asserts the version literals are in lockstep,
+# current next checkout, asserts the version literals are in lockstep,
 # and reports the composed tips. Exit non-zero on any failure.
 #
 #   ROOT=~/Desktop/repos ./system-smoke.sh
@@ -14,7 +14,7 @@ fail=0; note() { printf '  %s\n' "$*"; }
 red()  { printf '\033[31m%s\033[0m\n' "$*"; fail=1; }
 grn()  { printf '\033[32m%s\033[0m\n' "$*"; }
 
-echo "== four-system smoke @ release/v0.0.2 =="
+echo "== four-system smoke @ next =="
 
 # --- per-arm build + test (the arm's own CI, run together) ---
 arm() { # repo  test-dir
@@ -38,13 +38,13 @@ else red "8/web: tsc FAIL"; fi
 
 # --- version-literal lockstep (the drift guard, as a gate) ---
 echo "-- version lockstep --"
-lit() { grep -cE "$3" "$ROOT/$1/$2" 2>/dev/null; }   # read the CHECKED-OUT file (HEAD) — works on release/v0.0.2 or a private overlay branch that merged it
-c=$(lit http-mcp contract/contract.go 'Version = "v0.0.3"')
-a=$(lit adapters trace/trace.go 'Version = "v0.0.3"')
-p=$(lit pilot main.go 'fallbackVersion = "v0.0.3"')
-s=$(lit 8 collector/main.go 'seriesContractVersion = "v0.0.3"')
-v=$(lit 8 install.sh 'VER="v0.0.3"')
-if [ "$c$a$p$s$v" = "11111" ]; then grn "lockstep ok (4x v0.0.3 + install.sh v0.0.3)"; else red "lockstep DRIFT: contract=$c adapters=$a pilot=$p series=$s install=$v"; fi
+lit() { grep -cE "$3" "$ROOT/$1/$2" 2>/dev/null; }   # read the CHECKED-OUT file (HEAD) — works on next or a private overlay branch that merged it
+c=$(lit http-mcp contract/contract.go 'Version = "v0.0.4"')
+a=$(lit adapters trace/trace.go 'Version = "v0.0.4"')
+p=$(lit pilot main.go 'fallbackVersion = "v0.0.4"')
+s=$(lit 8 collector/main.go 'seriesContractVersion = "v0.0.4"')
+v=$(lit 8 install.sh 'VER="v0.0.4"')
+if [ "$c$a$p$s$v" = "11111" ]; then grn "lockstep ok (4x v0.0.4 + install.sh v0.0.4)"; else red "lockstep DRIFT: contract=$c adapters=$a pilot=$p series=$s install=$v"; fi
 
 # --- composed tips (the release object) ---
 echo "-- composed release --"

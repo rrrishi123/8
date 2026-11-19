@@ -108,7 +108,7 @@ jq -n \
   --arg repository "$SOURCE_REPOSITORY" --arg sha "$SOURCE_SHA" \
   --arg eight "${revisions[0]}" --arg wire "${revisions[1]}" \
   --arg pilot "${revisions[2]}" --arg adapters "${revisions[3]}" \
-  '{schema: 1, branch: "release/v0.0.2", source: {repository: $repository, sha: $sha},
+  '{schema: 1, branch: "next", source: {repository: $repository, sha: $sha},
     revisions: {"8": $eight, "http-mcp": $wire, pilot: $pilot, adapters: $adapters}}' \
   > "$RELEASE_MANIFEST"
 echo "FLEET CI GREEN: $RELEASE_MANIFEST"

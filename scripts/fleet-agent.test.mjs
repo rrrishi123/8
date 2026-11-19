@@ -10,7 +10,7 @@ import { arms, validateManifest, manifestKey, buildSHA, config, attest, checkout
 
 const heads = Object.fromEntries(arms.map((a, i) => [a, String(i + 1).repeat(40)]));
 const source = { arm: '8', sha: heads['8'] };
-const manifest = () => ({ schema: 1, branch: 'release/v0.0.2', source: { repository: 'rrrishi123/8', sha: heads['8'] }, revisions: { ...heads } });
+const manifest = () => ({ schema: 1, branch: 'next', source: { repository: 'rrrishi123/8', sha: heads['8'] }, revisions: { ...heads } });
 
 test('accepts exactly the four tested release revisions', () => {
   assert.equal(validateManifest(manifest(), heads, source).revisions.pilot, heads.pilot);
@@ -76,7 +76,7 @@ async function repositoryFixture(t) {
   await git(origin, 'add', 'file');
   await git(origin, '-c', 'commit.gpgsign=false', 'commit', '-m', 'default');
   const first = await git(origin, 'rev-parse', 'HEAD');
-  await git(origin, 'checkout', '-b', 'release/v0.0.2');
+  await git(origin, 'checkout', '-b', 'next');
   await fs.writeFile(path.join(origin, 'file'), 'tested release\n');
   await git(origin, '-c', 'commit.gpgsign=false', 'commit', '-am', 'release');
   const second = await git(origin, 'rev-parse', 'HEAD');

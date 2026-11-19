@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # fleet-sync — a HOST pulls the open-source release into its own branch and
 # rebuilds. This is the afferent-of-code half of the fleet: every host tracks
-# the same upstream (release/v0.0.2) unless it explicitly runs a private branch,
+# the same upstream (next) unless it explicitly runs a private branch,
 # in which case the release is merged UNDER the private overlay (the overlay stays on
 # top). Idempotent, and --dry-run shows the plan without changing anything.
 #
-#   REPOS="http-mcp 8 pilot adapters" UPSTREAM=release/v0.0.2 ./fleet-sync.sh --dry-run
+#   REPOS="http-mcp 8 pilot adapters" UPSTREAM=next ./fleet-sync.sh --dry-run
 #   ./fleet-sync.sh              # sync + rebuild
 #
 # It NEVER force-pushes and NEVER touches main. A conflict aborts that repo
@@ -13,7 +13,7 @@
 set -uo pipefail
 ROOT="${ROOT:-$HOME/Work}"; [ -d "$ROOT/8/.git" ] || ROOT="$HOME/Desktop/repos"
 REPOS="${REPOS:-http-mcp 8 pilot adapters}"
-UPSTREAM="${UPSTREAM:-release/v0.0.2}"
+UPSTREAM="${UPSTREAM:-next}"
 DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
 say(){ printf '  %s\n' "$*"; }
 

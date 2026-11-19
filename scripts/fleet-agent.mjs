@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const arms = ['8', 'http-mcp', 'pilot', 'adapters'];
-const branch = 'release/v0.0.2';
+const branch = 'next';
 const shaRE = /^[a-f0-9]{40}$/;
 const self = fileURLToPath(import.meta.url);
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));

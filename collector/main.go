@@ -4430,7 +4430,7 @@ func seriesPath(name string) string {
 // without adopting the Frame type or importing the contract package). It tracks
 // http-mcp contract.Version, currently v0.0.3; 8 deliberately does not import the
 // contract (the no-arrow decoupling), so bump this in lockstep at the release cut.
-const seriesContractVersion = "v0.0.3"
+const seriesContractVersion = "v0.0.4"
 
 // seriesFile is the on-disk series envelope: the contract version + the frames.
 type seriesFile struct {
