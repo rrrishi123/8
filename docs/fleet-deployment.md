@@ -1,6 +1,6 @@
 # CI-gated fleet deployment
 
-Each push to `release/v0.0.2` in any of the four public arms runs the shared
+Each push to `main` or `next` in any of the four public arms runs the shared
 `fleet-gate.yml` workflow. The gate builds all canonical binaries, runs Go
 build/vet/tests/format checks, the deployment-agent tests, and the cockpit
 build/tests. Only success produces the `fleet-release` artifact containing
@@ -45,7 +45,7 @@ Linux user manager must remain running for unattended operation (login session
 or operator-configured linger). `FLEET_INTERVAL` defaults to 60 seconds, minimum
 15. Configure overrides in `agent.env`; restart the service to apply them.
 
-Native mode requires all live repositories clean on `release/v0.0.2` and all
+Native mode requires all live repositories clean on `next` and all
 updates to be fast-forwards. It builds/tests private checkouts first, advances
 and rebuilds each live arm, builds the web assets, then calls the watchdog-aware
 `collector-restart.sh`. A dirty operator tree stops deployment. A build failure

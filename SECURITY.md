@@ -6,7 +6,7 @@ to a ledger and serves the live view (`/work`, `/peers`, `/manifest`, `/budget`,
 
 ## Supported versions
 
-Active development is on `release/v0.0.2`; security fixes land there first.
+Active development is on `next`; security fixes land there first.
 
 ## Trust & exposure model
 
