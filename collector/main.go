@@ -4743,7 +4743,7 @@ func main() {
 	apertureMB := flag.Int("aperture-mb", 3000, "soft parent+children memory threshold (MB): above this the FAIR aperture parks the heaviest non-focused tab (gBrowser.discardBrowser — memory freed, tab identity preserved, reloads on focus). INVARIANT: no tab is ever closed. 0 disables. Watchdog 4500 full-recycle stays as the backstop.")
 	token := flag.String("token", os.Getenv("EIGHT_TOKEN"), "shared secret required on every endpoint via X-8-Token/Bearer (empty = auth off, local-dev default)")
 	origins := flag.String("origins", os.Getenv("EIGHT_ORIGINS"), "comma CORS origin allowlist, e.g. http://localhost:8088 (empty = *, local-dev)")
-	allocEvery := flag.Duration("allocator", 5*time.Minute, "ALLOCATOR slice-1 (#9580): period for re-routing untaken [verify #N] items to an idle named mind via inbox offer (0 = off)")
+	allocEvery := flag.Duration("allocator", 0, "ALLOCATOR slice-1 (#9580): period for re-routing untaken [verify #N] items to an idle named mind via inbox offer. DEFAULT OFF (0): enabling is an explicit act, e.g. -allocator=5m — a routine restart or blind redeploy must never switch it on (pmf, #9589)")
 	allocStale := flag.Duration("allocator-stale", 60*time.Minute, "a todo [verify #N] never acked for this long is re-routed by the allocator")
 	webDir := flag.String("web-dir", os.Getenv("EIGHT_WEB_DIR"), "optional built cockpit directory to serve at / on the collector's port")
 	flag.Parse()
