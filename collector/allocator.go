@@ -17,8 +17,14 @@ package main
 // witnessed as a ledger record, and the honest default output is SILENCE — no
 // stale verify or no idle mind means nothing happens. Unranked: oldest first.
 //
+// KNOWN LIMIT (documented, not silent — %6 review of #10, philo guard-a): receivers
+// are NAMED minds only, the declared family derangedVerifier already uses. That
+// leaves idle UNNAMED minds unwoken — the disease's own population. Widening to
+// every four-system mind (or adding a naming step) is a separate 2-agree decision,
+// not a loosening to slip in; until then this is a scope, never a rank by membership.
+//
 // Predicate-hold evaluation (wake a mind when the end-state it declared comes
-// true) is slice-2 and builds on this loop.
+// true) is slice-2 (waits.go) and runs on this loop.
 
 import (
 	"encoding/json"
