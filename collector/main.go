@@ -4938,6 +4938,7 @@ func main() {
 	mux.HandleFunc("/budget", c.handleBudget)
 	mux.HandleFunc("/budget/poke", c.handleBudgetPoke) // fire a trivial call to renew the rate-limit headers (budget.go)
 	mux.HandleFunc("/mind", c.handleMind)
+	mux.HandleFunc("/wait", c.handleWait) // #9574 slice-2: declared waits — GET the feed of what minds wait for; POST declares
 	mux.HandleFunc("/compose", c.handleCompose)
 	mux.HandleFunc("/delegate", c.handleDelegate)    // cheap work in a fresh claude -p context, with billed cost (compose.go)      // vertical-scaling knob: mint a session at a CHOSEN context (compose.go)            // identity contract: seat=address, name=identity, uuid/%N/pid=bindings (mind.go)        // the unified rate limit, read from tapped responses; gates the playlist // the session's measured token weight, turn by turn (inspect.go) // evaluate inside a pane's live process via its BUN_INSPECT socket (inspect.go)          // the mind pulls its offers and decides take|decline (inbox.go)      // %N per tmux boot -> uuid; quarantined stale rows (lineage.go)          // #277 witnessed pane roster (first_seen per pane)
 	mux.HandleFunc("/panes/send", c.handlePanesSend) // type one prompt into selected panes / all live claude at once — the operator+agent fan-out nerve

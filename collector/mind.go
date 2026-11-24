@@ -36,6 +36,7 @@ type mindView struct {
 	Pid     int      `json:"pid,omitempty"` // current process — dies on exit
 	Ctx     int64    `json:"context_tokens,omitempty"`
 	State   string   `json:"state,omitempty"`
+	Waiting string   `json:"waiting_for,omitempty"` // #9574 slice-2: the mind's declared wait (see /wait), visible to every other mind
 	Issues  []string `json:"issues,omitempty"`
 }
 
@@ -179,6 +180,14 @@ func (c *collector) resolveMinds(heal bool) []mindView {
 					mins = append(mins, mindView{Name: nm, Address: nm, UUID: rm[nm],
 						Issues: []string{"name-dead: no live pane resolves to " + nm + " (uuid " + first8(rm[nm]) + ")"}})
 				}
+			}
+		}
+	}
+	// declared waits (slice-2): what each mind said it is waiting for
+	for _, wd := range loadWaits() {
+		for i := range mins {
+			if mins[i].Pane == wd.Pane {
+				mins[i].Waiting = wd.summary()
 			}
 		}
 	}

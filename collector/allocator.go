@@ -177,6 +177,7 @@ func (c *collector) allocatorLoop(period, stale time.Duration) {
 	defer t.Stop()
 	for range t.C {
 		c.allocatorPass(stale, last)
+		c.waitPass() // slice-2 (waits.go): declared end-states, evaluated on the same beat
 	}
 }
 
