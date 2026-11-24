@@ -225,8 +225,13 @@ func (c *collector) waitPass() int {
 	now := time.Now().UTC()
 	ts := now.Format(time.RFC3339)
 	woke := 0
+	set := loadAllowlist()
+	p2u := paneUUIDMap()
 	for _, w := range waits {
 		if w.SatisfiedAt != "" {
+			continue
+		}
+		if !allowed(set, firstNonEmpty(w.UUID, p2u[w.Pane])) { // #9602: a wait is only consent when the pane's own uuid opted in
 			continue
 		}
 		since, _ := time.Parse(time.RFC3339, w.Since)

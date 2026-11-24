@@ -201,7 +201,7 @@ func (c *collector) allocatorLoop(period, stale time.Duration) {
 
 // allocatorPass — one evaluation. Returns how many verifies moved (0 = silence).
 func (c *collector) allocatorPass(stale time.Duration, last map[int64]time.Time) int {
-	minds := c.resolveMinds(false) // tmux execs: outside the ledger lock
+	minds := filterAllowed(c.resolveMinds(false), loadAllowlist()) // #9602: opt-in registry FIRST (fail-closed); tmux execs outside the ledger lock
 	p2u := paneUUIDMap()
 	pending := func(pane string) int { return inboxPendingForPane(pane, p2u) }
 	now := time.Now()
