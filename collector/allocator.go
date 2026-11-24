@@ -199,8 +199,43 @@ func (c *collector) allocatorLoop(period, stale time.Duration) {
 	}
 }
 
+// allocatorBudgetStale — a budget verdict older than this is treated as absent
+// (fail-closed). ~2*POKE_MIN_S + a margin; the Nov-21 lesson A1 was a 79h-stale GO.
+const allocatorBudgetStale = 660 * time.Second
+
+// budgetAllowsAllocator — PURE, FAIL-CLOSED: may the allocator self-fire now?
+// The allocator wakes minds on its own, which is discretionary work, so it runs
+// ONLY in the research phase, un-gated, on a fresh verdict — the same shape the
+// playlist's budget gate uses. A nil, gated, conserve-phase, or stale verdict
+// holds. Returns (ok, reason-when-held).
+func budgetAllowsAllocator(b *budget, now time.Time) (bool, string) {
+	if b == nil {
+		return false, "no budget verdict (fail-closed)"
+	}
+	if b.Gated {
+		return false, b.Reason
+	}
+	if b.Phase != "research" {
+		return false, fmt.Sprintf("phase %q (conserve holds discretionary waking)", b.Phase)
+	}
+	t, err := time.Parse(time.RFC3339, b.ObservedAt)
+	if err != nil || now.Sub(t) > allocatorBudgetStale {
+		return false, fmt.Sprintf("budget verdict stale/unparseable (observed %q)", b.ObservedAt)
+	}
+	return true, ""
+}
+
 // allocatorPass — one evaluation. Returns how many verifies moved (0 = silence).
 func (c *collector) allocatorPass(stale time.Duration, last map[int64]time.Time) int {
+	// #9601 (#9592 pre-condition): BUDGET GATE, above the allowlist filter. A loop that
+	// wakes minds on its own must never spend a gated window on its own initiative — the
+	// mac 5h window hit 98% gated during the deploy consensus. Hold + witness; resumes
+	// when /budget clears. Matches the budget-gate.sh verdict (research phase, un-gated,
+	// FRESH verdict) and FAILS CLOSED on nil/stale — d09b6b87 review on #9592, not just the cap.
+	if ok, why := budgetAllowsAllocator(c.budgetNow(), time.Now()); !ok {
+		c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"allocator.held_by_budget","params":{"reason":%q}}}`, why))
+		return 0
+	}
 	minds := filterAllowed(c.resolveMinds(false), loadAllowlist()) // #9602: opt-in registry FIRST (fail-closed); tmux execs outside the ledger lock
 	p2u := paneUUIDMap()
 	pending := func(pane string) int { return inboxPendingForPane(pane, p2u) }
