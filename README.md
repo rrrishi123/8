@@ -1,29 +1,34 @@
 # 8 — the WITNESS
 
-For multi-host registration, see [native peer join](docs/peer-join.md)
-(`PEER_HUB=http://hub-host:7070 collector up`).
+**Record every action your agents take — every API call and every browser tab — then replay it and audit it.** 8 is a witness: an append-only ledger of what agents did, so runs stay continuous, auditable, and federated across hosts — not a test harness, though a fork turns any regression suite into a record-and-replay one.
 
-> Part of **The Wire** — a **witnessed substrate for agents**: two modes over a lean wire that any mind acts on, and a witness that makes agents continuous, auditable, and federated across hosts. (Record-and-replay test automation is one application, not the definition.)
-> **This repo is the 8 — the WITNESS** — OODA Observe across every tab; aperture-controlled; recommends, never acts.
-> **The four arms:** [http-mcp](https://github.com/rrrishi123/http-mcp) (WIRE) · [8](https://github.com/rrrishi123/8) (WITNESS) · [pilot](https://github.com/rrrishi123/pilot) (HOST) · [adapters](https://github.com/rrrishi123/adapters) (ARMS)
-> **The idea, stated:** [docs/four-system.md](docs/four-system.md) — the two atoms, the four arms as protocol, inscription-is-truth, and digest-continuity, as rules ([FABLE.md](FABLE.md) is the same idea as story).
-
-## See it in action
+## Quick start
 
 ```bash
-./scripts/demo.sh        # the two atoms + the witness, narrated, with live receipts
+git clone https://github.com/rrrishi123/8 && cd 8
+./scripts/demo.sh                      # isolated, hermetic: stands up a witness and prints live receipts
+cd web && npm install && npm run dev   # open the cockpit -> http://localhost:8088
 ```
 
-A hermetic, self-evidencing walk-through: it stands up an **isolated** witness (its own
-temp HOME, a spare port, no brokers — it never touches `~/.8`), then runs each piece live
-and prints the proof — the **CALL** atom with its `X-8-Witness` receipt, the ledger reading
-the act back, the `/mind` · `/peers` surfaces, **wake-on-event** firing on a completion, and
-the **CHANNEL** atom (driving a real browser) shown as the exact live command. Reproducible
-on any host. For the visual surface: `cd web && npm run dev` → the cockpit on
-`http://localhost:8088`.
+<!-- TODO: 10-second GIF of the record -> replay -> audit loop, under the title -->
+![the four-system at a glance](docs/diagrams/territory-overview.png)
+
+## What you get
+
+- **A witness over every tab** — OODA *Observe*; aperture-controlled; recommends, never acts.
+- **An append-only ledger** — every act carries an `X-8-Witness` receipt you can read back, replay, or **wake a mind on** when it completes.
+- **`./scripts/demo.sh`** proves it live: the **CALL** atom with its receipt, the ledger reading the act back, the `/mind` · `/peers` surfaces, wake-on-event, and the **CHANNEL** atom driving a real browser — in its own temp HOME, never touching `~/.8`.
+
+<details><summary><b>The deeper idea — the witnessed substrate</b></summary>
+
+> Part of **The Wire** — a witnessed substrate for agents: **two modes** (CALL and CHANNEL) over a lean wire any mind acts on, with a witness that makes agents continuous, auditable, and federated. Capability is composed *above* the wire by three more arms.
+> **The four arms:** [http-mcp](https://github.com/rrrishi123/http-mcp) (WIRE) · [8](https://github.com/rrrishi123/8) (WITNESS) · [pilot](https://github.com/rrrishi123/pilot) (HOST) · [adapters](https://github.com/rrrishi123/adapters) (ARMS)
+> **The idea, stated:** [docs/four-system.md](docs/four-system.md) — two atoms, four arms as protocol, inscription-is-truth, digest-continuity ([FABLE.md](FABLE.md) is the same idea as story).
+> **Going further — multi-host:** [native peer join](docs/peer-join.md) (`PEER_HUB=http://hub-host:7070 collector up`).
+
+</details>
 
 ---
-
 <!-- ===== SHARED TERRITORY (identical across http-mcp · 8 · pilot · adapters) ===== -->
 
 # The Wire — a witnessed substrate for agents
