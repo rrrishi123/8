@@ -4745,6 +4745,7 @@ func main() {
 	origins := flag.String("origins", os.Getenv("EIGHT_ORIGINS"), "comma CORS origin allowlist, e.g. http://localhost:8088 (empty = *, local-dev)")
 	allocEvery := flag.Duration("allocator", envDuration("EIGHT_ALLOCATOR", 0), "ALLOCATOR (#9580/#9574): period for the allocator loop (verify re-router + declared waits). DEFAULT OFF (0): enabling is an explicit act — -allocator=5m, or EIGHT_ALLOCATOR=5m in the env so a watchdog revive (which recomputes argv) keeps it on (pmf #9589, %8 #9592)")
 	allocStale := flag.Duration("allocator-stale", 60*time.Minute, "a todo [verify #N] never acked for this long is re-routed by the allocator")
+	waitsEvery := flag.Duration("waits", envDuration("EIGHT_WAITS", 0), "ALLOCATOR slice-2 (#9574): period for evaluating declared waits (/wait) and waking their panes. DEFAULT OFF (0): -waits=5m, or EIGHT_WAITS=5m in the env. Its own switch so slice-1 can run alone on a first bounce (49fe2c0b #9626)")
 	webDir := flag.String("web-dir", os.Getenv("EIGHT_WEB_DIR"), "optional built cockpit directory to serve at / on the collector's port")
 	flag.Parse()
 	peerJoin, err := peerJoinFromEnv()
@@ -4809,17 +4810,17 @@ func main() {
 		time.Sleep(200 * time.Millisecond)
 		go c.activateCockpit() // every (re)start returns Firefox to 8's tab
 		time.Sleep(200 * time.Millisecond)
-		go c.memoryAperture(*apertureMB)             // self-regulate parent memory (heap-minimize at the soft threshold)
-		go c.reconcileLoop()                         // keep the tab manifest true even when no cockpit is watching
-		go c.seatWatchLoop()                         // #11: PUSH change events for every seat (the CHANNEL atom, realized)
-		go c.paneWitnessLoop()                       // #277: witness pane appearance (first_seen + pane.appeared/vanished)
-		go c.staleLoop()                             // #472b: revert 6h-silent doing items — the WIP lane self-heals
-		go c.epochLoop()                             // #645: the operator-epoch clock — ledger locked to operator-time
-		go c.innerHostLoop()                         // #850: poll docker stats + colima list off the request path
-		go c.brokerHealLoop()                        // #3863: the witness heals its own CHANNEL arm — re-wire a broken-pipe chrome broker
-		go c.allocatorLoop(*allocEvery, *allocStale) // #9580: ALLOCATOR slice-1 — untaken verifies flow to idle named minds; silence otherwise
-		go c.watchHumanForeground()                  // "you are here": track the human's foreground tab (cache-first, lean)
-		go func() {                                  // project eight.db every 30s so DBeaver always sees fresh data
+		go c.memoryAperture(*apertureMB)                          // self-regulate parent memory (heap-minimize at the soft threshold)
+		go c.reconcileLoop()                                      // keep the tab manifest true even when no cockpit is watching
+		go c.seatWatchLoop()                                      // #11: PUSH change events for every seat (the CHANNEL atom, realized)
+		go c.paneWitnessLoop()                                    // #277: witness pane appearance (first_seen + pane.appeared/vanished)
+		go c.staleLoop()                                          // #472b: revert 6h-silent doing items — the WIP lane self-heals
+		go c.epochLoop()                                          // #645: the operator-epoch clock — ledger locked to operator-time
+		go c.innerHostLoop()                                      // #850: poll docker stats + colima list off the request path
+		go c.brokerHealLoop()                                     // #3863: the witness heals its own CHANNEL arm — re-wire a broken-pipe chrome broker
+		go c.allocatorLoop(*allocEvery, *allocStale, *waitsEvery) // #9580/#9574: ALLOCATOR — slice-1 re-routes + slice-2 waits, each behind its own switch, one beat gate above both
+		go c.watchHumanForeground()                               // "you are here": track the human's foreground tab (cache-first, lean)
+		go func() {                                               // project eight.db every 30s so DBeaver always sees fresh data
 			if _, err := exec.LookPath("sqlite3"); err != nil {
 				return
 			}

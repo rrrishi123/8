@@ -99,3 +99,64 @@ func TestEnvDuration(t *testing.T) {
 		t.Fatal("unset -> fallback")
 	}
 }
+
+// One gate above BOTH organs (49fe2c0b #9626): a closed gate must stop the
+// wait pass as well as the re-router, publish the hold once, and each organ
+// must obey its own switch.
+func TestAllocatorBeatGate(t *testing.T) {
+	var allocs, waits, helds, opens int
+	open := true
+	gate := func() (bool, string) { return open, "budget: conserve" }
+	alloc := func() { allocs++ }
+	wait := func() { waits++ }
+	onHeld := func(string) { helds++ }
+	onOpen := func() { opens++ }
+	tick := time.Minute
+	st := &beatState{lastRouted: map[int64]time.Time{}}
+	now := time.Date(2026, 11, 25, 2, 0, 0, 0, time.UTC)
+
+	// both switches on, gate open: both organs run on the first beat
+	a, w := allocatorBeat(st, now, tick, 5*time.Minute, time.Minute, gate, alloc, wait, onHeld, onOpen)
+	if !a || !w || allocs != 1 || waits != 1 {
+		t.Fatalf("first beat should run both: %v %v %d %d", a, w, allocs, waits)
+	}
+	// next minute: only the 1m organ is due
+	now = now.Add(time.Minute)
+	a, w = allocatorBeat(st, now, tick, 5*time.Minute, time.Minute, gate, alloc, wait, onHeld, onOpen)
+	if a || !w || allocs != 1 || waits != 2 {
+		t.Fatalf("periods: alloc=%v wait=%v %d %d", a, w, allocs, waits)
+	}
+	// gate closes: NEITHER organ runs, hold published once across three beats
+	open = false
+	for i := 0; i < 3; i++ {
+		now = now.Add(5 * time.Minute)
+		if a, w := allocatorBeat(st, now, tick, 5*time.Minute, time.Minute, gate, alloc, wait, onHeld, onOpen); a || w {
+			t.Fatal("gate closed yet an organ ran")
+		}
+	}
+	if allocs != 1 || waits != 2 || helds != 1 || opens != 0 {
+		t.Fatalf("held: allocs=%d waits=%d helds=%d opens=%d", allocs, waits, helds, opens)
+	}
+	// gate reopens: published once, organs resume
+	open = true
+	now = now.Add(5 * time.Minute)
+	if a, w := allocatorBeat(st, now, tick, 5*time.Minute, time.Minute, gate, alloc, wait, onHeld, onOpen); !a || !w || opens != 1 {
+		t.Fatalf("reopen: %v %v opens=%d", a, w, opens)
+	}
+	// slice-2 switch OFF: the wait pass never runs even with the gate open
+	st2 := &beatState{lastRouted: map[int64]time.Time{}}
+	waits = 0
+	if a, w := allocatorBeat(st2, now, 5*time.Minute, 5*time.Minute, 0, gate, alloc, wait, onHeld, onOpen); !a || w || waits != 0 {
+		t.Fatalf("waits switch off: %v %v %d", a, w, waits)
+	}
+	// slice-1 OFF, slice-2 ON: only waits
+	st3 := &beatState{lastRouted: map[int64]time.Time{}}
+	allocs = 0
+	if a, w := allocatorBeat(st3, now, time.Minute, 0, time.Minute, gate, alloc, wait, onHeld, onOpen); a || !w || allocs != 0 {
+		t.Fatalf("alloc switch off: %v %v %d", a, w, allocs)
+	}
+	// default gate is open
+	if ok, _ := beatGate(nil); !ok {
+		t.Fatal("default beatGate must be open")
+	}
+}
