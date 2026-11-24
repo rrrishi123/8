@@ -106,19 +106,24 @@ func writeWork(items []workItem) {
 	if err != nil {
 		return
 	}
+	// #9603 (clean-room from #9613): protect against the #18 data-loss. Never
+	// overwrite a non-empty on-disk ledger that does NOT PARSE (the ~15 readers that
+	// ignore Unmarshal errors see [], and the next add would wipe a torn file); and
+	// never write an empty ledger over a populated one.
+	if cur, rerr := os.ReadFile(workFile()); rerr == nil && len(cur) > 0 {
+		var ex []workItem
+		if json.Unmarshal(cur, &ex) != nil {
+			return // unparseable ledger stays untouched; /health + /work report it corrupt
+		}
+		if len(items) == 0 && len(ex) > 0 {
+			return // refuse to zero a populated ledger
+		}
+	}
 	dir := os.ExpandEnv("$HOME/.8")
 	os.MkdirAll(dir, 0o755)
-	tmp, err := os.CreateTemp(dir, ".work-*.json")
-	if err != nil {
+	if err := durableWrite(dir, workFile(), b); err != nil {
 		return
 	}
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return
-	}
-	tmp.Close()
-	_ = os.Rename(tmp.Name(), workFile())
 }
 
 func firstN(s string, n int) string {
@@ -786,6 +791,13 @@ func advanceUnblocked(items []workItem, now string) []int {
 }
 
 func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
+	if lc, reason := ledgerCorruptState(); lc { // #9603
+		w.Header().Set("X-8-Ledger-Corrupt", reason)
+		if r.Method == http.MethodPost {
+			http.Error(w, "ledger corrupt — writes refused (#9603): "+reason, http.StatusServiceUnavailable)
+			return
+		}
+	}
 	// #931 CONVOY FIX: only WRITES take c.tmu. GET reads are LOCK-FREE —
 	// writeWork is atomic temp+rename (#402), so a reader always sees a
 	// complete ledger. Serializing reads behind the same mutex that summon/
@@ -1244,4 +1256,56 @@ func (c *collector) staleLoop() {
 		}
 		c.tmu.Unlock()
 	}
+}
+
+// --- #9603 durable writes + corrupt-ledger guard (clean-room from #9613) ---
+
+// durableWrite writes b to finalPath atomically AND durably: a temp file in the
+// same dir, fsync the temp, rename over finalPath, then fsync the dir so the
+// rename itself survives a crash. A torn or zero-length ledger can never result.
+func durableWrite(dir, finalPath string, b []byte) error {
+	tmp, err := os.CreateTemp(dir, ".dw-*")
+	if err != nil {
+		return err
+	}
+	tn := tmp.Name()
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		os.Remove(tn)
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tn)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tn)
+		return err
+	}
+	if err := os.Rename(tn, finalPath); err != nil {
+		os.Remove(tn)
+		return err
+	}
+	if d, err := os.Open(dir); err == nil {
+		d.Sync()
+		d.Close()
+	}
+	return nil
+}
+
+// ledgerCorruptState reports corruption from DISK TRUTH, re-read each call (not a
+// sticky in-memory latch): a non-empty work.json that does not parse. It is
+// self-resetting (a repaired file reports clean) and survives a restart (a corrupt
+// file on disk is still reported after the process bounces).
+func ledgerCorruptState() (bool, string) {
+	b, err := os.ReadFile(workFile())
+	if err != nil || len(b) == 0 {
+		return false, ""
+	}
+	var items []workItem
+	if json.Unmarshal(b, &items) != nil {
+		return true, fmt.Sprintf("work.json (%d bytes) does not parse", len(b))
+	}
+	return false, ""
 }

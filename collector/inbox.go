@@ -65,17 +65,7 @@ func saveInbox(key string, offers []offer) {
 	if err != nil {
 		return
 	}
-	tmp, err := os.CreateTemp(inboxDir(), ".inbox-*.json")
-	if err != nil {
-		return
-	}
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return
-	}
-	tmp.Close()
-	_ = os.Rename(tmp.Name(), inboxPath(key))
+	_ = durableWrite(inboxDir(), inboxPath(key), b) // #9603: fsync + dir fsync
 }
 
 // paneUUIDMap — current pane id -> session uuid (one tmux call, one ps scan).
@@ -352,6 +342,12 @@ func (c *collector) handleInbox(w http.ResponseWriter, r *http.Request) {
 		if json.NewDecoder(r.Body).Decode(&p) != nil || (p.Action != "take" && p.Action != "decline" && p.Action != "offer" && p.Action != "say") || (p.ID == 0 && p.Action != "say") {
 			http.Error(w, `{"error":"need action take|decline|offer|say; id required except for say"}`, 400)
 			return
+		}
+		if p.Action == "take" || p.Action == "decline" { // #9603: these flip a work item via writeWork — refuse over a corrupt ledger
+			if lc, reason := ledgerCorruptState(); lc {
+				http.Error(w, "ledger corrupt \u2014 take/decline refused (#9603): "+reason, http.StatusServiceUnavailable)
+				return
+			}
 		}
 		if p.Action == "offer" { // a mind hands an item to another mind's inbox — no playlist, no typing
 			// BUG FIX (T16 / #1242): the recipient is whoever the offerer NAMED — by
