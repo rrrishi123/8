@@ -173,6 +173,18 @@ func pickReroutes(items []workItem, minds []mindView, now time.Time, stale time.
 	return out
 }
 
+// envDuration — a flag default carried by the environment (EIGHT_ALLOCATOR=5m):
+// scripts/watchdog.sh revives the collector with its OWN argv, so only an env
+// value in ~/.8/up.env survives a revive. Unset or unparsable -> fallback.
+func envDuration(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			return d
+		}
+	}
+	return fallback
+}
+
 // allocatorLoop — the continuous organ. period<=0 disables it (-allocator=0).
 func (c *collector) allocatorLoop(period, stale time.Duration) {
 	if period <= 0 {

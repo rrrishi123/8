@@ -84,3 +84,18 @@ func TestPickReroutes(t *testing.T) {
 		t.Errorf("oldest first, one per receiver: %+v", r)
 	}
 }
+
+func TestEnvDuration(t *testing.T) {
+	t.Setenv("EIGHT_ALLOCATOR", "5m")
+	if envDuration("EIGHT_ALLOCATOR", 0) != 5*time.Minute {
+		t.Fatal("env value should win")
+	}
+	t.Setenv("EIGHT_ALLOCATOR", "garbage")
+	if envDuration("EIGHT_ALLOCATOR", 0) != 0 {
+		t.Fatal("unparsable -> fallback")
+	}
+	t.Setenv("EIGHT_ALLOCATOR", "")
+	if envDuration("EIGHT_ALLOCATOR", 7*time.Second) != 7*time.Second {
+		t.Fatal("unset -> fallback")
+	}
+}
