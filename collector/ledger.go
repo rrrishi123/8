@@ -89,6 +89,32 @@ type ack struct {
 	TS      string `json:"ts"`
 }
 
+// ackKey — a STABLE identity for consensus dedupe (%8 #9713). Minds sign
+// inconsistently ('sibling-1' vs 'sibling-1 (818c3f5e)', bare '%12' vs 'philo'),
+// so keying on the raw string lets one mind agree twice under two spellings and
+// self-close a Need=N item on ONE voter — the exact failure this organ replaces.
+// Canonical key = first 8 hex of the mind's uuid: a uuid/hex run in the string
+// wins; else a declared/role name is resolved to its uuid; else the bare '%N';
+// else the lowercased string. Display `By` stays as typed.
+var ackHexRe = regexp.MustCompile(`[0-9a-f]{8,}`)
+var ackPaneRe = regexp.MustCompile(`%[0-9]+`)
+
+func ackKey(by string) string {
+	s := strings.ToLower(strings.TrimSpace(by))
+	if m := ackHexRe.FindString(s); m != "" {
+		return m[:8]
+	}
+	for _, u := range []string{declaredUUID(by), roleUUID(by)} {
+		if m := ackHexRe.FindString(strings.ToLower(u)); m != "" {
+			return m[:8]
+		}
+	}
+	if m := ackPaneRe.FindString(s); m != "" {
+		return m
+	}
+	return s
+}
+
 // flipActor resolves who is flipping a status: declared body `by` wins, the
 // X-8-Actor header (#314: the WHO rides the frame) is the fallback, blank is blank.
 func flipActor(by string, r *http.Request) string {
@@ -909,9 +935,10 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 				if items[i].ID != p.ID {
 					continue
 				}
-				replaced := false // one mind, one vote — latest verdict wins
+				replaced := false // one mind, one vote — latest verdict wins, keyed on STABLE identity (%8 #9713) not the raw signature
+				k := ackKey(who)
 				for j := range items[i].Acks {
-					if items[i].Acks[j].By == who {
+					if ackKey(items[i].Acks[j].By) == k {
 						items[i].Acks[j].Verdict, items[i].Acks[j].TS = verdict, now
 						replaced = true
 						break
