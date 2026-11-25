@@ -19,7 +19,7 @@ echo "== four-system smoke @ next =="
 # --- per-arm build + test (the arm's own CI, run together) ---
 arm() { # repo  test-dir
   local r="$1" td="$2" d="$ROOT/$1"
-  [ -d "$d/.git" ] || { red "$r: missing"; return; }
+  [ -e "$d/.git" ] || { red "$r: missing"; return; }   # -e not -d: a worktree's .git is a file, and a composed set of worktrees is how a lockstep is smoked before it merges
   local sha; sha=$(git -C "$d" rev-parse --short HEAD)
   ( cd "$d/$td" && go build ./... >/dev/null 2>&1 ) || { red "$r@$sha: build FAIL"; return; }
   local out; out=$( cd "$d/$td" && go test ./... 2>&1 )
@@ -39,12 +39,16 @@ else red "8/web: tsc FAIL"; fi
 # --- version-literal lockstep (the drift guard, as a gate) ---
 echo "-- version lockstep --"
 lit() { grep -cE "$3" "$ROOT/$1/$2" 2>/dev/null; }   # read the CHECKED-OUT file (HEAD) — works on next or a private overlay branch that merged it
-c=$(lit http-mcp contract/contract.go 'Version = "v0.0.4"')
-a=$(lit adapters trace/trace.go 'Version = "v0.0.4"')
-p=$(lit pilot main.go 'fallbackVersion = "v0.0.4"')
-s=$(lit 8 collector/main.go 'seriesContractVersion = "v0.0.4"')
-v=$(lit 8 install.sh 'VER="v0.0.4"')
-if [ "$c$a$p$s$v" = "11111" ]; then grn "lockstep ok (4x v0.0.4 + install.sh v0.0.4)"; else red "lockstep DRIFT: contract=$c adapters=$a pilot=$p series=$s install=$v"; fi
+c=$(lit http-mcp contract/contract.go 'Version = "v0.0.5"')
+a=$(lit adapters trace/trace.go 'Version = "v0.0.5"')
+p=$(lit pilot main.go 'fallbackVersion = "v0.0.5"')
+s=$(lit 8 collector/main.go 'seriesContractVersion = "v0.0.5"')
+v=$(lit 8 install.sh 'VER="v0.0.5"')
+# the 6th lockstep site: every arm's README shared block names the contract baseline.
+# It read v0.0.2 (8) / v0.0.1 (arms) while the contract was v0.0.4, because no
+# assertion ever looked at it. Now one does, on all four.
+b=0; for r in 8 http-mcp pilot adapters; do n=$(lit "$r" README.md 'Baseline: \*\*`v0.0.5`\*\* across all four arms'); b=$((b + ${n:-0})); done
+if [ "$c$a$p$s$v" = "11111" ] && [ "$b" = 4 ]; then grn "lockstep ok (4x v0.0.5 + install.sh v0.0.5 + 4x README baseline v0.0.5)"; else red "lockstep DRIFT: contract=$c adapters=$a pilot=$p series=$s install=$v readme_baseline=$b/4"; fi
 
 # --- composed tips (the release object) ---
 echo "-- composed release --"
