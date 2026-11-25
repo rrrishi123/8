@@ -39,12 +39,15 @@ else red "8/web: tsc FAIL"; fi
 # --- version-literal lockstep (the drift guard, as a gate) ---
 echo "-- version lockstep --"
 lit() { grep -cE "$3" "$ROOT/$1/$2" 2>/dev/null; }   # read the CHECKED-OUT file (HEAD) — works on next or a private overlay branch that merged it
-c=$(lit http-mcp contract/contract.go 'Version = "v0.0.4"')
-a=$(lit adapters trace/trace.go 'Version = "v0.0.4"')
-p=$(lit pilot main.go 'fallbackVersion = "v0.0.4"')
-s=$(lit 8 collector/main.go 'seriesContractVersion = "v0.0.4"')
-v=$(lit 8 install.sh 'VER="v0.0.4"')
-if [ "$c$a$p$s$v" = "11111" ]; then grn "lockstep ok (4x v0.0.4 + install.sh v0.0.4)"; else red "lockstep DRIFT: contract=$c adapters=$a pilot=$p series=$s install=$v"; fi
+c=$(lit http-mcp contract/contract.go 'Version = "v0.0.5"')
+a=$(lit adapters trace/trace.go 'Version = "v0.0.5"')
+p=$(lit pilot main.go 'fallbackVersion = "v0.0.5"')
+s=$(lit 8 collector/main.go 'seriesContractVersion = "v0.0.5"')
+v=$(lit 8 install.sh 'VER="v0.0.5"')
+if [ "$c$a$p$s$v" = "11111" ]; then grn "lockstep ok (4x v0.0.5 + install.sh v0.0.5)"; else red "lockstep DRIFT: contract=$c adapters=$a pilot=$p series=$s install=$v"; fi
+# README shared-block baseline (#9621): never bumped at any cut before v0.0.5 — now a gated literal like the five above
+b=0; for arm in 8 http-mcp pilot adapters; do n=$(lit "$arm" README.md 'Baseline: \*\*`v0.0.5`\*\* across all four arms'); b=$((b + ${n:-0})); done
+if [ "$b" = "4" ]; then grn "README baseline ok (4x v0.0.5)"; else red "README baseline DRIFT (#9621): $b/4 READMEs carry v0.0.5"; fi
 
 # --- composed tips (the release object) ---
 echo "-- composed release --"
