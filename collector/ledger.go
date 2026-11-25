@@ -67,6 +67,26 @@ type workItem struct {
 	// completion notice to that pane on done (sendToPane is idle-guarded — a busy
 	// dispatcher is never interrupted). Blank = current behavior (no poke).
 	Notify string `json:"notify,omitempty"`
+	// CONSENSUS-ACK (#53 social-net receipt layer): closure is a relation, not a
+	// hand-flip. Need is the count of distinct AGREE acks required to close this
+	// item on its own (0 = a normal task, no ack-gate). Acks is the append-only
+	// receipt set — WHO agreed/disagreed, when. When distinct agrees >= Need and
+	// no standing disagree, the collector flips Status=done itself (FlippedBy
+	// "consensus:N-ack") — "does everyone agree" made mechanical, so completed
+	// work stops piling as todo while the pack moves on (the gap that left the
+	// deploy pre-conds open until hand-reconciled). A disagree holds it until
+	// withdrawn. Signal-reversed: offer=sent, read=delivered, ack=read+done.
+	Need int   `json:"need,omitempty"`
+	Acks []ack `json:"acks,omitempty"`
+}
+
+// ack — one receipt against a work item (#53). By is the acking mind (name/role/
+// uuid, de-duped so one mind counts once, latest verdict wins). Verdict is
+// "agree" | "disagree". The set is the visible answer to "does everyone agree".
+type ack struct {
+	By      string `json:"by"`
+	Verdict string `json:"verdict"`
+	TS      string `json:"ts"`
 }
 
 // flipActor resolves who is flipping a status: declared body `by` wins, the
@@ -824,6 +844,8 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			Sweep    bool    `json:"sweep"`    // #736: bookkeeping close — the CLOSER declares this flip is hygiene, not a claim: no [verify] spawns, flipped_by carries the intent
 			Kind     string  `json:"kind"`     // #1088: task|record — explicit on create; {id,kind} reclassifies
 			Notify   string  `json:"notify"`   // #4441: uuid/role/%N to poke when this task flips done
+			Need     *int    `json:"need"`     // #53: distinct AGREE acks required to self-close (present-but-0 clears the gate)
+			Ack      string  `json:"ack"`      // #53: "agree"|"disagree" — record this caller's receipt against {id}
 		}
 		json.NewDecoder(r.Body).Decode(&p)
 		now := time.Now().UTC().Format(time.RFC3339)
@@ -855,6 +877,9 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 				p.By = "operator"
 			}
 			ni := workItem{ID: max + 1, Text: p.Text, Status: "todo", By: p.By, TS: now, Deps: p.Deps, Assignee: p.Assignee, Kind: p.Kind, Notify: p.Notify, Epoch: currentEpoch()}
+			if p.Need != nil && *p.Need > 0 { // #53: born as a consensus item — closes itself on N agrees
+				ni.Need = *p.Need
+			}
 			if ni.Assignee == "" && roleUUID(p.By) != "" { // a role's own filed task routes back to it — no orphan todos
 				ni.Assignee = p.By
 			}
@@ -874,7 +899,50 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			items = append(items, ni)
 			ackID = ni.ID
 			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.add","params":{"id":%d,"text":%q,"by":%q,"deps":%v}}}`, ni.ID, p.Text, p.By, p.Deps))
-		} else if p.ID > 0 && (p.Prio != nil || p.Assignee != "" || p.Kind != "" || p.Notify != "") && p.Status == "" { // ADJUST THE QUEUE (reorder / reassign / attach notify) — operator or agent
+		} else if p.ID > 0 && p.Ack != "" { // #53 CONSENSUS-ACK: record a receipt; self-close on agreement, hold on disagree
+			verdict := "agree"
+			if strings.HasPrefix(strings.ToLower(p.Ack), "dis") {
+				verdict = "disagree"
+			}
+			who := flipActor(p.By, r)
+			for i := range items {
+				if items[i].ID != p.ID {
+					continue
+				}
+				replaced := false // one mind, one vote — latest verdict wins
+				for j := range items[i].Acks {
+					if items[i].Acks[j].By == who {
+						items[i].Acks[j].Verdict, items[i].Acks[j].TS = verdict, now
+						replaced = true
+						break
+					}
+				}
+				if !replaced {
+					items[i].Acks = append(items[i].Acks, ack{By: who, Verdict: verdict, TS: now})
+				}
+				agrees, disagrees := 0, 0
+				for _, a := range items[i].Acks {
+					if a.Verdict == "disagree" {
+						disagrees++
+					} else {
+						agrees++
+					}
+				}
+				ackID = items[i].ID
+				c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.ack","params":{"id":%d,"by":%q,"verdict":%q,"agrees":%d,"disagrees":%d,"need":%d}}}`, p.ID, who, verdict, agrees, disagrees, items[i].Need))
+				switch {
+				case disagrees > 0 && items[i].Status != "done": // a standing disagree HOLDS the item
+					items[i].Status, items[i].FlippedBy, items[i].TS = "blocked", "consensus:disagree", now
+				case items[i].Need > 0 && agrees >= items[i].Need && items[i].Status != "done": // CONSENSUS REACHED — self-close
+					items[i].Status, items[i].FlippedBy, items[i].TS = "done", fmt.Sprintf("consensus:%d-ack", agrees), now
+					dropOfferEverywhere(items[i].ID)
+					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.consensus_closed","params":{"id":%d,"agrees":%d,"need":%d}}}`, p.ID, agrees, items[i].Need))
+				case items[i].Status == "blocked" && disagrees == 0: // last disagree withdrawn — back to the pool
+					items[i].Status, items[i].FlippedBy, items[i].TS = "todo", "consensus:disagree-cleared", now
+				}
+				break
+			}
+		} else if p.ID > 0 && (p.Prio != nil || p.Assignee != "" || p.Kind != "" || p.Notify != "" || p.Need != nil) && p.Status == "" && p.Ack == "" { // ADJUST THE QUEUE (reorder / reassign / attach notify / re-set the agree-bar) — no rule is frozen, the bar itself is consensus
 			for i := range items {
 				if items[i].ID == p.ID {
 					if p.Prio != nil {
@@ -889,8 +957,11 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 					if p.Notify != "" { // #4441: attach wake-on-completion to an already-filed task
 						items[i].Notify = p.Notify
 					}
+					if p.Need != nil { // #53: the agree-bar itself is consensus, not a frozen rule — re-settable (0 clears the gate)
+						items[i].Need = *p.Need
+					}
 					ackID = items[i].ID
-					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.reorder","params":{"id":%d,"prio":%d,"assignee":%q}}}`, items[i].ID, items[i].Prio, items[i].Assignee))
+					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.reorder","params":{"id":%d,"prio":%d,"assignee":%q,"need":%d}}}`, items[i].ID, items[i].Prio, items[i].Assignee, items[i].Need))
 				}
 			}
 		} else if p.ID > 0 && p.Status != "" { // status change
