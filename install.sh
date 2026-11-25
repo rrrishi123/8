@@ -6,7 +6,7 @@
 # darwin-arm64/linux-amd64 binaries land on the GitHub releases when minted.
 set -eu
 
-VER="v0.0.4"
+VER="v0.0.5"
 BIN="${EIGHT_BIN:-$HOME/.8/bin}"
 
 command -v go >/dev/null 2>&1 || {
