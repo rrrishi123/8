@@ -119,8 +119,14 @@ type workItem struct {
 	// mind (sameMind-folded — the %8 #9854 double-count class; first read kept,
 	// re-reading is not news). A read NEVER mutates Status/Acks/Need/TS: reading
 	// is not agreeing, and it must not reset the idle clock /watchers derives
-	// from TS. Identity inherits ackKey/sameMind and with it the #9753/#9794
-	// keystone, declared like every organ here.
+	// from TS. HONEST LIMIT (off-host review of #39): the reader comes from
+	// flipActor — body `by` / X-8-Actor, both SELF-DECLARED — so a stamp attests
+	// a CLAIM of reading, not a proven read; any caller could stamp another
+	// mind's name. Same forgeable-identity class as #9753/#9794, and it cannot
+	// be closed here: when that keystone lands, read_by inherits it like every
+	// organ. Until then, readers of read_by must weigh it as self-declared.
+	// (Text is immutable after creation — no mutation path in handleWork — so
+	// a stamp's id does bind to the words the reader saw.)
 	ReadBy []readStamp `json:"read_by,omitempty"`
 }
 
