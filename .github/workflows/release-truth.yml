@@ -1,0 +1,93 @@
+name: release truth
+
+# The cut verifies itself. The moment a vX tag lands on 8 this runs
+# scripts/release-gate.sh against it with all four arms present: tag on every
+# arm, tag == main, collector/vX beside vX, cold go-module resolution from an
+# empty cache, version literals read AT the tag. Also on demand (any tag) and
+# nightly against the latest tag, so a drift like 8/main moving past its tag
+# (#9559) is red the next morning, not at the next cut. Read-only: no pushes,
+# no releases, no tokens beyond the default read scope.
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "tag to gate (blank = latest vX.Y.Z on 8); add --pre to assert it does NOT exist yet"
+        required: false
+        default: ""
+      pre:
+        description: "pre-cut mode (tag must not exist; literals read from origin/next)"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "23 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-truth-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # fetch-depth 0: the gate reads literals with `git show vX:path` and lists tags.
+      - uses: actions/checkout@v4
+        with:
+          repository: rrrishi123/8
+          ref: ${{ github.ref_type == 'tag' && github.sha || 'main' }}
+          path: repos/8
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: rrrishi123/http-mcp
+          ref: main
+          path: repos/http-mcp
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: rrrishi123/pilot
+          ref: main
+          path: repos/pilot
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: rrrishi123/adapters
+          ref: main
+          path: repos/adapters
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: false
+      - name: Pick the tag
+        id: pick
+        shell: bash
+        run: |
+          tag="${{ inputs.tag }}"
+          if [ "${{ github.ref_type }}" = tag ]; then tag="${{ github.ref_name }}"; fi
+          if [ -z "$tag" ]; then
+            tag=$(git -C repos/8 ls-remote --tags origin 'v*' | sed 's#.*refs/tags/##; s#\^{}$##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          fi
+          [ -n "$tag" ] || { echo "no vX.Y.Z tag found on 8"; exit 1; }
+          mode=""; [ "${{ inputs.pre }}" = "true" ] && mode="--pre"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"; echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "gating $tag $mode"
+      - name: Release gate
+        shell: bash
+        run: |
+          set -o pipefail
+          ROOT="$PWD/repos" sh repos/8/scripts/release-gate.sh "${{ steps.pick.outputs.tag }}" ${{ steps.pick.outputs.mode }} 2>&1 | tee gate.txt
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          { echo '## release gate ${{ steps.pick.outputs.tag }} ${{ steps.pick.outputs.mode }}'; echo; echo '```'; sed 's/\x1b\[[0-9;]*m//g' gate.txt 2>/dev/null || echo '(gate did not run)'; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
