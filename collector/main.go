@@ -4815,15 +4815,21 @@ func main() {
 		time.Sleep(200 * time.Millisecond)
 		go c.activateCockpit() // every (re)start returns Firefox to 8's tab
 		time.Sleep(200 * time.Millisecond)
-		go c.memoryAperture(*apertureMB)                          // self-regulate parent memory (heap-minimize at the soft threshold)
-		go c.reconcileLoop()                                      // keep the tab manifest true even when no cockpit is watching
-		go c.seatWatchLoop()                                      // #11: PUSH change events for every seat (the CHANNEL atom, realized)
-		go c.paneWitnessLoop()                                    // #277: witness pane appearance (first_seen + pane.appeared/vanished)
-		go c.staleLoop()                                          // #472b: revert 6h-silent doing items — the WIP lane self-heals
-		go c.epochLoop()                                          // #645: the operator-epoch clock — ledger locked to operator-time
-		go c.innerHostLoop()                                      // #850: poll docker stats + colima list off the request path
-		go c.brokerHealLoop()                                     // #3863: the witness heals its own CHANNEL arm — re-wire a broken-pipe chrome broker
-		go c.allocatorLoop(*allocEvery, *allocStale, *waitsEvery) // #9580/#9574: ALLOCATOR — slice-1 re-routes + slice-2 waits, each behind its own switch, one beat gate above both
+		go c.memoryAperture(*apertureMB) // self-regulate parent memory (heap-minimize at the soft threshold)
+		go c.reconcileLoop()             // keep the tab manifest true even when no cockpit is watching
+		go c.seatWatchLoop()             // #11: PUSH change events for every seat (the CHANNEL atom, realized)
+		go c.paneWitnessLoop()           // #277: witness pane appearance (first_seen + pane.appeared/vanished)
+		go c.staleLoop()                 // #472b: revert 6h-silent doing items — the WIP lane self-heals
+		go c.epochLoop()                 // #645: the operator-epoch clock — ledger locked to operator-time
+		go c.innerHostLoop()             // #850: poll docker stats + colima list off the request path
+		go c.brokerHealLoop()            // #3863: the witness heals its own CHANNEL arm — re-wire a broken-pipe chrome broker
+		// #9601 (#9592 pre-cond): ARM the beat gate with the budget verdict, so BOTH
+		// allocator organs hold during a gated/conserve/stale window — discretionary
+		// waking must never spend a gated budget (d09b6b87 review; the mac 5h window hit
+		// 98% gated during the deploy consensus). Fails closed on nil/stale. The seam
+		// (#11/#9626) defaults open for tests; this is the production wiring.
+		beatGate = func(c *collector) (bool, string) { return budgetAllowsAllocator(c.budgetNow(), time.Now()) }
+		go c.allocatorLoop(*allocEvery, *allocStale, *waitsEvery) // #9580/#9574: ALLOCATOR — slice-1 re-routes + slice-2 waits, each behind its own switch, one beat gate above both (budget-armed)
 		go c.watchHumanForeground()                               // "you are here": track the human's foreground tab (cache-first, lean)
 		go func() {                                               // project eight.db every 30s so DBeaver always sees fresh data
 			if _, err := exec.LookPath("sqlite3"); err != nil {
