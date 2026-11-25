@@ -6,6 +6,13 @@
 set -uo pipefail
 
 DENY='omarchy|/Users/[a-z]|/home/[a-z]|(^|[^0-9])10\.(104|255|83)\.|(^|[^0-9])100\.(8[0-9]|9[0-9])\.|rishirajs|design-reference/_ds|(^|/)kosaten/'
+# Session uuids (8-4-4-4-12 hex) are identity, not secrets, but a real mind's uuid in the
+# public tree lets anyone correlate a session across the ledger (omarchy-main, 2026-11-25:
+# five test files carried them; the guard had no rule). Test fixtures use the fake shape
+# xxxxxxxx-0000-4000-8000-xxxxxxxxxxxx; the nil uuid and BiDi context ids in replay
+# fixtures are structural. ALLOW names those; everything else 8-4-4-4-12 is refused.
+DENY="${DENY}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+ALLOW='0000-4000-8000-|00000000-0000-0000-0000-000000000000|11111111-2222-3333-4444|\"(context|target_context|sessionId)\" *:'
 # Supplement the denylist from a PRIVATE local file kept OUTSIDE any repo (same pattern
 # as ~/.8/watch.d / codex-budget.sh): office/org identifiers (private GitHub org, org ids,
 # Slack tokens) that must never enter these PUBLIC repos — without naming them in the tree.
@@ -24,7 +31,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   else
     range="$remote_sha..$local_sha"                # only the commits being pushed
   fi
-  hits=$(git diff "$range" -- . ':(exclude).githooks/*' ':(exclude).github/workflows/leakguard.yml' 2>/dev/null | grep -E '^\+' | grep -inE "$DENY" | head -25 || true)
+  hits=$(git diff "$range" -- . ':(exclude).githooks/*' ':(exclude).github/workflows/leakguard.yml' 2>/dev/null | grep -E '^\+' | grep -inE "$DENY" | grep -vE "$ALLOW" | head -25 || true)
   if [ -n "$hits" ]; then
     echo "" >&2
     echo "  ✖ pre-push blocked ($local_ref): private material in the pushed diff —" >&2
