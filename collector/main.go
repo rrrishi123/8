@@ -4953,6 +4953,7 @@ func main() {
 	mux.HandleFunc("/mind", c.handleMind)
 	mux.HandleFunc("/social", c.handleSocial)                  // #9563: the social timeline, read-only, derived from the ledger
 	mux.HandleFunc("/social/profile", c.handleSocialProfile)   // #9563: what one mind did and with whom
+	mux.HandleFunc("/watchers", c.handleWatchers)              // #9554/#53: PRESENCE view — who is doing/blocked/waiting + idle-since, read-only over the ledger
 	mux.HandleFunc("/wait", c.handleWait)                      // #9574 slice-2: declared waits — GET the feed of what minds wait for; POST declares
 	mux.HandleFunc("/allocator/allow", c.handleAllocatorAllow) // #9602: opt-in, fail-closed receiver registry — a mind registers ITSELF
 	mux.HandleFunc("/compose", c.handleCompose)
