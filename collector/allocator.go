@@ -196,6 +196,34 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 // organs inherit it. Returns (open, reason-if-held).
 var beatGate = func(c *collector) (bool, string) { return true, "" }
 
+// allocatorBudgetStale — a budget verdict older than this is treated as absent
+// (fail-closed). ~2*POKE_MIN_S + a margin; the Nov-21 lesson A1 was a 79h-stale GO.
+const allocatorBudgetStale = 660 * time.Second
+
+// budgetAllowsAllocator — PURE, FAIL-CLOSED: may the allocator self-fire now?
+// The allocator wakes minds on its own, which is discretionary work, so it runs
+// ONLY in the research phase, un-gated, on a fresh verdict — the same shape the
+// playlist's budget gate uses. A nil, gated, conserve-phase, or stale verdict
+// holds. Returns (ok, reason-when-held). main() points beatGate at this so BOTH
+// organs inherit the hold (#9601, #9592 pre-cond; the fc1f019 version gated only
+// allocatorPass — the same waitPass gap 49fe2c0b/#9626 closed for the beat).
+func budgetAllowsAllocator(b *budget, now time.Time) (bool, string) {
+	if b == nil {
+		return false, "no budget verdict (fail-closed)"
+	}
+	if b.Gated {
+		return false, b.Reason
+	}
+	if b.Phase != "research" {
+		return false, fmt.Sprintf("phase %q (conserve holds discretionary waking)", b.Phase)
+	}
+	t, err := time.Parse(time.RFC3339, b.ObservedAt)
+	if err != nil || now.Sub(t) > allocatorBudgetStale {
+		return false, fmt.Sprintf("budget verdict stale/unparseable (observed %q)", b.ObservedAt)
+	}
+	return true, ""
+}
+
 // beatState — what a loop remembers between beats.
 type beatState struct {
 	lastRouted          map[int64]time.Time // verify id -> last re-route (slice-1 suppression)

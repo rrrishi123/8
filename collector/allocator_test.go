@@ -160,3 +160,27 @@ func TestAllocatorBeatGate(t *testing.T) {
 		t.Fatal("default beatGate must be open")
 	}
 }
+
+// #9601: the pure budget verdict the beat gate is armed with. nil/gated/conserve/
+// stale all HOLD (fail-closed); only a fresh, un-gated, research verdict goes.
+func TestBudgetAllowsAllocator(t *testing.T) {
+	now := time.Now()
+	fresh := now.Add(-30 * time.Second).Format(time.RFC3339)
+	stale := now.Add(-20 * time.Minute).Format(time.RFC3339)
+	cases := []struct {
+		name string
+		b    *budget
+		want bool
+	}{
+		{"nil fail-closed", nil, false},
+		{"gated", &budget{Gated: true, Phase: "research", ObservedAt: fresh}, false},
+		{"conserve phase", &budget{Phase: "conserve", ObservedAt: fresh}, false},
+		{"stale verdict", &budget{Phase: "research", ObservedAt: stale}, false},
+		{"research fresh ungated", &budget{Phase: "research", ObservedAt: fresh}, true},
+	}
+	for _, c := range cases {
+		if ok, _ := budgetAllowsAllocator(c.b, now); ok != c.want {
+			t.Errorf("%s: got %v want %v", c.name, ok, c.want)
+		}
+	}
+}
