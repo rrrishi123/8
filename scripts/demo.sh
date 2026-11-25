@@ -31,7 +31,23 @@ if lsof -ti ":$PORT" >/dev/null 2>&1; then say "port $PORT busy — set PORT= to
 ( cd "$COL" && go build -o collector . ) || { say "collector build FAILED"; exit 1; }
 ev "built the collector from source"
 TMP=$(mktemp -d); mkdir -p "$TMP/.8"
-cleanup(){ [ -n "${cpid:-}" ] && kill "$cpid" 2>/dev/null; rm -rf "$TMP"; }
+# cleanup — graceful then forceful, and reap before releasing $TMP. A bare
+# `kill` is SIGTERM-only: if the collector (or a child it spawned) outlives the
+# signal it keeps $PORT, and the NEXT run trips the "port busy" guard at step 0.
+# So: TERM the collector and its children, wait ~2s, escalate to KILL, then reap.
+cleanup(){
+  if [ -n "${cpid:-}" ]; then
+    pkill -TERM -P "$cpid" 2>/dev/null   # any children first
+    kill  -TERM "$cpid"    2>/dev/null
+    for _ in $(seq 1 20); do kill -0 "$cpid" 2>/dev/null || break; sleep 0.1; done
+    if kill -0 "$cpid" 2>/dev/null; then
+      pkill -KILL -P "$cpid" 2>/dev/null
+      kill  -KILL "$cpid"    2>/dev/null
+    fi
+    wait "$cpid" 2>/dev/null                # reap so the OS releases the socket
+  fi
+  rm -rf "$TMP"
+}
 trap cleanup EXIT
 ( cd "$COL" && env -u TMUX HOME="$TMP" ./collector -listen ":$PORT" >"$TMP/col.log" 2>&1 & echo $! >"$TMP/pid" )
 cpid=$(cat "$TMP/pid")
