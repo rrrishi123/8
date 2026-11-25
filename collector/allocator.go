@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -174,6 +175,73 @@ func pickReroutes(items []workItem, minds []mindView, now time.Time, stale time.
 	return out
 }
 
+// outwardVerbRe — the FLOOR under the todo-router (#9728; pmf #9726 + higgs #9723).
+// Even a positively-opted-in item is NEVER routed if its text implies an outward-
+// immutable or sensitive action: the authorization line (outward = Rishi's explicit
+// word) must be UNREACHABLE through an allocator, and the leak path (cherry-pick/
+// port, private sources, secrets) must never be typed into a pane by a machine.
+var outwardVerbRe = regexp.MustCompile(`(?i)cherry[- ]?pick|\bport\b|\btag\b|push .*\bmain\b|\bto main\b|\bcut\b|\brelease\b|\bpublish\b|create[- ]?repo|homebrew|\bsecret\b|\btoken\b|\bleak\b|\bslack\b|\bdm\b|kosaten|thesis|owner-gated|\bprivate\b`)
+
+// claimableRoutable — PURE, FAIL-CLOSED: may the todo-router offer this item at
+// all? Requires POSITIVE author opt-in (Claimable), a real unassigned todo, not a
+// verify (that is slice-1), and NOT matching the outward/sensitive floor. Absence
+// of a claimable marker means NO, always — the ledger is a speech-act surface, so
+// nothing is inferred from the absence of an assignee (#9728, the v1 #9721 defect).
+func claimableRoutable(it workItem) bool {
+	return it.Status == "todo" && it.Claimable && !isVerify(it) &&
+		strings.TrimSpace(it.Assignee) == "" && !outwardVerbRe.MatchString(it.Text)
+}
+
+// pickClaimable — PURE, modeled on pickReroutes: which opted-in todos go to which
+// idle mind. Candidates oldest-first; receiver live/NAMED/idle, not the author, not
+// the mind that already declined it (decline-receipt, %8 #9725), no pending offer,
+// one item per receiver per pass; an item already offered (lastRouted set) is not
+// re-offered until it resolves — no 5-minute re-ping of the same idle mind.
+func pickClaimable(items []workItem, minds []mindView, now time.Time, lastRouted map[int64]time.Time, pending func(pane string) int) []reroute {
+	type cand struct {
+		idx int
+		age time.Duration
+	}
+	var cands []cand
+	for i, it := range items {
+		if !claimableRoutable(it) {
+			continue
+		}
+		since, err := time.Parse(time.RFC3339, it.TS)
+		if err != nil {
+			continue
+		}
+		if lr, ok := lastRouted[it.ID]; ok && lr.After(since) {
+			continue // already offered since it was filed — wait for take/decline, don't re-ping
+		}
+		cands = append(cands, cand{i, now.Sub(since)})
+	}
+	if len(cands) == 0 {
+		return nil
+	}
+	sort.Slice(cands, func(a, b int) bool { return cands[a].age > cands[b].age })
+	used := map[string]bool{}
+	var out []reroute
+	for _, cd := range cands {
+		it := items[cd.idx]
+		for _, m := range minds {
+			if m.Name == "" || m.Pane == "" || m.State != "idle" || used[m.Pane] {
+				continue
+			}
+			if labelMatches(it.By, m) || labelMatches(it.Assignee, m) || labelMatches(it.DeclinedBy, m) {
+				continue
+			}
+			if pending != nil && pending(m.Pane) > 0 {
+				continue
+			}
+			used[m.Pane] = true
+			out = append(out, reroute{Idx: cd.idx, From: "pool", To: m.Pane, Age: cd.age})
+			break
+		}
+	}
+	return out
+}
+
 // envDuration — a flag default carried by the environment (EIGHT_ALLOCATOR=5m):
 // scripts/watchdog.sh revives the collector with its OWN argv, so only an env
 // value in ~/.8/up.env survives a revive. Unset or unparsable -> fallback.
@@ -226,9 +294,10 @@ func budgetAllowsAllocator(b *budget, now time.Time) (bool, string) {
 
 // beatState — what a loop remembers between beats.
 type beatState struct {
-	lastRouted          map[int64]time.Time // verify id -> last re-route (slice-1 suppression)
+	lastRouted          map[int64]time.Time // verify id -> last re-route (slice-1 suppression); also claimable-item suppression (slice-3)
 	lastAlloc, lastWait time.Time
-	held                bool // gate was closed on the previous beat (publish on transition only)
+	lastRoute           time.Time // slice-3 (#9728): last todo-router pass
+	held                bool      // gate was closed on the previous beat (publish on transition only)
 }
 
 // allocatorBeat — PURE orchestration of one beat, so the gate/switch logic is
@@ -271,19 +340,26 @@ func allocatorBeat(st *beatState, now time.Time, tick, allocEvery, waitsEvery ti
 // slice-2 (declared waits) every waitsEvery. Separate switches so slice-1 can
 // run alone on the first bounce and slice-2 flips on later without a code
 // change (49fe2c0b #9626, %6 #9631: one change per bounce).
-func (c *collector) allocatorLoop(allocEvery, stale, waitsEvery time.Duration) {
-	if allocEvery <= 0 && waitsEvery <= 0 {
+func (c *collector) allocatorLoop(allocEvery, stale, waitsEvery, routeEvery time.Duration) {
+	if allocEvery <= 0 && waitsEvery <= 0 && routeEvery <= 0 {
 		return
 	}
 	tick := allocEvery
-	if tick <= 0 || (waitsEvery > 0 && waitsEvery < tick) {
-		tick = waitsEvery
+	for _, e := range []time.Duration{waitsEvery, routeEvery} { // tick = finest enabled period
+		if e > 0 && (tick <= 0 || e < tick) {
+			tick = e
+		}
 	}
 	st := &beatState{lastRouted: map[int64]time.Time{}}
 	t := time.NewTicker(tick)
 	defer t.Stop()
+	due := func(last time.Time, every time.Duration) bool {
+		return every > 0 && (last.IsZero() || time.Since(last) >= every-tick/2)
+	}
 	for range t.C {
-		allocatorBeat(st, time.Now(), tick, allocEvery, waitsEvery,
+		now := time.Now()
+		gateOpen, _ := beatGate(c) // slice-3 rides the SAME budget gate as the beat organs
+		allocatorBeat(st, now, tick, allocEvery, waitsEvery,
 			func() (bool, string) { return beatGate(c) },
 			func() { c.allocatorPass(stale, st.lastRouted) },
 			func() { c.waitPass() },
@@ -295,6 +371,13 @@ func (c *collector) allocatorLoop(allocEvery, stale, waitsEvery time.Duration) {
 				log.Printf("allocator: gate open again")
 				c.publish(`{"session":"work","origin":"COLLECTOR","frame":{"method":"allocator.open","params":{}}}`)
 			})
+		// slice-3 (#9728): the todo-router — author-opted-in, outward-floored,
+		// its own switch + period, HELD whenever the budget gate is closed (so it
+		// inherits the same discipline as slice-1/2 without touching allocatorBeat).
+		if gateOpen && due(st.lastRoute, routeEvery) {
+			st.lastRoute = now
+			c.routePass(st.lastRouted)
+		}
 	}
 }
 
@@ -343,6 +426,57 @@ func (c *collector) allocatorPass(stale time.Duration, last map[int64]time.Time)
 	for i, it := range offers {
 		ok := c.offer(it, fmt.Sprintf("allocator: verify #%d untaken by %s for %s — yours if you take it", it.ID, moves[i].From, moves[i].Age.Round(time.Minute)))
 		c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.reroute","params":{"id":%d,"from":%q,"to":%q,"delivered":%v}}}`, it.ID, moves[i].From, moves[i].To, ok))
+	}
+	return len(moves)
+}
+
+// routePass — slice-3 (#9728, the pack-reworked widening). OFFERS author-opted-in,
+// outward-safe todos to idle opted-in minds — one per mind per pass, via the inbox
+// (never typed), same allowlist + budget gate as the other organs. It does NOT
+// reassign the item: it stays todo+claimable until a mind TAKES the offer, so a
+// decline leaves it routable to someone else (minus the decliner). The item-side
+// consent (claimable) + the outward floor are in pickClaimable; this just delivers.
+func (c *collector) routePass(last map[int64]time.Time) int {
+	minds := filterAllowed(c.resolveMinds(false), loadAllowlist())
+	p2u := paneUUIDMap()
+	pending := func(pane string) int { return inboxPendingForPane(pane, p2u) }
+	now := time.Now()
+
+	c.tmu.Lock()
+	var items []workItem
+	b, err := os.ReadFile(workFile())
+	if err != nil || json.Unmarshal(b, &items) != nil {
+		c.tmu.Unlock()
+		return 0
+	}
+	moves := pickClaimable(items, minds, now, last, pending)
+	if len(moves) == 0 {
+		c.tmu.Unlock()
+		return 0
+	}
+	var max int64
+	for _, it := range items {
+		if it.ID > max {
+			max = it.ID
+		}
+	}
+	ts := now.UTC().Format(time.RFC3339)
+	var offers, records []workItem
+	for _, m := range moves {
+		it := items[m.Idx]
+		last[it.ID] = now
+		offers = append(offers, it)
+		max++
+		records = append(records, workItem{ID: max, Kind: "record", Status: "done", By: "allocator", TS: ts, Epoch: currentEpoch(),
+			Text: fmt.Sprintf("[allocator] offered claimable #%d -> %s (author-opted-in, outward-safe; receiver idle, named, not the author)", it.ID, m.To)})
+	}
+	items = append(items, records...)
+	writeWork(items)
+	c.tmu.Unlock()
+
+	for i, it := range offers {
+		ok := c.offer(it, fmt.Sprintf("allocator: claimable #%d in the pool — yours if you take it", it.ID))
+		c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"allocator.routed","params":{"id":%d,"to":%q,"delivered":%v}}}`, it.ID, moves[i].To, ok))
 	}
 	return len(moves)
 }

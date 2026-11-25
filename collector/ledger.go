@@ -78,6 +78,15 @@ type workItem struct {
 	// withdrawn. Signal-reversed: offer=sent, read=delivered, ack=read+done.
 	Need int   `json:"need,omitempty"`
 	Acks []ack `json:"acks,omitempty"`
+	// Claimable (#9728 pack rework of #9721) — the ITEM side of consent, symmetric
+	// with the receiver allowlist. The allocator's todo-router (slice-3) routes
+	// ONLY items whose author POSITIVELY declared them claimable; nothing is
+	// inferred from the absence of an assignee. The ledger is a speech-act surface
+	// (reports, votes, reviews wear kind=task), so absence-of-unclaimability is NOT
+	// claimability — that defect (v1 #9721) would have routed reviews and, worse,
+	// the leak-path items (#9547 cherry-pick, #9555 Slack, #9659) into panes.
+	// make_tasks.py stamps the P-backlog; an author sets it when they mean it.
+	Claimable bool `json:"claimable,omitempty"`
 }
 
 // ack — one receipt against a work item (#53). By is the acking mind (name/role/
