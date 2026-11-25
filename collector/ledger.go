@@ -35,6 +35,13 @@ type workItem struct {
 	// X-8-Actor header as fallback, "auto:*" for machine flips — and an undeclared
 	// flip stays "" (the blank is honest; never guessed, never back-filled).
 	FlippedBy string `json:"flipped_by,omitempty"`
+	// Receipt — the verification stamp captured when a TASK is closed (#9757):
+	// FlippedBy says WHO closed it; Receipt says AGAINST WHAT it was checked (the
+	// verdict, or an artifact/commit the closer verified against). "done" is a
+	// mutable flag; Receipt is the evidence that makes done mean witnessed-done,
+	// not claimed-done. A [verify #N] or claimable task may not close without one
+	// (a verification that leaves no receipt is void); other closes may.
+	Receipt string `json:"receipt,omitempty"`
 	// Dispatch receipts (#343): queue-VISIBLE delivery facts, so a mind can
 	// verify its own assignment is live before spending tokens on it. Queue
 	// status is assignment INTENT; these are delivery FACT — the two can
@@ -303,6 +310,20 @@ func isRecordItem(it workItem) bool {
 		return it.Kind == "record"
 	}
 	return isRecord(it.Text)
+}
+
+// closeNeedsReceipt — the task classes where a done without a receipt is a lie
+// (#9757): a [verify #N] task, whose whole purpose IS the verdict, and a
+// claimable task, routed to a non-author who must show what they checked. A
+// RECORD is born done and is never "verified" (its Kind comment), so it is
+// exempt; so is every ordinary task — this gate is narrow on purpose, so the
+// fleet's existing closes keep working and only the verification-shaped ones
+// are held to their receipt.
+func closeNeedsReceipt(it workItem) bool {
+	if isRecordItem(it) {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(it.Text), "[verify #") || it.Claimable
 }
 
 func noVerifySpawn(text string) bool {
@@ -882,6 +903,7 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			Need      *int    `json:"need"`      // #53: distinct AGREE acks required to self-close (present-but-0 clears the gate)
 			Ack       string  `json:"ack"`       // #53: "agree"|"disagree" — record this caller's receipt against {id}
 			Claimable *bool   `json:"claimable"` // #9728: the item-side opt-in the todo-router (slice-3) requires; set by make_tasks.py / an author who means it
+			Receipt   string  `json:"receipt"`   // #9757: the verification stamp on close — against what artifact/commit/verdict; required to close a [verify]/claimable task
 		}
 		json.NewDecoder(r.Body).Decode(&p)
 		now := time.Now().UTC().Format(time.RFC3339)
@@ -1010,6 +1032,25 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 		} else if p.ID > 0 && p.Status != "" { // status change
 			for i := range items {
 				if items[i].ID == p.ID {
+					// #9757: done must be witnessed-done, not a flag flip. Capture the
+					// verification receipt on close (a verdict, or an artifact/commit the
+					// closer checked), falling back to the posted text — a verdict minds
+					// already write as text IS the receipt. A [verify #N] or claimable task
+					// may not close without one: a verification that leaves no receipt is
+					// void. Sweeps (declared bookkeeping, #736) and non-done flips are exempt.
+					if p.Status == "done" && !p.Sweep {
+						receipt := strings.TrimSpace(p.Receipt)
+						if receipt == "" {
+							receipt = strings.TrimSpace(p.Text)
+						}
+						if receipt == "" && closeNeedsReceipt(items[i]) {
+							http.Error(w, `{"error":"#9757: closing a [verify]/claimable task requires a verification receipt — pass {\"receipt\":\"who verified, against what artifact/commit\"} or a text verdict. done must be witnessed-done, not claimed-done."}`, http.StatusBadRequest)
+							return
+						}
+						if receipt != "" {
+							items[i].Receipt = receipt
+						}
+					}
 					items[i].Status = p.Status
 					items[i].TS = now
 					items[i].FlippedBy = flipActor(p.By, r) // #323: who closed what, on the record
