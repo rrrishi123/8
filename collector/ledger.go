@@ -869,18 +869,19 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPost {
 		var p struct {
-			ID       int64   `json:"id"`
-			Text     string  `json:"text"`
-			Status   string  `json:"status"`
-			By       string  `json:"by"`
-			Deps     []int64 `json:"deps"`
-			Prio     *int64  `json:"prio"`     // pointer: present-but-0 is a real reorder
-			Assignee string  `json:"assignee"` // route this task to a specific tmux pane
-			Sweep    bool    `json:"sweep"`    // #736: bookkeeping close — the CLOSER declares this flip is hygiene, not a claim: no [verify] spawns, flipped_by carries the intent
-			Kind     string  `json:"kind"`     // #1088: task|record — explicit on create; {id,kind} reclassifies
-			Notify   string  `json:"notify"`   // #4441: uuid/role/%N to poke when this task flips done
-			Need     *int    `json:"need"`     // #53: distinct AGREE acks required to self-close (present-but-0 clears the gate)
-			Ack      string  `json:"ack"`      // #53: "agree"|"disagree" — record this caller's receipt against {id}
+			ID        int64   `json:"id"`
+			Text      string  `json:"text"`
+			Status    string  `json:"status"`
+			By        string  `json:"by"`
+			Deps      []int64 `json:"deps"`
+			Prio      *int64  `json:"prio"`      // pointer: present-but-0 is a real reorder
+			Assignee  string  `json:"assignee"`  // route this task to a specific tmux pane
+			Sweep     bool    `json:"sweep"`     // #736: bookkeeping close — the CLOSER declares this flip is hygiene, not a claim: no [verify] spawns, flipped_by carries the intent
+			Kind      string  `json:"kind"`      // #1088: task|record — explicit on create; {id,kind} reclassifies
+			Notify    string  `json:"notify"`    // #4441: uuid/role/%N to poke when this task flips done
+			Need      *int    `json:"need"`      // #53: distinct AGREE acks required to self-close (present-but-0 clears the gate)
+			Ack       string  `json:"ack"`       // #53: "agree"|"disagree" — record this caller's receipt against {id}
+			Claimable *bool   `json:"claimable"` // #9728: the item-side opt-in the todo-router (slice-3) requires; set by make_tasks.py / an author who means it
 		}
 		json.NewDecoder(r.Body).Decode(&p)
 		now := time.Now().UTC().Format(time.RFC3339)
@@ -912,6 +913,9 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 				p.By = "operator"
 			}
 			ni := workItem{ID: max + 1, Text: p.Text, Status: "todo", By: p.By, TS: now, Deps: p.Deps, Assignee: p.Assignee, Kind: p.Kind, Notify: p.Notify, Epoch: currentEpoch()}
+			if p.Claimable != nil { // #9728: the author marks the item routable by the todo-router (fail-closed: default false)
+				ni.Claimable = *p.Claimable
+			}
 			if p.Need != nil && *p.Need > 0 { // #53: born as a consensus item — closes itself on N agrees
 				ni.Need = *p.Need
 			}
@@ -978,7 +982,7 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 				}
 				break
 			}
-		} else if p.ID > 0 && (p.Prio != nil || p.Assignee != "" || p.Kind != "" || p.Notify != "" || p.Need != nil) && p.Status == "" && p.Ack == "" { // ADJUST THE QUEUE (reorder / reassign / attach notify / re-set the agree-bar) — no rule is frozen, the bar itself is consensus
+		} else if p.ID > 0 && (p.Prio != nil || p.Assignee != "" || p.Kind != "" || p.Notify != "" || p.Need != nil || p.Claimable != nil) && p.Status == "" && p.Ack == "" { // ADJUST THE QUEUE (reorder / reassign / attach notify / re-set the agree-bar / mark claimable) — no rule is frozen
 			for i := range items {
 				if items[i].ID == p.ID {
 					if p.Prio != nil {
@@ -995,6 +999,9 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 					}
 					if p.Need != nil { // #53: the agree-bar itself is consensus, not a frozen rule — re-settable (0 clears the gate)
 						items[i].Need = *p.Need
+					}
+					if p.Claimable != nil { // #9728: an author marks (or un-marks) a filed task as router-claimable
+						items[i].Claimable = *p.Claimable
 					}
 					ackID = items[i].ID
 					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.reorder","params":{"id":%d,"prio":%d,"assignee":%q,"need":%d}}}`, items[i].ID, items[i].Prio, items[i].Assignee, items[i].Need))
