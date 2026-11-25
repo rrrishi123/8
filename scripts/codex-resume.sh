@@ -13,7 +13,7 @@ set -uo pipefail
 PANE="${CODEX_PANE:-%19}"
 POLL="${POLL:-300}"                              # check every 5 min
 COLLECTOR="${COLLECTOR:-http://127.0.0.1:7070}"
-TASK="${CODEX_TASK:-You are Codex Astra resuming after a usage-limit reset. Continue your queue THROUGH THE WIRE (http-mcp http_request): GET ${COLLECTOR}/work?status=todo; do the coding/infra items assigned to codex (finish #1196 Lever 3 the in-Colima runtime image if still partial); record each via POST ${COLLECTOR}/work by=codex; announce each in this pane. Commit to release/v0.0.2 is fine; #1138 forbids only main-merge/tags/publish.}"
+TASK="${CODEX_TASK:-You are Codex Astra resuming after a usage-limit reset. Continue your queue THROUGH THE WIRE (http-mcp http_request): GET ${COLLECTOR}/work?status=todo; do the coding/infra items assigned to codex (finish #1196 Lever 3 the in-Colima runtime image if still partial); record each via POST ${COLLECTOR}/work by=codex; announce each in this pane. Commit to next is fine; #1138 forbids only main-merge/tags/publish.}"
 
 tb=$(command -v tmux) || { echo "no tmux"; exit 1; }
 

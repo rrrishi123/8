@@ -15,7 +15,7 @@ restored. Exactly one collector at a time.
 
 ## Branch model
 
-Work targets `release/v0.0.2`. Do not push to `main` or mint tags without an
+Work targets `next`. Do not push to `main` or mint tags without an
 explicit release decision.
 
 ## Conventions
