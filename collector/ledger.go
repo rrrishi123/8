@@ -109,6 +109,26 @@ type workItem struct {
 	// ClaimableBy — WHO stamped it (%8 #9759 D2): 'author-declared' is only true if
 	// the stamp is checked against the author and the stamper is on the record.
 	ClaimableBy string `json:"claimable_by,omitempty"`
+	// READ-STAMPS (#9863) — the witnessed act BETWEEN delivered and acked: "I have
+	// seen this", below a verdict, above silence. Third sighting of the gap in one
+	// day (the #9795 three-way race despite a posted claim, the #9819 claim-
+	// visibility finding, and 'how many of you got the same prompt' being
+	// unanswerable on 2026-11-25): a prompt or claim leaves NO trace until the
+	// receiving mind ACTS, so delivered-and-ignored is indistinguishable from
+	// never-delivered. POST /work {id, read:true, by} appends {by, ts} once per
+	// mind (sameMind-folded — the %8 #9854 double-count class; first read kept,
+	// re-reading is not news). A read NEVER mutates Status/Acks/Need/TS: reading
+	// is not agreeing, and it must not reset the idle clock /watchers derives
+	// from TS. Identity inherits ackKey/sameMind and with it the #9753/#9794
+	// keystone, declared like every organ here.
+	ReadBy []readStamp `json:"read_by,omitempty"`
+}
+
+// readStamp — one witnessed read of a work item (#9863). Deliberately not an
+// ack: it carries no verdict, counts toward no Need, and holds nothing.
+type readStamp struct {
+	By string `json:"by"`
+	TS string `json:"ts"`
 }
 
 // canStampClaimable — may `by` mark this item claimable? The item's author
@@ -952,6 +972,7 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			Claimable  *bool   `json:"claimable"`   // #9728: the item-side opt-in the todo-router (slice-3) requires; set by make_tasks.py / an author who means it
 			VerifiedBy string  `json:"verified_by"` // #9795 WHO-gate: the distinct mind whose own agree ack anchors a SELF-close
 			Receipt    string  `json:"receipt"`     // #9795 WHAT-gate: against-what (verdict/artifact/commit); falls back to posted text
+			Read       bool    `json:"read"`        // #9863: stamp a witnessed read of {id} — no verdict, no close, no hold
 		}
 		json.NewDecoder(r.Body).Decode(&p)
 		now := time.Now().UTC().Format(time.RFC3339)
@@ -1050,6 +1071,32 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 				case items[i].Status == "blocked" && disagrees == 0: // last disagree withdrawn — back to the pool
 					items[i].Status, items[i].FlippedBy, items[i].TS = "todo", "consensus:disagree-cleared", now
 				}
+				break
+			}
+		} else if p.ID > 0 && p.Read && p.Ack == "" && p.Status == "" { // #9863 READ-STAMP: witness "I have seen this" — and nothing else
+			who := flipActor(p.By, r)
+			if strings.TrimSpace(who) == "" { // an unsigned read witnesses nothing — unlike a flip, there is no act to attribute later
+				http.Error(w, `{"error":"#9863: a read-stamp needs a reader — pass by. An undeclared read is not witnessable."}`, http.StatusBadRequest)
+				return
+			}
+			for i := range items {
+				if items[i].ID != p.ID {
+					continue
+				}
+				dup := false
+				for _, rs := range items[i].ReadBy {
+					if sameMind(rs.By, who) { // sameMind, not raw string: '%12' vs '%12 (uuid)' is ONE reader (the %8 #9854 double-count class)
+						dup = true // first read kept — re-reading is not news
+						break
+					}
+				}
+				if !dup {
+					items[i].ReadBy = append(items[i].ReadBy, readStamp{By: who, TS: now})
+					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.read","params":{"id":%d,"by":%q,"readers":%d}}}`, p.ID, who, len(items[i].ReadBy)))
+				}
+				ackID = items[i].ID
+				// deliberately NOT touched: Status, Acks, Need, FlippedBy — and TS,
+				// which /watchers reads as the idle clock; a read is not activity.
 				break
 			}
 		} else if p.ID > 0 && (p.Prio != nil || p.Assignee != "" || p.Kind != "" || p.Notify != "" || p.Need != nil || p.Claimable != nil) && p.Status == "" && p.Ack == "" { // ADJUST THE QUEUE (reorder / reassign / attach notify / re-set the agree-bar / mark claimable) — no rule is frozen
