@@ -44,13 +44,17 @@ cleanup(){
       pkill -KILL -P "$cpid" 2>/dev/null
       kill  -KILL "$cpid"    2>/dev/null
     fi
-    wait "$cpid" 2>/dev/null                # reap so the OS releases the socket
+    wait "$cpid" 2>/dev/null                # reap the zombie (a real child now; the KILL above freed the socket)
   fi
   rm -rf "$TMP"
 }
 trap cleanup EXIT
-( cd "$COL" && env -u TMUX HOME="$TMP" ./collector -listen ":$PORT" >"$TMP/col.log" 2>&1 & echo $! >"$TMP/pid" )
-cpid=$(cat "$TMP/pid")
+# Start as a DIRECT child of this shell (not inside a `( … & )` subshell): only
+# then is $cpid a child wait(1) can reap — in a subshell it would return 127 and
+# reap nothing. Bind loopback so a
+# stranger's demo never listens on their LAN.
+env -u TMUX HOME="$TMP" "$COL/collector" -listen "127.0.0.1:$PORT" >"$TMP/col.log" 2>&1 &
+cpid=$!
 up=0; for _ in $(seq 1 20); do curl -s -m2 "$H/health" 2>/dev/null | grep -q '"alive":true' && { up=1; break; }; sleep 0.5; done
 [ "$up" = 1 ] || { say "collector never came up — log:"; tail -5 "$TMP/col.log" | sed 's/^/     /'; exit 1; }
 ev "isolated witness live on $H  (HOME=$TMP, no brokers)"
