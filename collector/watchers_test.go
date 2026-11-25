@@ -62,3 +62,31 @@ func TestWatchersPresenceView(t *testing.T) {
 		t.Errorf("rows not sorted most-idle-first: %+v", rows)
 	}
 }
+
+// TestMindMatchesTokenBoundary locks the #36 external-review fix: name/pane match on a
+// whole token, so a mind name is never swallowed by a longer actor string. These
+// collisions are live in the roster today (pmf/validator-pmf, philo/validator-philo,
+// higgs/higgs-worker) and sibling-1/sibling-10 is the forward-looking case.
+func TestMindMatchesTokenBoundary(t *testing.T) {
+	cases := []struct {
+		name, pane, uuid, actor string
+		want                    bool
+	}{
+		{"sibling-1", "%7", "aaaa1111", "sibling-1 (aaaa1111)", true},   // own stamp
+		{"sibling-1", "%7", "aaaa1111", "sibling-10 (deadbeef)", false}, // not a superstring
+		{"pmf", "%13", "bbbb2222", "pmf", true},
+		{"pmf", "%13", "bbbb2222", "validator-pmf", false}, // was a false positive under Contains
+		{"philo", "%12", "cccc3333", "validator-philo", false},
+		{"higgs", "%9", "dddd4444", "higgs-worker", false},
+		{"higgs", "%9", "dddd4444", "higgs %9 (dddd4444)", true},
+		{"conductor", "%6", "eeee5555", "conductor %6 (eeee5555)", true},      // name+pane+uuid all present
+		{"higgs", "%9", "dddd4444", "%91 something", false},                   // pane token guard
+		{"higgs", "%9", "dddd4444", "acked by aaaa1111, dddd4444-full", true}, // uuid substring still matches
+	}
+	for _, c := range cases {
+		m := mindView{Name: c.name, Pane: c.pane, UUID: c.uuid}
+		if got := mindMatches(m, c.actor); got != c.want {
+			t.Errorf("mindMatches(%q, %q) = %v, want %v", c.name, c.actor, got, c.want)
+		}
+	}
+}

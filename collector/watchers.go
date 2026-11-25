@@ -32,25 +32,32 @@ type watcherRow struct {
 }
 
 // mindMatches — does a ledger actor-string (by / flipped_by / acked_by) refer to
-// this mind? Matched by name, current pane, or uuid substring — the ledger stamps
-// any of these spellings. Empty name never matches (unnamed panes aren't rows' owners).
+// this mind? Matched by name or current pane as a WHOLE TOKEN, or by uuid substring.
+// The ledger stamps any of these spellings. Name and pane are token-matched (split
+// on space/paren/comma) so "sibling-1" does not swallow "sibling-10" and "pmf" does
+// not swallow "validator-pmf" (external review on #36 — the substring form here
+// conflated every name that is a prefix/infix of another, which is live in the
+// roster today: pmf/validator-pmf, philo/validator-philo, higgs/higgs-worker). Hyphen
+// is deliberately NOT a split char, so hyphenated names like "sibling-1" stay one
+// token. uuid stays a substring match: uuids are globally unique and never nest, and
+// the ledger carries both the short 8-hex prefix and the full form. Empty name never
+// matches (unnamed panes aren't rows' owners).
 func mindMatches(m mindView, actor string) bool {
 	if actor == "" {
 		return false
 	}
 	a := strings.ToLower(actor)
-	if m.Name != "" && strings.Contains(a, strings.ToLower(m.Name)) {
-		return true
-	}
 	if m.UUID != "" && strings.Contains(a, strings.ToLower(m.UUID)) {
 		return true
 	}
-	// pane %N: match as a whole token so "%9" does not match "%91"
-	if m.Pane != "" {
-		for _, tok := range strings.FieldsFunc(a, func(r rune) bool { return r == ' ' || r == '(' || r == ')' || r == ',' }) {
-			if tok == strings.ToLower(m.Pane) {
-				return true
-			}
+	name := strings.ToLower(m.Name)
+	pane := strings.ToLower(m.Pane)
+	if name == "" && pane == "" {
+		return false
+	}
+	for _, tok := range strings.FieldsFunc(a, func(r rune) bool { return r == ' ' || r == '(' || r == ')' || r == ',' }) {
+		if (name != "" && tok == name) || (pane != "" && tok == pane) {
+			return true
 		}
 	}
 	return false
@@ -112,6 +119,6 @@ func (c *collector) handleWatchers(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"n":        len(rows),
 		"watchers": rows,
-		"note":     "PRESENCE view of the social net (#9554/#53): per NAMED mind, what it is doing/blocked on, its declared wait, unread inbox offers, and how long since its last witnessed act. Read-only, joined off the ledger — never invents state. Sorted most-idle first.",
+		"note":     "PRESENCE view of the social net (#9554/#53): per NAMED mind, what it is doing/blocked on, its declared wait, unread inbox offers, and how long since its last witnessed act. Read-only, joined off the ledger — never invents state. Sorted most-idle first. CAVEATS (#36 external review): idle_minutes is derived from workItem.TS, which the ledger rewrites whenever ANYONE touches an item this mind authored/flipped/acked — so it reads 'last touched', and can UNDER-state idleness (a silent mind looks active when another mind acts on its old item); treat it as an upper bound on liveness, not a precise quiet-signal. waiting_for is the mind's own free text from /wait — leak-safety holds for the fields THIS view adds, not for what a mind types there.",
 	})
 }
