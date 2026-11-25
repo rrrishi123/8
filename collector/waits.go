@@ -315,6 +315,13 @@ func (c *collector) handleWait(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"n": len(ws), "waits": ws,
 			"note": "a mind's declared end-state; the allocator evaluates these every period and wakes the mind by inbox with the evidence. kinds: work_done{work_id} work_match{regex} git_ref{repo,ref} git_tip{repo,branch,was}"})
 	case http.MethodPost:
+		// Loopback-only, as the doc comment promises: a wait is a mind's declared
+		// end-state, and a LAN caller must not clear or replace it (philo #9658;
+		// same class 2516de4 closed for the allowlist). Fails closed on unparsable.
+		if !isLoopbackAddr(r.RemoteAddr) {
+			http.Error(w, `{"error":"wait writes are loopback-only"}`, 403)
+			return
+		}
 		var p struct {
 			Pane       string          `json:"pane"`
 			UUID       string          `json:"uuid"`
@@ -360,6 +367,12 @@ func (c *collector) handleWait(w http.ResponseWriter, r *http.Request) {
 			if (pr.Kind == "git_ref" || pr.Kind == "git_tip") && !knownArms[pr.Repo] {
 				http.Error(w, `{"error":"git predicates may only name 8, http-mcp, pilot or adapters"}`, 400)
 				return
+			}
+			if pr.Kind == "work_match" { // validate at declare, not at the first beat (a bad regex would never fire and never complain)
+				if _, err := regexp.Compile(pr.Regex); err != nil {
+					http.Error(w, fmt.Sprintf(`{"error":"predicate %s: bad regex: %s"}`, p.Predicates[i].ID, err.Error()), 400)
+					return
+				}
 			}
 		}
 		wd := waitDecl{Pane: pane, UUID: firstNonEmpty(p.UUID, paneUUIDMap()[pane]), Since: time.Now().UTC().Format(time.RFC3339), Question: p.Question, Predicates: p.Predicates}
