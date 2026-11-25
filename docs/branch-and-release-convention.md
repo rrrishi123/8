@@ -43,6 +43,12 @@ Each repo has exactly **two** long-lived branches:
   is not that repo; to the pushed `github.sha` when it is.
 - **`fleet-release.yml`** fires on `push` to **`[main, next]`** and calls the gate. In the three
   siblings it references the gate as `rrrishi123/8/.github/workflows/fleet-gate.yml@main`.
+- **`release-truth.yml`** (in `8`) runs `scripts/release-gate.sh` with all four repos checked out:
+  on every `vX.Y.Z` tag push to `8` (the cut gates itself), on demand (`workflow_dispatch`, any tag,
+  or `--pre` before a cut), and nightly against the latest tag. It asks a different question from the
+  fleet gate: not "does the composed tree build and test" but "does the **tag** cohere" — tag on
+  every arm, tag == `main`, `collector/vX` beside `vX`, cold `go list -m …@vX` from an empty module
+  cache, and the version literals read **at the tag**. Read-only; the result is the job summary.
 - Because every ref above is a **stable name**, bumping `v0.0.3 → v0.0.4 → …` never touches a
   workflow file again.
 
@@ -50,13 +56,22 @@ Each repo has exactly **two** long-lived branches:
 
 ```
 work on next
+  → bump the version literals in lockstep on every arm (scripts/system-smoke.sh goes green on the
+    composed tree: 5 code sites + the README baseline on all four)
+  → scripts/release-gate.sh vX --pre   (vX must not exist anywhere yet; tags are immutable on the Go proxy)
   → open PR next → main (per-repo ci.yml + cross-repo fleet gate must be green)
-  → squash-merge into main
-  → tag vX on main
+  → squash-merge into main, on all four arms
+  → tag vX on main, on all four arms — and in 8 ALSO collector/vX at the same commit
+    (8 has no root go.mod; `go install …/8/collector@vX` resolves only through the nested tag)
+  → release-truth runs on the tag push: RED means the cut is incoherent — fix before announcing
   → fleet-release publishes fleet-release.json (the pinned four-commit manifest)
   → hosts deploy by pinning that manifest
   → next continues toward the following version
 ```
+
+Who does what: the pack bumps, reviews and merges on `next` (two checked agrees); the **tag, the push to
+`main` and the GitHub Release are the owner's explicit act** (outward-immutable); the gate is the
+mechanical second agree that what was cut coheres — nobody has to re-read four repos by eye afterwards.
 
 A host never deploys a head newer than the manifest it pinned; the manifest is what makes the four
 repos behave as one coherent, tested system.
