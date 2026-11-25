@@ -17,12 +17,19 @@ package main
 // witnessed as a ledger record, and the honest default output is SILENCE — no
 // stale verify or no idle mind means nothing happens. Unranked: oldest first.
 //
+// KNOWN LIMIT (documented, not silent — %6 review of #10, philo guard-a): receivers
+// are NAMED minds only, the declared family derangedVerifier already uses. That
+// leaves idle UNNAMED minds unwoken — the disease's own population. Widening to
+// every four-system mind (or adding a naming step) is a separate 2-agree decision,
+// not a loosening to slip in; until then this is a scope, never a rank by membership.
+//
 // Predicate-hold evaluation (wake a mind when the end-state it declared comes
-// true) is slice-2 and builds on this loop.
+// true) is slice-2 (waits.go) and runs on this loop.
 
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"sort"
 	"strconv"
@@ -167,22 +174,105 @@ func pickReroutes(items []workItem, minds []mindView, now time.Time, stale time.
 	return out
 }
 
+// envDuration — a flag default carried by the environment (EIGHT_ALLOCATOR=5m):
+// scripts/watchdog.sh revives the collector with its OWN argv, so only an env
+// value in ~/.8/up.env survives a revive. Unset or unparsable -> fallback.
+func envDuration(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			return d
+		}
+	}
+	return fallback
+}
+
 // allocatorLoop — the continuous organ. period<=0 disables it (-allocator=0).
-func (c *collector) allocatorLoop(period, stale time.Duration) {
-	if period <= 0 {
+// beatGate — the ONE question every organ asks before acting on a beat.
+// Default: open. The budget gate (#9601, PR #14) points this at the budget
+// verdict, so BOTH organs — slice-1 re-routes and slice-2 wakes — are held
+// together. 49fe2c0b's finding (#9626): a gate inside allocatorPass alone let
+// waitPass keep waking minds through a gated or conserve window. Whatever
+// renews the verdict (poke-to-renew, %6 #9633) belongs in here too, so the
+// organs inherit it. Returns (open, reason-if-held).
+var beatGate = func(c *collector) (bool, string) { return true, "" }
+
+// beatState — what a loop remembers between beats.
+type beatState struct {
+	lastRouted          map[int64]time.Time // verify id -> last re-route (slice-1 suppression)
+	lastAlloc, lastWait time.Time
+	held                bool // gate was closed on the previous beat (publish on transition only)
+}
+
+// allocatorBeat — PURE orchestration of one beat, so the gate/switch logic is
+// testable without tmux or a ledger: asks the gate once, then runs each organ
+// whose own switch is on and whose period has elapsed. tick is the loop's
+// ticker period (the finest of the enabled switches). Returns which organs ran.
+func allocatorBeat(st *beatState, now time.Time, tick, allocEvery, waitsEvery time.Duration,
+	gate func() (bool, string), alloc func(), wait func(), onHeld func(string), onOpen func()) (ranAlloc, ranWait bool) {
+	ok, why := gate()
+	if !ok {
+		if !st.held {
+			st.held = true
+			onHeld(why)
+		}
+		return false, false
+	}
+	if st.held {
+		st.held = false
+		onOpen()
+	}
+	due := func(last time.Time, every time.Duration) bool {
+		return every > 0 && (last.IsZero() || now.Sub(last) >= every-tick/2)
+	}
+	if due(st.lastAlloc, allocEvery) {
+		st.lastAlloc = now
+		alloc()
+		ranAlloc = true
+	}
+	if due(st.lastWait, waitsEvery) {
+		st.lastWait = now
+		wait()
+		ranWait = true
+	}
+	return
+}
+
+// allocatorLoop — the beat. Two organs, two SWITCHES (both default OFF, both
+// env-carried so a watchdog revive keeps them): -allocator / EIGHT_ALLOCATOR
+// runs slice-1 (verify re-router) every allocEvery; -waits / EIGHT_WAITS runs
+// slice-2 (declared waits) every waitsEvery. Separate switches so slice-1 can
+// run alone on the first bounce and slice-2 flips on later without a code
+// change (49fe2c0b #9626, %6 #9631: one change per bounce).
+func (c *collector) allocatorLoop(allocEvery, stale, waitsEvery time.Duration) {
+	if allocEvery <= 0 && waitsEvery <= 0 {
 		return
 	}
-	last := map[int64]time.Time{}
-	t := time.NewTicker(period)
+	tick := allocEvery
+	if tick <= 0 || (waitsEvery > 0 && waitsEvery < tick) {
+		tick = waitsEvery
+	}
+	st := &beatState{lastRouted: map[int64]time.Time{}}
+	t := time.NewTicker(tick)
 	defer t.Stop()
 	for range t.C {
-		c.allocatorPass(stale, last)
+		allocatorBeat(st, time.Now(), tick, allocEvery, waitsEvery,
+			func() (bool, string) { return beatGate(c) },
+			func() { c.allocatorPass(stale, st.lastRouted) },
+			func() { c.waitPass() },
+			func(why string) {
+				log.Printf("allocator: held — %s", why)
+				c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"allocator.held","params":{"why":%q}}}`, why))
+			},
+			func() {
+				log.Printf("allocator: gate open again")
+				c.publish(`{"session":"work","origin":"COLLECTOR","frame":{"method":"allocator.open","params":{}}}`)
+			})
 	}
 }
 
 // allocatorPass — one evaluation. Returns how many verifies moved (0 = silence).
 func (c *collector) allocatorPass(stale time.Duration, last map[int64]time.Time) int {
-	minds := c.resolveMinds(false) // tmux execs: outside the ledger lock
+	minds := filterAllowed(c.resolveMinds(false), loadAllowlist()) // #9602: opt-in registry FIRST (fail-closed); tmux execs outside the ledger lock
 	p2u := paneUUIDMap()
 	pending := func(pane string) int { return inboxPendingForPane(pane, p2u) }
 	now := time.Now()
