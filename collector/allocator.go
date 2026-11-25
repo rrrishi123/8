@@ -192,6 +192,21 @@ func claimableRoutable(it workItem) bool {
 		strings.TrimSpace(it.Assignee) == "" && !outwardVerbRe.MatchString(it.Text)
 }
 
+// declinedByMind — did this mind already decline the item? Checks the whole
+// decline set (and the legacy single DeclinedBy), so an item nobody wants is
+// offered to each opted-in mind at most once, never cycled (%8 #9759 D1).
+func declinedByMind(it workItem, m mindView) bool {
+	if labelMatches(it.DeclinedBy, m) {
+		return true
+	}
+	for _, d := range it.Declined {
+		if labelMatches(d, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // pickClaimable — PURE, modeled on pickReroutes: which opted-in todos go to which
 // idle mind. Candidates oldest-first; receiver live/NAMED/idle, not the author, not
 // the mind that already declined it (decline-receipt, %8 #9725), no pending offer,
@@ -228,7 +243,7 @@ func pickClaimable(items []workItem, minds []mindView, now time.Time, lastRouted
 			if m.Name == "" || m.Pane == "" || m.State != "idle" || used[m.Pane] {
 				continue
 			}
-			if labelMatches(it.By, m) || labelMatches(it.Assignee, m) || labelMatches(it.DeclinedBy, m) {
+			if labelMatches(it.By, m) || labelMatches(it.Assignee, m) || declinedByMind(it, m) {
 				continue
 			}
 			if pending != nil && pending(m.Pane) > 0 {
@@ -476,6 +491,9 @@ func (c *collector) routePass(last map[int64]time.Time) int {
 
 	for i, it := range offers {
 		ok := c.offer(it, fmt.Sprintf("allocator: claimable #%d in the pool — yours if you take it", it.ID))
+		if !ok { // %8 #9759 D3: an undelivered offer must not suppress the item until its TS changes — retry next beat
+			delete(last, it.ID)
+		}
 		c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"allocator.routed","params":{"id":%d,"to":%q,"delivered":%v}}}`, it.ID, moves[i].To, ok))
 	}
 	return len(moves)

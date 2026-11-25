@@ -31,6 +31,25 @@ func TestPickClaimableOptInAndOutwardFloor(t *testing.T) {
 	if len(got) != 1 || items[got[0].Idx].ID != 1 || got[0].To != "%9" {
 		t.Fatalf("expected only #1 routed to %%9, got %+v", got)
 	}
+	// decline SET (%8 #9759 D1): minds that declined — under ANY spelling — are never
+	// re-offered; a mind that has not declined still is. Legacy single DeclinedBy honoured.
+	items[0].By = "%6"
+	items[0].DeclinedBy = "%7"
+	items[0].Declined = []string{"higgs %9 (1255da01-cc19-411a-8c19-f5aaf62b02d8)", "%7"}
+	ring := []mindView{
+		{Name: "higgs", Pane: "%9", UUID: "1255da01-cc19-411a-8c19-f5aaf62b02d8", State: "idle"},
+		{Name: "sibling-1", Pane: "%7", UUID: "818c3f5e-997c-4c05-a9e3-61d87d1d5057", State: "idle"},
+		{Name: "philo", Pane: "%12", UUID: "7261eb6b-b097-46bb-93d0-71cc54d95684", State: "idle"},
+	}
+	g := pickClaimable(items, ring, time.Now(), map[int64]time.Time{}, func(string) int { return 0 })
+	if len(g) != 1 || g[0].To != "%12" {
+		t.Fatalf("decliners %%9/%%7 must be skipped and %%12 offered, got %+v", g)
+	}
+	items[0].Declined = append(items[0].Declined, "%12 (7261eb6b)")
+	if g := pickClaimable(items, ring, time.Now(), map[int64]time.Time{}, func(string) int { return 0 }); len(g) != 0 {
+		t.Fatalf("once every idle mind declined, nothing may route (no cycling), got %+v", g)
+	}
+	items[0].DeclinedBy, items[0].Declined = "", nil
 	// author guard: a claimable item authored BY the only idle mind must NOT route to it
 	items[0].By = "higgs"
 	if g := pickClaimable(items, minds, time.Now(), map[int64]time.Time{}, func(string) int { return 0 }); len(g) != 0 {

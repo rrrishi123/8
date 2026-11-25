@@ -58,6 +58,11 @@ type workItem struct {
 	// DeclinedBy — the mind that was offered this and said no (inbox.go); the
 	// item went back to the pool. Its decision is on the record, not overridden.
 	DeclinedBy string `json:"declined_by,omitempty"`
+	// Declined — EVERY mind that declined this item, de-duped by ackKey (%8 #9759 D1).
+	// DeclinedBy keeps only the latest and so forgot earlier decliners: an item nobody
+	// wanted cycled through the whole opted-in ring every beat. The todo-router
+	// consults this set; a decline is a declaration the organ must remember, like consent.
+	Declined []string `json:"declined,omitempty"`
 	// Notify — opt-in WAKE-ON-EVENT (#4441): a uuid/role/%N to POKE when this task
 	// flips done — the dispatcher WAITING on the result. The witness stamps every
 	// write and hands the ACTOR a receipt, but a completion otherwise reaches no
@@ -87,6 +92,43 @@ type workItem struct {
 	// the leak-path items (#9547 cherry-pick, #9555 Slack, #9659) into panes.
 	// make_tasks.py stamps the P-backlog; an author sets it when they mean it.
 	Claimable bool `json:"claimable,omitempty"`
+	// ClaimableBy — WHO stamped it (%8 #9759 D2): 'author-declared' is only true if
+	// the stamp is checked against the author and the stamper is on the record.
+	ClaimableBy string `json:"claimable_by,omitempty"`
+}
+
+// canStampClaimable — may `by` mark this item claimable? The item's author
+// (same ackKey), the operator, or the backlog generator (make_tasks) — nobody
+// else: a stranger stamping YOUR speech-act into the pool is v1 #9721's defect
+// through a side door. Blank `by` never qualifies.
+func canStampClaimable(by string, it workItem) bool {
+	b := strings.ToLower(strings.TrimSpace(by))
+	if b == "" {
+		return false
+	}
+	if b == "operator" || strings.HasPrefix(b, "make_tasks") {
+		return true
+	}
+	if ackKey(by) == ackKey(it.By) {
+		return true
+	}
+	// ackKey prefers a uuid hex run over a pane token, so "%6" and "conductor %6 (12444bc8)"
+	// key differently; the same pane token in both signatures is the same mind.
+	pb, pa := ackPaneRe.FindString(b), ackPaneRe.FindString(strings.ToLower(it.By))
+	return pb != "" && pb == pa
+}
+
+// rememberDecline — append `who` to the item's decline set, de-duped by ackKey,
+// and keep DeclinedBy (the latest) for readers that still look there.
+func rememberDecline(it *workItem, who string) {
+	it.DeclinedBy = who
+	k := ackKey(who)
+	for _, d := range it.Declined {
+		if ackKey(d) == k {
+			return
+		}
+	}
+	it.Declined = append(it.Declined, who)
 }
 
 // ack — one receipt against a work item (#53). By is the acking mind (name/role/
@@ -913,8 +955,8 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 				p.By = "operator"
 			}
 			ni := workItem{ID: max + 1, Text: p.Text, Status: "todo", By: p.By, TS: now, Deps: p.Deps, Assignee: p.Assignee, Kind: p.Kind, Notify: p.Notify, Epoch: currentEpoch()}
-			if p.Claimable != nil { // #9728: the author marks the item routable by the todo-router (fail-closed: default false)
-				ni.Claimable = *p.Claimable
+			if p.Claimable != nil && *p.Claimable { // #9728: the author marks the item routable by the todo-router (fail-closed: default false)
+				ni.Claimable, ni.ClaimableBy = true, p.By
 			}
 			if p.Need != nil && *p.Need > 0 { // #53: born as a consensus item — closes itself on N agrees
 				ni.Need = *p.Need
@@ -1001,7 +1043,11 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 						items[i].Need = *p.Need
 					}
 					if p.Claimable != nil { // #9728: an author marks (or un-marks) a filed task as router-claimable
-						items[i].Claimable = *p.Claimable
+						if canStampClaimable(p.By, items[i]) { // %8 #9759 D2: author / operator / make_tasks only, stamper on the record
+							items[i].Claimable, items[i].ClaimableBy = *p.Claimable, p.By
+						} else {
+							c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.claimable_refused","params":{"id":%d,"by":%q,"author":%q}}}`, items[i].ID, p.By, items[i].By))
+						}
 					}
 					ackID = items[i].ID
 					c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.reorder","params":{"id":%d,"prio":%d,"assignee":%q,"need":%d}}}`, items[i].ID, items[i].Prio, items[i].Assignee, items[i].Need))

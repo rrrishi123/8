@@ -444,7 +444,8 @@ func (c *collector) handleInbox(w http.ResponseWriter, r *http.Request) {
 					it.DeliveredAt, it.DeliveredTo = now, keyFor(p.UUID, p.Pane)
 				}
 			} else {
-				it.Assignee, it.DeclinedBy, it.TS = "", who, now
+				it.Assignee, it.TS = "", now
+				rememberDecline(it, who) // %8 #9759 D1: every decliner stays on the record, not only the latest
 			}
 			cp := *it
 			got = &cp
