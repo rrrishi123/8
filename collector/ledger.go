@@ -63,6 +63,20 @@ type workItem struct {
 	// wanted cycled through the whole opted-in ring every beat. The todo-router
 	// consults this set; a decline is a declaration the organ must remember, like consent.
 	Declined []string `json:"declined,omitempty"`
+	// VERIFICATION RECEIPT (#9757/#9795, synthesis of three parallel builds —
+	// #29 philo, #31 pmf [closed into this], #33 higgs): done must mean
+	// WITNESSED-done, not claimed-done. Two orthogonal gates on close:
+	// WHAT (pmf): a [verify #N] / claimable task may not close without Receipt
+	// (against-what: the verdict, artifact or commit; a posted text verdict IS
+	// the receipt) — a verification that leaves no receipt is void, whoever
+	// closes it. WHO (philo, anchored per the off-host review): a SELF-close (closer ==
+	// author by ackKey) also needs VerifiedBy — a DIFFERENT mind that has its
+	// OWN agree ack on this item. The closer typing a name is a relay, not a
+	// receipt; the ack is the verifier's own act. Cross-closes of ordinary
+	// tasks (the measured-healthy 68%) are untouched; sweep:true stays declared
+	// hygiene (#736); records are exempt (#1088).
+	VerifiedBy string `json:"verified_by,omitempty"`
+	Receipt    string `json:"receipt,omitempty"`
 	// Notify — opt-in WAKE-ON-EVENT (#4441): a uuid/role/%N to POKE when this task
 	// flips done — the dispatcher WAITING on the result. The witness stamps every
 	// write and hands the ACTOR a receipt, but a completion otherwise reaches no
@@ -345,6 +359,18 @@ func isRecordItem(it workItem) bool {
 		return it.Kind == "record"
 	}
 	return isRecord(it.Text)
+}
+
+// closeNeedsReceipt — the task classes where a done without a receipt is a lie
+// (#9757, gate authored by pmf in #31, folded here on #9805): a [verify #N]
+// task, whose whole purpose IS the verdict, and a claimable task, routed to a
+// non-author who must show what they checked. Narrow on purpose: records and
+// ordinary tasks keep closing as they always did.
+func closeNeedsReceipt(it workItem) bool {
+	if isRecordItem(it) {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(it.Text), "[verify #") || it.Claimable
 }
 
 func noVerifySpawn(text string) bool {
@@ -911,19 +937,21 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPost {
 		var p struct {
-			ID        int64   `json:"id"`
-			Text      string  `json:"text"`
-			Status    string  `json:"status"`
-			By        string  `json:"by"`
-			Deps      []int64 `json:"deps"`
-			Prio      *int64  `json:"prio"`      // pointer: present-but-0 is a real reorder
-			Assignee  string  `json:"assignee"`  // route this task to a specific tmux pane
-			Sweep     bool    `json:"sweep"`     // #736: bookkeeping close — the CLOSER declares this flip is hygiene, not a claim: no [verify] spawns, flipped_by carries the intent
-			Kind      string  `json:"kind"`      // #1088: task|record — explicit on create; {id,kind} reclassifies
-			Notify    string  `json:"notify"`    // #4441: uuid/role/%N to poke when this task flips done
-			Need      *int    `json:"need"`      // #53: distinct AGREE acks required to self-close (present-but-0 clears the gate)
-			Ack       string  `json:"ack"`       // #53: "agree"|"disagree" — record this caller's receipt against {id}
-			Claimable *bool   `json:"claimable"` // #9728: the item-side opt-in the todo-router (slice-3) requires; set by make_tasks.py / an author who means it
+			ID         int64   `json:"id"`
+			Text       string  `json:"text"`
+			Status     string  `json:"status"`
+			By         string  `json:"by"`
+			Deps       []int64 `json:"deps"`
+			Prio       *int64  `json:"prio"`        // pointer: present-but-0 is a real reorder
+			Assignee   string  `json:"assignee"`    // route this task to a specific tmux pane
+			Sweep      bool    `json:"sweep"`       // #736: bookkeeping close — the CLOSER declares this flip is hygiene, not a claim: no [verify] spawns, flipped_by carries the intent
+			Kind       string  `json:"kind"`        // #1088: task|record — explicit on create; {id,kind} reclassifies
+			Notify     string  `json:"notify"`      // #4441: uuid/role/%N to poke when this task flips done
+			Need       *int    `json:"need"`        // #53: distinct AGREE acks required to self-close (present-but-0 clears the gate)
+			Ack        string  `json:"ack"`         // #53: "agree"|"disagree" — record this caller's receipt against {id}
+			Claimable  *bool   `json:"claimable"`   // #9728: the item-side opt-in the todo-router (slice-3) requires; set by make_tasks.py / an author who means it
+			VerifiedBy string  `json:"verified_by"` // #9795 WHO-gate: the distinct mind whose own agree ack anchors a SELF-close
+			Receipt    string  `json:"receipt"`     // #9795 WHAT-gate: against-what (verdict/artifact/commit); falls back to posted text
 		}
 		json.NewDecoder(r.Body).Decode(&p)
 		now := time.Now().UTC().Format(time.RFC3339)
@@ -1056,6 +1084,47 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 		} else if p.ID > 0 && p.Status != "" { // status change
 			for i := range items {
 				if items[i].ID == p.ID {
+					// #9795 RECEIPT GATES (#9757 measured both pools; refuse BEFORE
+					// mutating). A blank closer stays allowed-and-blank (#323: honest,
+					// never guessed) — tightening unattributed flips is its own decision.
+					if p.Status == "done" && !p.Sweep && !isRecordItem(items[i]) {
+						receipt := strings.TrimSpace(p.Receipt)
+						if receipt == "" { // pmf #31: the verdict minds already post as text IS the receipt
+							receipt = strings.TrimSpace(p.Text)
+						}
+						// WHAT-gate (pmf #31, folded on #9805/#9807): a verification-shaped
+						// task may not close receiptless, whoever closes it — that is
+						// exactly how verdicts #9534/#9543/#9561 were dropped.
+						if receipt == "" && closeNeedsReceipt(items[i]) {
+							http.Error(w, `{"error":"#9757/#9795: closing a [verify]/claimable task requires a receipt — pass {\"receipt\":\"verdict / artifact / commit checked\"} or a text verdict. done must be witnessed-done."}`, http.StatusBadRequest)
+							return
+						}
+						// WHO-gate: a SELF-close needs an independent verifier — and the
+						// verifier's OWN agree ack on this item (off-host review of #29: a name
+						// typed by the closer is a relay stored as a first-hand check;
+						// the ack is the verifier's own act, so the receipt is theirs).
+						closer := ackKey(flipActor(p.By, r))
+						if closer != "" && closer == ackKey(items[i].By) {
+							vk := ackKey(p.VerifiedBy)
+							anchored := false
+							for _, a := range items[i].Acks {
+								if a.Verdict != "disagree" && ackKey(a.By) == vk {
+									anchored = true
+									break
+								}
+							}
+							if p.VerifiedBy == "" || vk == closer || receipt == "" || !anchored {
+								http.Error(w, `{"error":"self-close refused (#9757/#9795): closing your own task needs verified_by (a DIFFERENT mind) whose own agree ack is already on this item (POST {ack:agree} as them first — a name you type is a relay, not a receipt) + a receipt (verdict/artifact/commit). A cross-close by another mind needs only the receipt when the task is verification-shaped; sweep:true remains declared hygiene."}`, http.StatusBadRequest)
+								return
+							}
+						}
+						if receipt != "" { // the receipt rides the item, queryable on /work and /social
+							items[i].Receipt = receipt
+						}
+						if p.VerifiedBy != "" {
+							items[i].VerifiedBy = p.VerifiedBy
+						}
+					}
 					items[i].Status = p.Status
 					items[i].TS = now
 					items[i].FlippedBy = flipActor(p.By, r) // #323: who closed what, on the record
