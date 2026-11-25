@@ -120,7 +120,7 @@ func TestSocialHandlersReadOnly(t *testing.T) {
 	}
 }
 
-// omarchy-main's review of #28: identity is hex-first (a pane is re-minted), and
+// the external user review of #28: identity is hex-first (a pane is re-minted), and
 // excerpts cut on runes, never mid-character.
 func TestSameMindHexFirstAndRuneExcerpt(t *testing.T) {
 	if sameMind("%7 (77777777-0000-4000-8000-000000000077)", "%7 (99999999)") {
