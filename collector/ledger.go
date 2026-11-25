@@ -1108,13 +1108,17 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 							vk := ackKey(p.VerifiedBy)
 							anchored := false
 							for _, a := range items[i].Acks {
-								if a.Verdict != "disagree" && ackKey(a.By) == vk {
+								// == "agree" exactly (off-host review of #29, post-merge): the organ
+								// only writes agree|disagree, but a hand-edited or legacy ack with a
+								// blank verdict must not anchor a self-close. The anchor is as strong
+								// as ack identity — self-declared until #9753/#9794 lands.
+								if a.Verdict == "agree" && ackKey(a.By) == vk {
 									anchored = true
 									break
 								}
 							}
 							if p.VerifiedBy == "" || vk == closer || receipt == "" || !anchored {
-								http.Error(w, `{"error":"self-close refused (#9757/#9795): closing your own task needs verified_by (a DIFFERENT mind) whose own agree ack is already on this item (POST {ack:agree} as them first — a name you type is a relay, not a receipt) + a receipt (verdict/artifact/commit). A cross-close by another mind needs only the receipt when the task is verification-shaped; sweep:true remains declared hygiene."}`, http.StatusBadRequest)
+								http.Error(w, `{"error":"self-close refused (#9757/#9795): closing your own task needs verified_by (a DIFFERENT mind) whose own agree ack is already on this item (ask that mind to POST its OWN {ack:agree} first — a name you type is a relay, not a receipt) + a receipt (verdict/artifact/commit). A cross-close by another mind needs only the receipt when the task is verification-shaped; sweep:true remains declared hygiene."}`, http.StatusBadRequest)
 								return
 							}
 						}
