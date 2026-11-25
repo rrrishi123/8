@@ -6,8 +6,8 @@ import (
 )
 
 func TestLabelMatches(t *testing.T) {
-	conductor := mindView{Name: "conductor", Pane: "%6", UUID: "12444bc8-4325-4c83-8f42-ed642122f0da"}
-	for _, l := range []string{"conductor %6 (12444bc8)", "%6", "conductor", "12444bc8-4325-4c83-8f42-ed642122f0da"} {
+	conductor := mindView{Name: "conductor", Pane: "%6", UUID: "66666666-0000-4000-8000-000000000066"}
+	for _, l := range []string{"conductor %6 (66666666)", "%6", "conductor", "66666666-0000-4000-8000-000000000066"} {
 		if !labelMatches(l, conductor) {
 			t.Errorf("%q should match conductor", l)
 		}
@@ -17,7 +17,7 @@ func TestLabelMatches(t *testing.T) {
 			t.Errorf("%q must not match conductor", l)
 		}
 	}
-	s1 := mindView{Name: "sibling-1", Pane: "%7", UUID: "818c3f5e-997c"}
+	s1 := mindView{Name: "sibling-1", Pane: "%7", UUID: "77777777-0000"}
 	if labelMatches("sibling-10", s1) || !labelMatches("sibling-1 %7", s1) {
 		t.Error("sibling-1 boundary")
 	}
@@ -42,10 +42,10 @@ func TestPickReroutes(t *testing.T) {
 		{ID: 105, Text: "[verify #100] done already", Status: "done", TS: old},
 	}
 	minds := []mindView{
-		{Name: "conductor", Pane: "%6", UUID: "12444bc8-x", State: "working"}, // current assignee, busy
-		{Name: "", Pane: "%8", UUID: "f9129044-x", State: "idle"},             // the author, and unnamed
-		{Name: "philo", Pane: "%12", UUID: "7261eb6b-x", State: "idle"},       // idle but has a pending offer
-		{Name: "pmf", Pane: "%13", UUID: "e125a3b2-x", State: "idle"},         // the one eligible receiver
+		{Name: "conductor", Pane: "%6", UUID: "66666666-x", State: "working"}, // current assignee, busy
+		{Name: "", Pane: "%8", UUID: "88888888-x", State: "idle"},             // the author, and unnamed
+		{Name: "philo", Pane: "%12", UUID: "12121212-x", State: "idle"},       // idle but has a pending offer
+		{Name: "pmf", Pane: "%13", UUID: "13131313-x", State: "idle"},         // the one eligible receiver
 		{Name: "ghost", Pane: "", UUID: "0000", State: "idle"},                // name-dead: no pane
 	}
 	pending := func(p string) int {
@@ -67,7 +67,7 @@ func TestPickReroutes(t *testing.T) {
 		t.Errorf("recently re-routed must not move again: %+v", r)
 	}
 	// the only idle mind is the author -> silence
-	minds2 := []mindView{{Name: "eight", Pane: "%8", UUID: "f9129044-x", State: "idle"}}
+	minds2 := []mindView{{Name: "eight", Pane: "%8", UUID: "88888888-x", State: "idle"}}
 	if r := pickReroutes(items, minds2, now, time.Hour, nil, nil); len(r) != 0 {
 		t.Errorf("author must never verify itself: %+v", r)
 	}

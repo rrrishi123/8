@@ -37,22 +37,36 @@ type socialEvent struct {
 	ToMind  string `json:"to,omitempty"`   // route: receiver
 }
 
-// sameMind — one identity under different spellings (ackKey, else pane token).
+// sameMind — one identity under different spellings. HEX FIRST (omarchy-main's
+// review of #28): a session uuid (or its first 8 hex) is the durable identity; a
+// pane token %N is a CURRENT binding that is re-minted on every tmux restart, so
+// two labels that both carry hex are compared on hex alone — "%7 (77777777…)" and
+// "%7 (99999999…)" are two minds that held %7 at different times, not one. The
+// pane token decides only when neither side carries hex; ackKey's string fallback
+// last. Known residual: two BARE "%7" labels from different lifetimes still fold;
+// the fix for that is lineage (pane→uuid over time), not a string rule.
 func sameMind(a, b string) bool {
 	if strings.TrimSpace(a) == "" || strings.TrimSpace(b) == "" {
 		return false
 	}
-	if ackKey(a) == ackKey(b) {
-		return true
+	la, lb := strings.ToLower(a), strings.ToLower(b)
+	ha, hb := ackHexRe.FindString(la), ackHexRe.FindString(lb)
+	if ha != "" && hb != "" {
+		return ha[:8] == hb[:8]
 	}
-	pa, pb := ackPaneRe.FindString(strings.ToLower(a)), ackPaneRe.FindString(strings.ToLower(b))
-	return pa != "" && pa == pb
+	if pa, pb := ackPaneRe.FindString(la), ackPaneRe.FindString(lb); pa != "" && pb != "" {
+		return pa == pb
+	}
+	return ackKey(a) == ackKey(b)
 }
 
+// excerpt — the first n RUNES (not bytes: the ledger is full of — and →, and a
+// byte cut mid-rune would ship U+FFFD in the JSON; omarchy-main's review of #28).
 func excerpt(s string, n int) string {
 	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
-	if len(s) > n {
-		return s[:n] + "…"
+	r := []rune(s)
+	if len(r) > n {
+		return string(r[:n]) + "…"
 	}
 	return s
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 const (
@@ -17,10 +18,10 @@ const (
 
 func socialFixture() []workItem {
 	return []workItem{
-		{ID: 1, Kind: "task", Status: "done", By: "%6", TS: tsA, FlippedBy: "sibling-1 (818c3f5e)", Claimable: true},
-		{ID: 2, Kind: "record", Status: "done", By: "%8 (f9129044)", TS: tsB, Text: "[%8 review] AGREE on #1"},
+		{ID: 1, Kind: "task", Status: "done", By: "%6", TS: tsA, FlippedBy: "sibling-1 (77777777)", Claimable: true},
+		{ID: 2, Kind: "record", Status: "done", By: "%8 (88888888)", TS: tsB, Text: "[%8 review] AGREE on #1"},
 		{ID: 3, Kind: "task", Status: "done", By: "%6", TS: tsC, Text: "proposal", Need: 2, FlippedBy: "consensus:2-ack",
-			Acks: []ack{{By: "%8 (f9129044-e1f3-4ff4-862a-fe4dcb1cdbda)", Verdict: "agree", TS: tsB}, {By: "%12 (7261eb6b)", Verdict: "agree", TS: tsC}}},
+			Acks: []ack{{By: "%8 (88888888-0000-4000-8000-000000000088)", Verdict: "agree", TS: tsB}, {By: "%12 (12121212)", Verdict: "agree", TS: tsC}}},
 		{ID: 4, Kind: "task", Status: "todo", By: "%6", TS: tsC, Text: "pool item", DeclinedBy: "%8"},
 		{ID: 5, Kind: "record", Status: "done", By: "allocator", TS: tsC, Text: "[allocator] offered claimable #4 -> %13 (author-opted-in)"},
 	}
@@ -69,7 +70,7 @@ func TestSocialProfileFoldsSpellings(t *testing.T) {
 	if q.AgreesReceived != 2 || q.ConsensusClosed != 1 || q.TasksAuthored != 3 || q.Claimable != 1 {
 		t.Fatalf("%%6 profile: agrees_received=%d consensus_closed=%d tasks=%d claimable=%d", q.AgreesReceived, q.ConsensusClosed, q.TasksAuthored, q.Claimable)
 	}
-	s := socialProfileOf(socialFixture(), "818c3f5e-997c-4c05-a9e3-61d87d1d5057")
+	s := socialProfileOf(socialFixture(), "77777777-0000-4000-8000-000000000077")
 	if s.Done != 1 {
 		t.Fatalf("sibling-1 closed #1 (full uuid vs hex8 spelling), done=%d", s.Done)
 	}
@@ -116,5 +117,34 @@ func TestSocialHandlersReadOnly(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(workFile()); len(b) == 0 {
 		t.Fatal("ledger must be untouched")
+	}
+}
+
+// omarchy-main's review of #28: identity is hex-first (a pane is re-minted), and
+// excerpts cut on runes, never mid-character.
+func TestSameMindHexFirstAndRuneExcerpt(t *testing.T) {
+	if sameMind("%7 (77777777-0000-4000-8000-000000000077)", "%7 (99999999)") {
+		t.Fatal("two minds that held %7 at different times must NOT fold: hex decides when both carry it")
+	}
+	if !sameMind("%7", "sibling-1 %7 (77777777)") {
+		t.Fatal("a bare pane label must still match the same pane's labelled spelling (one side has no hex)")
+	}
+	if !sameMind("77777777-0000-4000-8000-000000000077", "x (77777777)") {
+		t.Fatal("full uuid and hex8 are one mind")
+	}
+	if sameMind("", "%7") || sameMind("%7", "") {
+		t.Fatal("blank never matches")
+	}
+	s := "a — b → c — d → e"
+	for n := 1; n <= len([]rune(s)); n++ {
+		if e := excerpt(s, n); !utf8.ValidString(e) || strings.ContainsRune(e, utf8.RuneError) {
+			t.Fatalf("excerpt(%d) split a rune: %q", n, e)
+		}
+	}
+	if e := excerpt("héllo wörld", 5); e != "héllo…" {
+		t.Fatalf("rune cut: got %q", e)
+	}
+	if e := excerpt("short", 50); e != "short" {
+		t.Fatalf("no cut: got %q", e)
 	}
 }

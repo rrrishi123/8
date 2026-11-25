@@ -72,7 +72,7 @@ func TestConsensusDisagreeHoldsThenClears(t *testing.T) {
 }
 
 // #9713 (%8): one mind signing two ways must count ONCE. 'sibling-1' (bare) and
-// 'sibling-1 (818c3f5e)' are the same voter; keyed on the raw string they'd be
+// 'sibling-1 (77777777)' are the same voter; keyed on the raw string they'd be
 // two agrees and self-close a Need=2 item on one mind. ackKey resolves both to
 // the uuid's first-8-hex (bare name via roles.json), so the item stays open.
 func TestConsensusAckDedupesSpellings(t *testing.T) {
@@ -81,7 +81,7 @@ func TestConsensusAckDedupesSpellings(t *testing.T) {
 	if err := os.MkdirAll(home+"/.8", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(home+"/.8/roles.json", []byte(`{"sibling-1":"818c3f5e-997c-4c05-b057-054da2b60346"}`), 0o644); err != nil {
+	if err := os.WriteFile(home+"/.8/roles.json", []byte(`{"sibling-1":"77777777-0000-4000-8000-000000000077"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	writeWork([]workItem{{ID: 1, Text: "decision", Kind: "task", Status: "todo", Need: 2}})
@@ -96,15 +96,15 @@ func TestConsensusAckDedupesSpellings(t *testing.T) {
 		return items[0]
 	}
 	// sanity: ackKey folds both spellings to the same key
-	if ackKey("sibling-1") != ackKey("sibling-1 (818c3f5e)") {
-		t.Fatalf("ackKey must fold spellings: %q vs %q", ackKey("sibling-1"), ackKey("sibling-1 (818c3f5e)"))
+	if ackKey("sibling-1") != ackKey("sibling-1 (77777777)") {
+		t.Fatalf("ackKey must fold spellings: %q vs %q", ackKey("sibling-1"), ackKey("sibling-1 (77777777)"))
 	}
 	post(`{"id":1,"ack":"agree","by":"sibling-1"}`)
-	post(`{"id":1,"ack":"agree","by":"sibling-1 (818c3f5e)"}`) // SAME mind, 2nd spelling
+	post(`{"id":1,"ack":"agree","by":"sibling-1 (77777777)"}`) // SAME mind, 2nd spelling
 	if it := read(); it.Status != "todo" || len(it.Acks) != 1 {
 		t.Fatalf("one mind two spellings must stay 1 ack / todo: status=%q acks=%d", it.Status, len(it.Acks))
 	}
-	post(`{"id":1,"ack":"agree","by":"%9 (1255da01)"}`) // a genuinely different mind -> now 2 -> closes
+	post(`{"id":1,"ack":"agree","by":"%9 (99999999)"}`) // a genuinely different mind -> now 2 -> closes
 	if it := read(); it.Status != "done" {
 		t.Fatalf("second distinct mind must close: status=%q", it.Status)
 	}
