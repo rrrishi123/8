@@ -3955,7 +3955,12 @@ func (c *collector) handleHealth(w http.ResponseWriter, r *http.Request) {
 		ids[i] = b.id
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"alive": true, "sessions": ids, "build": buildSHA})
+	lc, lcReason := ledgerCorruptState()
+	var corrupt any
+	if lc {
+		corrupt = lcReason
+	}
+	json.NewEncoder(w).Encode(map[string]any{"alive": true, "sessions": ids, "build": buildSHA, "ledger_corrupt": corrupt})
 }
 
 // handleType types a string into the focused element of a context via REAL
@@ -4743,6 +4748,9 @@ func main() {
 	apertureMB := flag.Int("aperture-mb", 3000, "soft parent+children memory threshold (MB): above this the FAIR aperture parks the heaviest non-focused tab (gBrowser.discardBrowser — memory freed, tab identity preserved, reloads on focus). INVARIANT: no tab is ever closed. 0 disables. Watchdog 4500 full-recycle stays as the backstop.")
 	token := flag.String("token", os.Getenv("EIGHT_TOKEN"), "shared secret required on every endpoint via X-8-Token/Bearer (empty = auth off, local-dev default)")
 	origins := flag.String("origins", os.Getenv("EIGHT_ORIGINS"), "comma CORS origin allowlist, e.g. http://localhost:8088 (empty = *, local-dev)")
+	allocEvery := flag.Duration("allocator", envDuration("EIGHT_ALLOCATOR", 0), "ALLOCATOR (#9580/#9574): period for the allocator loop (verify re-router + declared waits). DEFAULT OFF (0): enabling is an explicit act — -allocator=5m, or EIGHT_ALLOCATOR=5m in the env so a watchdog revive (which recomputes argv) keeps it on (pmf #9589, %8 #9592)")
+	allocStale := flag.Duration("allocator-stale", 60*time.Minute, "a todo [verify #N] never acked for this long is re-routed by the allocator")
+	waitsEvery := flag.Duration("waits", envDuration("EIGHT_WAITS", 0), "ALLOCATOR slice-2 (#9574): period for evaluating declared waits (/wait) and waking their panes. DEFAULT OFF (0): -waits=5m, or EIGHT_WAITS=5m in the env. Its own switch so slice-1 can run alone on a first bounce (49fe2c0b #9626)")
 	webDir := flag.String("web-dir", os.Getenv("EIGHT_WEB_DIR"), "optional built cockpit directory to serve at / on the collector's port")
 	flag.Parse()
 	peerJoin, err := peerJoinFromEnv()
@@ -4807,16 +4815,17 @@ func main() {
 		time.Sleep(200 * time.Millisecond)
 		go c.activateCockpit() // every (re)start returns Firefox to 8's tab
 		time.Sleep(200 * time.Millisecond)
-		go c.memoryAperture(*apertureMB) // self-regulate parent memory (heap-minimize at the soft threshold)
-		go c.reconcileLoop()             // keep the tab manifest true even when no cockpit is watching
-		go c.seatWatchLoop()             // #11: PUSH change events for every seat (the CHANNEL atom, realized)
-		go c.paneWitnessLoop()           // #277: witness pane appearance (first_seen + pane.appeared/vanished)
-		go c.staleLoop()                 // #472b: revert 6h-silent doing items — the WIP lane self-heals
-		go c.epochLoop()                 // #645: the operator-epoch clock — ledger locked to operator-time
-		go c.innerHostLoop()             // #850: poll docker stats + colima list off the request path
-		go c.brokerHealLoop()            // #3863: the witness heals its own CHANNEL arm — re-wire a broken-pipe chrome broker
-		go c.watchHumanForeground()      // "you are here": track the human's foreground tab (cache-first, lean)
-		go func() {                      // project eight.db every 30s so DBeaver always sees fresh data
+		go c.memoryAperture(*apertureMB)                          // self-regulate parent memory (heap-minimize at the soft threshold)
+		go c.reconcileLoop()                                      // keep the tab manifest true even when no cockpit is watching
+		go c.seatWatchLoop()                                      // #11: PUSH change events for every seat (the CHANNEL atom, realized)
+		go c.paneWitnessLoop()                                    // #277: witness pane appearance (first_seen + pane.appeared/vanished)
+		go c.staleLoop()                                          // #472b: revert 6h-silent doing items — the WIP lane self-heals
+		go c.epochLoop()                                          // #645: the operator-epoch clock — ledger locked to operator-time
+		go c.innerHostLoop()                                      // #850: poll docker stats + colima list off the request path
+		go c.brokerHealLoop()                                     // #3863: the witness heals its own CHANNEL arm — re-wire a broken-pipe chrome broker
+		go c.allocatorLoop(*allocEvery, *allocStale, *waitsEvery) // #9580/#9574: ALLOCATOR — slice-1 re-routes + slice-2 waits, each behind its own switch, one beat gate above both
+		go c.watchHumanForeground()                               // "you are here": track the human's foreground tab (cache-first, lean)
+		go func() {                                               // project eight.db every 30s so DBeaver always sees fresh data
 			if _, err := exec.LookPath("sqlite3"); err != nil {
 				return
 			}
@@ -4935,6 +4944,8 @@ func main() {
 	mux.HandleFunc("/budget", c.handleBudget)
 	mux.HandleFunc("/budget/poke", c.handleBudgetPoke) // fire a trivial call to renew the rate-limit headers (budget.go)
 	mux.HandleFunc("/mind", c.handleMind)
+	mux.HandleFunc("/wait", c.handleWait)                      // #9574 slice-2: declared waits — GET the feed of what minds wait for; POST declares
+	mux.HandleFunc("/allocator/allow", c.handleAllocatorAllow) // #9602: opt-in, fail-closed receiver registry — a mind registers ITSELF
 	mux.HandleFunc("/compose", c.handleCompose)
 	mux.HandleFunc("/delegate", c.handleDelegate)    // cheap work in a fresh claude -p context, with billed cost (compose.go)      // vertical-scaling knob: mint a session at a CHOSEN context (compose.go)            // identity contract: seat=address, name=identity, uuid/%N/pid=bindings (mind.go)        // the unified rate limit, read from tapped responses; gates the playlist // the session's measured token weight, turn by turn (inspect.go) // evaluate inside a pane's live process via its BUN_INSPECT socket (inspect.go)          // the mind pulls its offers and decides take|decline (inbox.go)      // %N per tmux boot -> uuid; quarantined stale rows (lineage.go)          // #277 witnessed pane roster (first_seen per pane)
 	mux.HandleFunc("/panes/send", c.handlePanesSend) // type one prompt into selected panes / all live claude at once — the operator+agent fan-out nerve

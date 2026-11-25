@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,7 +24,8 @@ import (
 //   - take = doing + acked by the mind; decline = back to the pool, recorded;
 //   - WIP=1 on offers: one outstanding offer per mind, never a flood;
 //   - the only thing ever typed is a one-line pointer to the inbox, and only
-//     when the pane is IDLE (no "esc to interrupt" on screen), 30min cooldown.
+//     when the pane is IDLE (no "esc to interrupt" on screen), on a cooldown
+//     (EIGHT_NUDGE_COOLDOWN_S, default 30min — see nudgeCooldown).
 // EIGHT_TYPE_SUMMON=1 restores the legacy typed summon (rollback only).
 
 type offer struct {
@@ -63,17 +65,7 @@ func saveInbox(key string, offers []offer) {
 	if err != nil {
 		return
 	}
-	tmp, err := os.CreateTemp(inboxDir(), ".inbox-*.json")
-	if err != nil {
-		return
-	}
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return
-	}
-	tmp.Close()
-	_ = os.Rename(tmp.Name(), inboxPath(key))
+	_ = durableWrite(inboxDir(), inboxPath(key), b) // #9603: fsync + dir fsync
 }
 
 // paneUUIDMap — current pane id -> session uuid (one tmux call, one ps scan).
@@ -223,14 +215,30 @@ func (c *collector) offer(item workItem, reason string) bool {
 	return true
 }
 
+// nudgeCooldown — min interval between inbox pointers to one pane (#9570: the
+// 30min default let an offer sit unread for up to half an hour of triggerless
+// idleness — the measured 16:17→16:47 lag on 2026-11-24). Env-tunable
+// (EIGHT_NUDGE_COOLDOWN_S); invalid/negative → the safe 1800s default; 0 means
+// every dispatch pass. Shortening it stays consume-not-compound: the pointer
+// only ever fires into an IDLE pane while UNREAD offers exist, and reading the
+// inbox silences it.
+func nudgeCooldown() time.Duration {
+	if v := os.Getenv("EIGHT_NUDGE_COOLDOWN_S"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return 30 * time.Minute
+}
+
 // nudge — the ONE line the collector may still type: a pointer to the inbox,
-// never the work, only into an IDLE pane, once per 30min per pane.
+// never the work, only into an IDLE pane, once per nudgeCooldown() per pane.
 func (c *collector) nudge(pane, uuid string, n int) {
 	if pane == "" || !paneIdle(pane) {
 		return
 	}
 	nudgeMu.Lock()
-	if time.Since(lastNudge[pane]) < 30*time.Minute {
+	if time.Since(lastNudge[pane]) < nudgeCooldown() {
 		nudgeMu.Unlock()
 		return
 	}
@@ -334,6 +342,12 @@ func (c *collector) handleInbox(w http.ResponseWriter, r *http.Request) {
 		if json.NewDecoder(r.Body).Decode(&p) != nil || (p.Action != "take" && p.Action != "decline" && p.Action != "offer" && p.Action != "say") || (p.ID == 0 && p.Action != "say") {
 			http.Error(w, `{"error":"need action take|decline|offer|say; id required except for say"}`, 400)
 			return
+		}
+		if p.Action == "take" || p.Action == "decline" { // #9603: these flip a work item via writeWork — refuse over a corrupt ledger
+			if lc, reason := ledgerCorruptState(); lc {
+				http.Error(w, "ledger corrupt \u2014 take/decline refused (#9603): "+reason, http.StatusServiceUnavailable)
+				return
+			}
 		}
 		if p.Action == "offer" { // a mind hands an item to another mind's inbox — no playlist, no typing
 			// BUG FIX (T16 / #1242): the recipient is whoever the offerer NAMED — by
