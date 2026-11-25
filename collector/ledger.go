@@ -87,6 +87,18 @@ type workItem struct {
 	// the leak-path items (#9547 cherry-pick, #9555 Slack, #9659) into panes.
 	// make_tasks.py stamps the P-backlog; an author sets it when they mean it.
 	Claimable bool `json:"claimable,omitempty"`
+	// VERIFICATION RECEIPT ON CLOSE (#9757, %7 #9754): a task's `done` is only as
+	// true as who checked it — ~1 in 7 done tasks were SELF-asserted by their own
+	// author with no independent check, worst among outward tasks (tag/deploy). On
+	// a flip to done we stamp the closer, the time, and the WITNESS act-id that
+	// anchors the close in the ledger (grounded in the record, not a bare flag),
+	// plus SelfClosed = the closer is the author (done, but not a second mind's
+	// verification). Records (born done) are messages, never stamped. Non-blocking:
+	// the row simply stops being able to LOOK verified when it is not.
+	VerifiedAt  string `json:"verified_at,omitempty"`
+	VerifiedBy  string `json:"verified_by,omitempty"`
+	VerifiedAct int64  `json:"verified_act,omitempty"`
+	SelfClosed  bool   `json:"self_closed,omitempty"`
 }
 
 // ack — one receipt against a work item (#53). By is the acking mind (name/role/
@@ -1016,7 +1028,8 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 					if p.Sweep {
 						items[i].FlippedBy += " (swept)"
 					}
-					if p.Status != "todo" { // inbox.go: a flip resolves any standing offer of this item
+					stampVerifyReceipt(&items[i], now) // #9757: a done TASK carries its own verification provenance
+					if p.Status != "todo" {            // inbox.go: a flip resolves any standing offer of this item
 						dropOfferEverywhere(items[i].ID)
 					}
 					ackID = items[i].ID
