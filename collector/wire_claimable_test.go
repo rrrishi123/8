@@ -51,7 +51,7 @@ func TestClaimableSetViaPOST(t *testing.T) {
 		t.Fatalf("adjust claimable:false must clear it, got %v", it.Claimable)
 	}
 	// %8 #9759 D2: only the author (any spelling), operator or make_tasks may stamp; the stamper is recorded
-	post(`{"id":2,"claimable":true,"by":"%12 (7261eb6b-b097-46bb-93d0-71cc54d95684)"}`)
+	post(`{"id":2,"claimable":true,"by":"%12 (12121212-0000-4000-8000-000000000012)"}`)
 	if it := read(2); it.Claimable {
 		t.Fatalf("a non-author must not stamp another mind's item claimable, got %v", it.Claimable)
 	}
@@ -59,8 +59,8 @@ func TestClaimableSetViaPOST(t *testing.T) {
 	if it := read(2); it.Claimable {
 		t.Fatalf("blank `by` must not stamp, got %v", it.Claimable)
 	}
-	post(`{"id":2,"claimable":true,"by":"conductor %6 (12444bc8)"}`) // author, different spelling: same ackKey? %6 pane token
-	if it := read(2); !it.Claimable || it.ClaimableBy != "conductor %6 (12444bc8)" {
+	post(`{"id":2,"claimable":true,"by":"conductor %6 (66666666)"}`) // author, different spelling: same ackKey? %6 pane token
+	if it := read(2); !it.Claimable || it.ClaimableBy != "conductor %6 (66666666)" {
 		t.Fatalf("author under another spelling must stamp and be recorded, got claimable=%v by=%q", it.Claimable, it.ClaimableBy)
 	}
 	post(`{"id":2,"claimable":false,"by":"operator"}`)
@@ -75,11 +75,11 @@ func TestClaimableSetViaPOST(t *testing.T) {
 // rememberDecline keeps every decliner once, de-duped by identity not spelling.
 func TestRememberDeclineSet(t *testing.T) {
 	var it workItem
-	rememberDecline(&it, "sibling-1 (818c3f5e)")
+	rememberDecline(&it, "sibling-1 (77777777)")
 	rememberDecline(&it, "%7")
-	rememberDecline(&it, "sibling-1 (818c3f5e-997c-4c05-a9e3-61d87d1d5057)") // same mind, third spelling
-	rememberDecline(&it, "%12 (7261eb6b)")
-	if it.DeclinedBy != "%12 (7261eb6b)" {
+	rememberDecline(&it, "sibling-1 (77777777-0000-4000-8000-000000000007)") // same mind, third spelling
+	rememberDecline(&it, "%12 (12121212)")
+	if it.DeclinedBy != "%12 (12121212)" {
 		t.Fatalf("DeclinedBy must track the latest, got %q", it.DeclinedBy)
 	}
 	if len(it.Declined) != 3 { // sibling-1 by hex, %7 by pane token (different keys: hex vs pane), philo by hex
