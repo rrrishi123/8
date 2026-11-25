@@ -136,17 +136,7 @@ func saveLineage(l *lineageFile) {
 		return
 	}
 	dir := os.ExpandEnv("$HOME/.8")
-	tmp, err := os.CreateTemp(dir, ".lineage-*.json")
-	if err != nil {
-		return
-	}
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return
-	}
-	tmp.Close()
-	_ = os.Rename(tmp.Name(), lineagePath())
+	_ = durableWrite(dir, lineagePath(), b) // #9603: fsync + dir fsync
 }
 
 // recordLineage — merge this tick's pane->uuid sightings under `boot`; returns

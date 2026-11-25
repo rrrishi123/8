@@ -3955,7 +3955,12 @@ func (c *collector) handleHealth(w http.ResponseWriter, r *http.Request) {
 		ids[i] = b.id
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"alive": true, "sessions": ids, "build": buildSHA})
+	lc, lcReason := ledgerCorruptState()
+	var corrupt any
+	if lc {
+		corrupt = lcReason
+	}
+	json.NewEncoder(w).Encode(map[string]any{"alive": true, "sessions": ids, "build": buildSHA, "ledger_corrupt": corrupt})
 }
 
 // handleType types a string into the focused element of a context via REAL
