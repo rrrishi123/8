@@ -37,6 +37,8 @@ web/.env
 # cross-compiled collector binaries (linux/arm64, etc.) — build from source, never track
 /collector-linux-*
 /collector-*-arm64
+# sibling-1 #9703: the arm64 wildcard left a darwin-amd64 cross-build unignored (gitignore has no trailing comments)
+/collector-darwin-*
 
 # private design-system reference — never public
 /web/design-reference/_ds/
