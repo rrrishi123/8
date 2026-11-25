@@ -37,7 +37,7 @@ type socialEvent struct {
 	ToMind  string `json:"to,omitempty"`   // route: receiver
 }
 
-// sameMind — one identity under different spellings. HEX FIRST (omarchy-main's
+// sameMind — one identity under different spellings. HEX FIRST (the external user's
 // review of #28): a session uuid (or its first 8 hex) is the durable identity; a
 // pane token %N is a CURRENT binding that is re-minted on every tmux restart, so
 // two labels that both carry hex are compared on hex alone — "%7 (77777777…)" and
@@ -61,7 +61,7 @@ func sameMind(a, b string) bool {
 }
 
 // excerpt — the first n RUNES (not bytes: the ledger is full of — and →, and a
-// byte cut mid-rune would ship U+FFFD in the JSON; omarchy-main's review of #28).
+// byte cut mid-rune would ship U+FFFD in the JSON; the external user review of #28).
 func excerpt(s string, n int) string {
 	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
 	r := []rune(s)
