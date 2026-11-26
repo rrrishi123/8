@@ -180,13 +180,41 @@ func ackKey(by string) string {
 	return s
 }
 
+// reservedActorPrefixes are namespaces the collector mints for its OWN voice and
+// no caller may claim: consensus: (self-close / disagree-hold, this file ~1045),
+// allocator: (reroute, allocator.go), auto: (playlist, this file ~669). Those
+// internal writers set FlippedBy DIRECTLY and never pass through flipActor, so
+// reserving the prefixes here costs them nothing.
+var reservedActorPrefixes = []string{"consensus:", "allocator:", "auto:"}
+
+// reservedActor reports whether s impersonates one of the collector's own voices.
+func reservedActor(s string) bool {
+	for _, p := range reservedActorPrefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // flipActor resolves who is flipping a status: declared body `by` wins, the
 // X-8-Actor header (#314: the WHO rides the frame) is the fallback, blank is blank.
+//
+// A caller may NOT stamp itself with a reserved namespace (reservedActor): a
+// loopback POST {status:done, by:"consensus:3-ack"} would otherwise forge a
+// consensus self-close and trip cut-release.sh's GREEN gate (flipped_by ~
+// ^consensus:) with ZERO real acks — the forge reproduced in #9869. Such a claim
+// is dropped here, the single choke point every caller-driven flip passes
+// through (#9872), so the stamp lands blank and the gate stays shut. The genuine
+// consensus close is minted internally and is unaffected.
 func flipActor(by string, r *http.Request) string {
-	if by != "" {
+	if by != "" && !reservedActor(by) {
 		return by
 	}
-	return r.Header.Get("X-8-Actor")
+	if h := r.Header.Get("X-8-Actor"); h != "" && !reservedActor(h) {
+		return h
+	}
+	return ""
 }
 
 func workFile() string { return os.ExpandEnv("$HOME/.8/work.json") }
