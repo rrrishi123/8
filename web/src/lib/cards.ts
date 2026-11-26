@@ -150,7 +150,10 @@ export function cardSize(c: Card): { w: number; h: number } {
     body = Math.round(m.height) + 2 * GRID.padY;
   }
   const minH = c.minH ?? (c.aspect ? 0 : LH * 3 + 2 * GRID.padY);
-  const maxH = c.maxH ?? (c.aspect ? Infinity : Math.round(UNIT * 1.15));
+  // #9900: aspect cards had maxH=Infinity, so a tall tab (e.g. a long Claude.ai
+  // chat, aspect→0.2 floor) grew to ~5× its width (1460px) and blew up its lane.
+  // Bound them to 2× width; the thumbnail crops to the top instead of dominating.
+  const maxH = c.maxH ?? (c.aspect ? Math.round(UNIT * 2) : Math.round(UNIT * 1.15));
   body = Math.max(minH, Math.min(maxH, body));
   // + the card's own top+bottom border: rect.h is a border-box (box-sizing:border-box),
   // so the interior the body gets is rect.h − 2×border. Without this the measured body
