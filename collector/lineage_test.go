@@ -148,8 +148,8 @@ func TestWSFrameAndUsage(t *testing.T) {
 func TestSessionIDFor(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	os.MkdirAll(os.ExpandEnv("$HOME/.claude/sessions"), 0o755)
-	os.WriteFile(os.ExpandEnv("$HOME/.claude/sessions/4242.json"), []byte(`{"pid":4242,"sessionId":"f9129044-e1f3-4ff4-862a-fe4dcb1cdbda","tmux":"sess1:@4.%24"}`), 0o644)
-	if sessionIDFor("4242") != "f9129044-e1f3-4ff4-862a-fe4dcb1cdbda" || sessionIDFor("1") != "" {
+	os.WriteFile(os.ExpandEnv("$HOME/.claude/sessions/4242.json"), []byte(`{"pid":4242,"sessionId":"88888888-0000-4000-8000-000000000088","tmux":"sess1:@4.%24"}`), 0o644)
+	if sessionIDFor("4242") != "88888888-0000-4000-8000-000000000088" || sessionIDFor("1") != "" {
 		t.Fatal("sessionIDFor wrong")
 	}
 }
@@ -169,7 +169,7 @@ func TestParseBudgetHeaders(t *testing.T) {
 }
 
 func TestFirst8(t *testing.T) {
-	if first8("12444bc8-4325") != "12444bc8" || first8("") != "—" || first8("abc") != "abc" {
+	if first8("66666666-0000") != "66666666" || first8("") != "—" || first8("abc") != "abc" {
 		t.Fatal("first8 wrong")
 	}
 }

@@ -11,18 +11,18 @@ import (
 )
 
 const (
-	tuEight = "f9129044-e1f3-4ff4-862a-fe4dcb1cdbda" // %8
-	tuPmf   = "e125a3b2-1b87-4c3d-9e0f-aabbccddeeff" // real-length stand-in
-	tuWork  = "89444ffe-608b-4d2e-8f1a-0123456789ab" // the work session (%29), never opted in
+	tuEight = "88888888-0000-4000-8000-000000000088" // %8
+	tuPmf   = "13131313-0000-4000-8000-000000000013" // real-length stand-in
+	tuWork  = "29292929-0000-4000-8000-000000000029" // the work session (%29), never opted in
 )
 
 func TestParseAllowlist(t *testing.T) {
-	set, ignored := parseAllowlistReport("# comment\n" + tuEight + "  # %8\n\n  " + strings.ToUpper(tuPmf) + "   \n12444bc8-4325\nshort\n")
+	set, ignored := parseAllowlistReport("# comment\n" + tuEight + "  # %8\n\n  " + strings.ToUpper(tuPmf) + "   \n66666666-0000\nshort\n")
 	if len(set) != 2 || !allowed(set, strings.ToUpper(tuEight)) || !allowed(set, tuPmf) {
 		t.Fatalf("parse: %+v", set)
 	}
 	// a prefix is NOT an entry: it is reported, never matched (exact-match registry)
-	if len(ignored) != 2 || ignored[0] != "12444bc8-4325" || allowed(set, "12444bc8-4325") || allowed(set, "12444bc8-4325-4c83-8f42-ed642122f0da") {
+	if len(ignored) != 2 || ignored[0] != "66666666-0000" || allowed(set, "66666666-0000") || allowed(set, "66666666-0000-4000-8000-000000000066") {
 		t.Fatalf("short tokens must be ignored and visible: %v", ignored)
 	}
 	if allowed(set, "") || allowed(set, tuWork) || allowed(map[string]bool{}, tuEight) {
@@ -76,7 +76,7 @@ func TestAllowHandlerEnforces(t *testing.T) {
 	if rec := post("10.0.0.9:4242", `{"uuid":"`+tuEight+`","by":"lan"}`); rec.Code != 403 {
 		t.Fatalf("LAN caller must be refused, got %d %s", rec.Code, rec.Body)
 	}
-	if rec := post("127.0.0.1:4242", `{"uuid":"f9129044-e1f3","by":"%8"}`); rec.Code != 400 {
+	if rec := post("127.0.0.1:4242", `{"uuid":"88888888-0000","by":"%8"}`); rec.Code != 400 {
 		t.Fatalf("prefix must be refused, got %d %s", rec.Code, rec.Body)
 	}
 	if rec := post("127.0.0.1:4242", `{"uuid":"`+tuWork+`","by":"someone"}`); rec.Code != 403 {
@@ -98,11 +98,11 @@ func TestAllowHandlerEnforces(t *testing.T) {
 		t.Fatalf("withdraw: %d %s set=%v", rec.Code, rec.Body, loadAllowlist())
 	}
 	// GET reports hand-typed prefixes as ignored instead of silently dropping them
-	os.WriteFile(path, []byte(tuEight+"\n12444bc8-4325 # prefix\n"), 0o644)
+	os.WriteFile(path, []byte(tuEight+"\n66666666-0000 # prefix\n"), 0o644)
 	req := httptest.NewRequest(http.MethodGet, "/allocator/allow", nil)
 	rec := httptest.NewRecorder()
 	c.handleAllocatorAllow(rec, req)
-	if !strings.Contains(rec.Body.String(), `"ignored":["12444bc8-4325"]`) || !strings.Contains(rec.Body.String(), `"n":1`) {
+	if !strings.Contains(rec.Body.String(), `"ignored":["66666666-0000"]`) || !strings.Contains(rec.Body.String(), `"n":1`) {
 		t.Fatalf("GET report: %s", rec.Body)
 	}
 }
