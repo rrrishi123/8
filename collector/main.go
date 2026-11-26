@@ -777,7 +777,7 @@ for(const tab of gB.tabs){
   const br=tab.linkedBrowser;if(!br)continue;
   const url=(br.currentURI&&br.currentURI.spec)||"";
   if(url.startsWith("http://localhost:8088"))continue;
-  if(leased.some(function(L){return L&&(url===L||url.indexOf(L)===0)}))continue;
+  if(leased.some(function(L){return L&&url===L}))continue;
   let pid=0;try{pid=br.browsingContext.currentWindowGlobal.osPid||0}catch(e){}
   cands.push({u:url.slice(0,90),mb:Math.round(mem[pid]||0),tab});
 }
