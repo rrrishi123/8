@@ -666,24 +666,8 @@ func (c *collector) memoryAperture(softMB int) {
 	flushScript := `const cb=arguments[arguments.length-1];(async()=>{try{
 for(let i=0;i<3;i++){Services.obs.notifyObservers(null,"memory-pressure","heap-minimize");await new Promise(r=>setTimeout(r,250));}
 cb("3");}catch(e){cb("ERR:"+e)}})();`
-	parkScript := `const cb=arguments[arguments.length-1];(async()=>{try{
-const win=Services.wm.getMostRecentWindow("navigator:browser");const gB=win.gBrowser;
-const info=await ChromeUtils.requestProcInfo();const mem={};for(const ch of info.children){mem[ch.pid]=(ch.memory||0)/1048576;}
-const cands=[];
-for(const tab of gB.tabs){
-  if(tab===gB.selectedTab)continue;
-  if(tab.getAttribute("pending")==="true")continue;
-  const br=tab.linkedBrowser;if(!br)continue;
-  const url=(br.currentURI&&br.currentURI.spec)||"";
-  if(url.startsWith("http://localhost:8088"))continue;
-  let pid=0;try{pid=br.browsingContext.currentWindowGlobal.osPid||0}catch(e){}
-  cands.push({u:url.slice(0,90),mb:Math.round(mem[pid]||0),tab});
-}
-cands.sort((a,b)=>b.mb-a.mb);
-if(!cands.length){cb(JSON.stringify({parked:null}));return;}
-const v=cands[0];gB.discardBrowser(v.tab);
-cb(JSON.stringify({parked:v.u,mb:v.mb}));
-}catch(e){cb("ERR:"+e)}})();`
+	// parkScript is built per-tick (parkScriptFor) with the CURRENT live-lease set, so
+	// the aperture never discards a tab an agent is actively driving (#9556).
 	var lastFire, lastRecycle time.Time
 	recycleMB := recycleThresholdMB() // RAM-aware proactive-recycle bound (cross-platform, in Go)
 	const recycleCooldown = 5 * time.Minute
@@ -728,7 +712,11 @@ cb(JSON.stringify({parked:v.u,mb:v.mb}));
 		}
 		// STEP 2 (secondary) — genuine shortage even after the flush: FAIR-park the
 		// heaviest non-focused tab (content memory is real spend; identity conserved).
-		parked, err := c.execChrome(parkScript)
+		c.tmu.Lock()
+		leasedURLs := leasedTabURLs(c.manifest) // #9556: never park a tab another agent holds a LIVE lease on
+		c.tmu.Unlock()
+		lj, _ := json.Marshal(leasedURLs)
+		parked, err := c.execChrome(parkScriptFor(string(lj)))
 		if err != nil {
 			continue
 		}
@@ -756,6 +744,48 @@ cb(JSON.stringify({parked:v.u,mb:v.mb}));
 			}
 		}
 	}
+}
+
+// leasedTabURLs returns the URLs of tabs an agent currently holds a LIVE lease on
+// (claimLive && ClaimedBy set) — the set the aperture must never park out from under
+// a working agent (#9556). Caller holds c.tmu. Sorted for deterministic tests.
+func leasedTabURLs(manifest map[string]*tabRec) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range manifest {
+		if r != nil && r.URL != "" && r.ClaimedBy != "" && claimLive(r) && !seen[r.URL] {
+			seen[r.URL] = true
+			out = append(out, r.URL)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// parkScriptFor builds the aperture park script with the CURRENT live-lease URL set
+// injected, so a leased tab is skipped just like the cockpit tab is. Over-skip is
+// safe: the next-heaviest non-leased tab is parked, never a tab in active use.
+func parkScriptFor(leasedJSON string) string {
+	return `const cb=arguments[arguments.length-1];(async()=>{try{
+const win=Services.wm.getMostRecentWindow("navigator:browser");const gB=win.gBrowser;
+const info=await ChromeUtils.requestProcInfo();const mem={};for(const ch of info.children){mem[ch.pid]=(ch.memory||0)/1048576;}
+const leased=` + leasedJSON + `;
+const cands=[];
+for(const tab of gB.tabs){
+  if(tab===gB.selectedTab)continue;
+  if(tab.getAttribute("pending")==="true")continue;
+  const br=tab.linkedBrowser;if(!br)continue;
+  const url=(br.currentURI&&br.currentURI.spec)||"";
+  if(url.startsWith("http://localhost:8088"))continue;
+  if(leased.some(function(L){return L&&url===L}))continue;
+  let pid=0;try{pid=br.browsingContext.currentWindowGlobal.osPid||0}catch(e){}
+  cands.push({u:url.slice(0,90),mb:Math.round(mem[pid]||0),tab});
+}
+cands.sort((a,b)=>b.mb-a.mb);
+if(!cands.length){cb(JSON.stringify({parked:null}));return;}
+const v=cands[0];gB.discardBrowser(v.tab);
+cb(JSON.stringify({parked:v.u,mb:v.mb}));
+}catch(e){cb("ERR:"+e)}})();`
 }
 
 // handleFxChunk receives one WebM cluster from the HiddenFrame driver (POST body =
