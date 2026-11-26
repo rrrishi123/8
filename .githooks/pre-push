@@ -31,6 +31,16 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     echo "$hits" | sed 's/^/      /' >&2
     fail=1
   fi
+  # commit-MESSAGE leak: the diff-scan above misses trailers (69 Claude-Session
+  # trailers reached public origin/next this way, #9659). Scan only the commits
+  # being newly pushed (--not --remotes), so the already-public ones are not re-flagged.
+  msghits=$(git log "$local_sha" --not --remotes=origin --format='%H %B' 2>/dev/null | grep -inE 'claude\.ai/code/session_|^[[:space:]]*(co-authored-by:[[:space:]]*claude|claude-session:)|^[[:space:]]*generated with .*claude' | head -10 || true)
+  if [ -n "$msghits" ]; then
+    echo "" >&2
+    echo "  ✖ pre-push blocked ($local_ref): Claude attribution/session trailer in a commit MESSAGE — strip it (public repo)." >&2
+    echo "$msghits" | sed 's/^/      /' >&2
+    fail=1
+  fi
 done
 
 if command -v gitleaks >/dev/null 2>&1; then
