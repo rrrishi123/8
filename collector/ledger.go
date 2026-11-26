@@ -187,8 +187,12 @@ func ackKey(by string) string {
 // reserving the prefixes here costs them nothing.
 var reservedActorPrefixes = []string{"consensus:", "allocator:", "auto:"}
 
-// reservedActor reports whether s impersonates one of the collector's own voices.
+// reservedActor reports whether s impersonates one of the collector's own
+// voices. It normalizes first (trim + lowercase) so a near-miss — " consensus:",
+// "Consensus:" — can't slip the stamp past a reader that itself trims or
+// lowercases before matching the prefix.
 func reservedActor(s string) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
 	for _, p := range reservedActorPrefixes {
 		if strings.HasPrefix(s, p) {
 			return true
@@ -867,6 +871,13 @@ func (c *collector) revertOrphan(id int64, pane string) {
 // records who, optionally assigns a pane, and summons — so an idle worker pulls
 // its next task in one call. Without claim it just peeks.
 func (c *collector) handleWorkNext(w http.ResponseWriter, r *http.Request) {
+	// #9872: the claim path stamps By AND FlippedBy straight from ?claim=,
+	// bypassing flipActor — so guard the reserved namespaces here too, or a
+	// GET /work/next?claim=consensus:3-ack mints the collector's own voice.
+	if claim := r.URL.Query().Get("claim"); reservedActor(claim) {
+		http.Error(w, `{"error":"#9872: claim may not use a reserved actor namespace (consensus:/allocator:/auto:) — those are the collector's own voice"}`, http.StatusBadRequest)
+		return
+	}
 	c.tmu.Lock()
 	var items []workItem
 	if b, err := os.ReadFile(workFile()); err == nil {
@@ -1116,6 +1127,18 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 					// mutating). A blank closer stays allowed-and-blank (#323: honest,
 					// never guessed) — tightening unattributed flips is its own decision.
 					if p.Status == "done" && !p.Sweep && !isRecordItem(items[i]) {
+						// A consensus item (Need>0) closes ONLY via its own N-agree
+						// self-close (the p.Ack branch above). A caller may not flip it
+						// to done at all — else the forge survives dropping the stamp:
+						// the FLIP still lands, so the item reads done with zero acks
+						// and every reader (ledger view, /watchers, a human) sees a
+						// consensus proposal "closed" (#9872, from the #43 review).
+						// Vote with {ack:agree}; retire a stale one with the declared
+						// sweep:true (exempt above — it reads "(swept)", not achieved).
+						if items[i].Need > 0 {
+							http.Error(w, `{"error":"#9872: a consensus item (need>0) closes only via its own N-agree self-close — a caller may not flip it to done. POST {ack:agree} to vote, or {status:done,sweep:true} to retire a stale one."}`, http.StatusBadRequest)
+							return
+						}
 						receipt := strings.TrimSpace(p.Receipt)
 						if receipt == "" { // pmf #31: the verdict minds already post as text IS the receipt
 							receipt = strings.TrimSpace(p.Text)
