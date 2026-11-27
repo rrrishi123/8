@@ -36,7 +36,7 @@ func TestCodexPaneIdleAndSendGuard(t *testing.T) {
 case $1 in
   list-panes) echo '%19|test:9.1|codex|test';;
   capture-pane) cat "$HOME/screen";;
-  send-keys) echo "$*" >> "$HOME/keys";;
+  send-keys|set-buffer|paste-buffer) echo "$*" >> "$HOME/keys";;
 esac
 `)
 	oldProbe := paneTypingProbe
@@ -75,8 +75,23 @@ esac
 	// fake command, so no deferred keystrokes can escape the test boundary.
 	time.Sleep(1500 * time.Millisecond)
 	keys, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), "keys"))
-	if err != nil || strings.TrimSpace(string(keys)) != "send-keys -t %19 -l test\nsend-keys -t %19 Enter" {
-		t.Fatalf("Codex must submit exactly once: %q (%v)", keys, err)
+	if err != nil {
+		t.Fatalf("Codex send recorded no keys: %v", err)
+	}
+	// Delivery is now bracketed paste (set-buffer + paste-buffer), not a raw
+	// `send-keys -l <msg>` that would submit a multi-line prompt at the first
+	// newline. Codex still submits exactly ONCE (a single Enter, no second).
+	lines := strings.Split(strings.TrimSpace(string(keys)), "\n")
+	if len(lines) != 3 ||
+		!strings.HasPrefix(lines[0], "set-buffer -b ") || !strings.HasSuffix(lines[0], " -- test") ||
+		!strings.HasPrefix(lines[1], "paste-buffer -p -d -b ") || !strings.HasSuffix(lines[1], " -t %19") ||
+		lines[2] != "send-keys -t %19 Enter" ||
+		strings.Contains(string(keys), "-l test") {
+		t.Fatalf("Codex must submit exactly once via bracketed paste: %q (%v)", keys, err)
+	}
+	// the paste must target the SAME buffer it was set into (no clobber).
+	if setBuf, pasteBuf := strings.Fields(lines[0])[2], strings.Fields(lines[1])[4]; setBuf != pasteBuf {
+		t.Fatalf("set-buffer %q != paste-buffer %q — delivery would paste the wrong buffer", setBuf, pasteBuf)
 	}
 }
 

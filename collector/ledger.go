@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -540,8 +541,19 @@ func sendPane(pane, msg string, onDead func(), idleGuard bool) bool {
 	} else if !paneAlive(pane) {
 		return false
 	}
-	if err := tmuxRun(tb, "send-keys", "-t", pane, "-l", msg); err != nil || !paneAlive(pane) {
-		return false // exit status caught AND post-send aliveness re-checked: the TOCTOU head
+	// Deliver via BRACKETED PASTE, not `send-keys -l`: a raw literal newline is an
+	// Enter to a REPL (Claude Code, codex), so a multi-line prompt sent with -l
+	// SUBMITS at the first newline and only the first chunk survives — Rishi's "I
+	// only got half the prompt". set-buffer + `paste-buffer -p` wraps the text in
+	// bracketed-paste markers IF the pane's app requested them, so the whole prompt
+	// lands as ONE atomic input; a plain shell that never requested them degrades to
+	// the old raw delivery (no regression). A per-send buffer name never clobbers a
+	// human's paste buffer; -d frees it after. pasteCmds is pure so this is tested
+	// (sendpane_paste_test.go) without a live pane — the guardrail Rishi asked for.
+	for _, argv := range pasteCmds(pane, msg) {
+		if err := tmuxRun(tb, argv...); err != nil || !paneAlive(pane) {
+			return false // exit status caught AND post-send aliveness re-checked: the TOCTOU head
+		}
 	}
 	settle := 700*time.Millisecond + time.Duration(len(msg)/4)*time.Millisecond
 	if settle > 4000*time.Millisecond {
@@ -562,6 +574,24 @@ func sendPane(pane, msg string, onDead func(), idleGuard bool) bool {
 		}
 	}()
 	return true
+}
+
+// pasteCmds — the tmux argv sequence that delivers msg to pane via bracketed
+// paste. PURE (no I/O), so the multi-line-send guardrail is testable without a
+// live pane: the invariant is that delivery is NEVER `send-keys -l <msg>` (a raw
+// newline submits a REPL mid-prompt). A per-call buffer name keeps it off the
+// shared default buffer; `paste-buffer -p` emits bracketed-paste markers so a
+// multi-line prompt arrives as one atomic input.
+var sendBufSeq atomic.Int64
+
+func pasteCmds(pane, msg string) [][]string {
+	// nanotime alone collides on rapid successive sends (same ns tick); the atomic
+	// counter makes the buffer name unique even for two sends in the same instant.
+	buf := fmt.Sprintf("8send-%d-%d", time.Now().UnixNano(), sendBufSeq.Add(1))
+	return [][]string{
+		{"set-buffer", "-b", buf, "--", msg},
+		{"paste-buffer", "-p", "-d", "-b", buf, "-t", pane},
+	}
 }
 
 var (
