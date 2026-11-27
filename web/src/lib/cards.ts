@@ -37,6 +37,7 @@ export interface Card {
   hero?: boolean;       // the pinned card
   bare?: boolean;       // body brings its own header (viewport cards)
   node: ReactNode;      // the body
+  peer?: { host: string; session: string; ctx: string; url?: string }; // a live surface on ANOTHER host, reached through the local /via bridge (#9970)
 }
 
 export interface Lane {

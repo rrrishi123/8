@@ -4872,6 +4872,7 @@ func main() {
 	mux.HandleFunc("/read", c.handleRead)             // #643: read an OPEN tab; create only on explicit intent
 	mux.HandleFunc("/screencast", c.handleScreencast) // #655: native BiDi screencast RECORDING (FF>=154; probe-gated)
 	mux.HandleFunc("/act", c.handleAct)
+	mux.HandleFunc("/via", c.handleVia) // #9970 live cross-host bridge: drive a reachable peer's own surfaces by the same path name
 	mux.HandleFunc("/stream", c.handleStream)
 	mux.HandleFunc("/bench", c.handleBench)
 	mux.HandleFunc("/requests", c.handleRequests)
