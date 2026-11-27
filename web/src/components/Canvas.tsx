@@ -3,6 +3,7 @@ import { PaneCockpit } from './PaneCockpit';
 import { PaneLive } from './PaneLive';
 import { resetDrag } from '../lib/useDrag';
 import { Viewport } from './Viewport';
+import { PeerLive } from './PeerLive';
 import { Resources } from './Resources';
 import { PasteCurl } from './PasteCurl';
 import { Matrix } from './Matrix';
@@ -51,9 +52,9 @@ const KIND_TITLE: Record<string, string> = {
 
 const hostOf = (u: string) => { try { return new URL(u).host.replace(/^www\./, ''); } catch { return u || 'tab'; } };
 
-// RemoteTab — a tab on ANOTHER host (a /peers mesh member). It is not locally streamable
-// (no inbound route to a NAT'd peer), so it shows as metadata; control flows the only way
-// the networking allows — a command queued via /relay that the peer PULLS and runs (#1267).
+// RemoteTab — a NON-BROWSER tab on ANOTHER host (a tmux pane), or a peer with no tabs:
+// metadata only. Browser tabs on a peer are LIVE through PeerLive (#9970); the /relay
+// pull-queue (#1267) remains the channel for a NAT'd peer that cannot be reached at all.
 function RemoteTab({ host, url, stale }: { host: string; url: string; stale?: boolean }) {
   return (
     <div style={{ padding: '10px 12px', fontSize: 12, lineHeight: 1.5, color: '#cdd', fontFamily: 'system-ui' }}>
@@ -380,23 +381,34 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   // showing its browser tabs so you SEE and (via the pull-relay) can drive it. A peer's
   // tabs are REMOTE — rendered as metadata cards (no local stream); the ☍ marks the mesh.
   for (const pr of peerList) {
-    const m = (pr.manifest || {}) as { tabs?: { ctx?: string; url?: string; title?: string; status?: string }[] };
+    const m = (pr.manifest || {}) as { tabs?: { ctx?: string; url?: string; title?: string; status?: string; session?: string }[] };
     const ptabs = (m.tabs || []).filter((t) => t.status === 'live' && t.url);
     const laneKey = 'peer:' + pr.host;
+    // #9970: a BROWSER tab on the peer is LIVE — pixels+input cross through this
+    // collector's /peer/<host>/ proxy to the peer collector's own /shot + /act. A
+    // non-browser tab (tmux pane) stays a metadata card.
+    const isBrowser = (t: { session?: string; ctx?: string }) => (t.session === 'chrome' || t.session === 'fox') && !!t.ctx;
     const cards: Card[] = ptabs.length
-      ? ptabs.map((t, i) => ({
-          key: laneKey + ':' + (t.ctx || i), lane: laneKey, kind: 'profile' as const,
-          title: hostOf(t.url || ''), meta: `☍ ${pr.host} · ${t.url}`, measure: 'dom' as const,
-          node: <RemoteTab host={pr.host} url={t.url || ''} stale={pr.stale} />,
-        }))
+      ? ptabs.map((t, i) => isBrowser(t)
+        ? ({
+            key: laneKey + ':' + t.ctx, lane: laneKey, kind: 'tab' as const, aspect: aspectBy[laneKey + ':' + t.ctx] || 0.6,
+            title: hostOf(t.url || ''), meta: `☍ ${pr.host} · live via /peer proxy · ${t.url}`,
+            node: <PeerLive host={pr.host} session={t.session || 'chrome'} ctx={t.ctx || ''} url={t.url || ''} stale={pr.stale} />,
+          })
+        : ({
+            key: laneKey + ':' + (t.ctx || i), lane: laneKey, kind: 'profile' as const,
+            title: hostOf(t.url || ''), meta: `☍ ${pr.host} · ${t.url}`, measure: 'dom' as const,
+            node: <RemoteTab host={pr.host} url={t.url || ''} stale={pr.stale} />,
+          }))
       : [{
           key: laneKey + ':host', lane: laneKey, kind: 'profile' as const,
           title: '☍ ' + pr.host, meta: `remote · ${pr.stale ? 'stale' : 'live'} · no browser tabs`, measure: 'dom' as const,
           node: <RemoteTab host={pr.host} url="" stale={pr.stale} />,
         }];
+    const nLive = ptabs.filter(isBrowser).length;
     lanes.push({
       key: laneKey, label: `☍ ${pr.host}`, kind: 'host', tone: 'seat', cols: 2,
-      badge: `remote · ${ptabs.length} tab${ptabs.length === 1 ? '' : 's'}${pr.stale ? ' · stale' : ''}`, cards,
+      badge: `remote · ${ptabs.length} tab${ptabs.length === 1 ? '' : 's'}${nLive ? ` · ${nLive} live` : ''}${pr.stale ? ' · stale' : ''}`, cards,
     });
   }
 

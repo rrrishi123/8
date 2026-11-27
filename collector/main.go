@@ -4935,6 +4935,7 @@ func main() {
 	mux.HandleFunc("/container", c.handleContainer)       // #850: inner-host — docker stats + colima list
 	mux.HandleFunc("/peers", c.handlePeers)               // #886: federation rendezvous — push register/heartbeat
 	mux.HandleFunc("/relay", c.handleRelay)               // #1267: queue a command a NAT'd peer pulls on its beat
+	mux.HandleFunc("/peer/", c.handlePeerProxy)           // #9970: LIVE cross-host tab view+drive, proxied through :7070 (peer_proxy.go)
 	mux.HandleFunc("/db", c.handleDB)                     // project the scattered stores into ~/.8/eight.db for DBeaver
 	mux.HandleFunc("/stopwatch", c.handleStopwatch)       // experiri: the witness's staleness made readable
 	mux.HandleFunc("/event", c.handleEvent)               // T5: witnessed reply-event bus (per-tab CDP watcher posts here; any host polls ?since=)
