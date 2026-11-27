@@ -397,8 +397,10 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
           // witnessed here. A NAT'd peer (no addr) or a stale one stays a metadata
           // card + pull-relay. (rendered in the card loop below, so it gets the same
           // cull / LOD / fps gating as a local tab: off-screen/tiny/covered → no poll.)
+          // tmux panes are keyed "tmux-%N" in the manifest but /tmuxpane wants the
+          // raw "%N"; strip the prefix so the peer's live pane text resolves.
           peer: pr.addr && !pr.stale && t.ctx && t.session
-            ? { host: pr.host, session: t.session, ctx: t.ctx, url: t.url } : undefined,
+            ? { host: pr.host, session: t.session, ctx: t.session === 'tmux' ? String(t.ctx).replace(/^tmux-/, '') : t.ctx, url: t.url } : undefined,
           node: <RemoteTab host={pr.host} url={t.url || ''} stale={pr.stale} />,
         }))
       : [{
