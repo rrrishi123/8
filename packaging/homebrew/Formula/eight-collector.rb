@@ -32,8 +32,13 @@ class EightCollector < Formula
   test do
     # The collector has no `version` subcommand yet, so prove the binary built and
     # its flags are wired: an unknown flag prints the usage banner and exits 2.
+    # Assert a flag that exists on EVERY version (-listen, the HTTP address) rather
+    # than a feature flag that may be absent on the --HEAD branch: -allocator landed
+    # later, so on a main-built HEAD install the banner lacks it and `brew test`
+    # went red for the whole pre-cut window the README points new users to (#35
+    # merged at philo's conditional head without the condition folded in).
     output = shell_output("#{bin}/eight-collector --badflag 2>&1", 2)
     assert_match "Usage of", output
-    assert_match "-allocator", output
+    assert_match "-listen", output
   end
 end
