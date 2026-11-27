@@ -293,7 +293,7 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
       // host whose tab it is witnesses cross-host input as such (not as local ai).
       await fetch(`${BASE}/act?session=${encodeURIComponent(session)}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', ...(actor ? { 'X-8-Actor': actor } : {}) },
-        body: JSON.stringify({ ...(ctx ? { context: ctx } : {}), seat: 'ai', ...(actor ? { actor } : {}), ...body }),
+        body: JSON.stringify({ ...(ctx ? { context: ctx } : {}), seat: 'ai', ...body, ...(actor ? { actor } : {}) }), // the declared actor wins over any body field
       });
       setErr(false);
     } catch { setErr(true); }
