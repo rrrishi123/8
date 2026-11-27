@@ -108,7 +108,7 @@ func (c *collector) peerHeartbeat(host string) (peer, error) {
 		bud["codex_gated"] = cx["gated"]
 		bud["codex_observed_at"] = cx["observed_at"]
 	}
-	extra, err := json.Marshal(map[string]any{"budget": bud, "build": buildSHA})
+	extra, err := json.Marshal(map[string]any{"budget": bud, "build": buildSHA, "drive": peerDriveModeEnv()}) // #9970: advertise this host's cross-host posture (EIGHT_PEER_DRIVE)
 	if err != nil {
 		return peer{}, err
 	}
