@@ -4752,6 +4752,7 @@ func main() {
 	allocStale := flag.Duration("allocator-stale", 60*time.Minute, "a todo [verify #N] never acked for this long is re-routed by the allocator")
 	waitsEvery := flag.Duration("waits", envDuration("EIGHT_WAITS", 0), "ALLOCATOR slice-2 (#9574): period for evaluating declared waits (/wait) and waking their panes. DEFAULT OFF (0): -waits=5m, or EIGHT_WAITS=5m in the env. Its own switch so slice-1 can run alone on a first bounce (49fe2c0b #9626)")
 	routeEvery := flag.Duration("route-todos", envDuration("EIGHT_ROUTE_TODOS", 0), "ALLOCATOR slice-3 (#9728, pack-reworked): period for routing author-opted-in (claimable:true), outward-floored todos to idle opted-in minds. DEFAULT OFF (0): -route-todos=5m or EIGHT_ROUTE_TODOS=5m. Positive opt-in + outward-verb floor (never routes tag, push, cut, publish, cherry-pick, kosaten, thesis, slack, secret) — the authorization line is unreachable through the allocator")
+	socialEvery := flag.Duration("social", envDuration("EIGHT_SOCIAL", 0), "SOCIAL DIGEST (#9971 item 2): period for auto-pushing new timeline acts (others' posts/acks/routes) to each opted-in IDLE mind, so 'discuss among all' is self-running instead of hand-waked. DEFAULT OFF (0): -social=2m or EIGHT_SOCIAL=2m so a watchdog revive keeps it. Opt-in per end; never a busy pane, never %29/work panes (allowlist-gated); the mind decides what to do with the feed")
 	webDir := flag.String("web-dir", os.Getenv("EIGHT_WEB_DIR"), "optional built cockpit directory to serve at / on the collector's port")
 	flag.Parse()
 	peerJoin, err := peerJoinFromEnv()
@@ -4831,6 +4832,7 @@ func main() {
 		// (#11/#9626) defaults open for tests; this is the production wiring.
 		beatGate = func(c *collector) (bool, string) { return budgetAllowsAllocator(c.budgetNow(), time.Now()) }
 		go c.allocatorLoop(*allocEvery, *allocStale, *waitsEvery, *routeEvery) // #9580/#9574/#9728: ALLOCATOR — slice-1 verify re-routes + slice-2 waits + slice-3 todo-router, each behind its own switch, all under one budget gate
+		go c.socialDigestLoop(*socialEvery)                                    // #9971 item 2: auto-push new timeline acts to idle opted-in minds (self-running discussion), its own switch (-social/EIGHT_SOCIAL), default off
 		go c.watchHumanForeground()                                            // "you are here": track the human's foreground tab (cache-first, lean)
 		go func() {                                                            // project eight.db every 30s so DBeaver always sees fresh data
 			if _, err := exec.LookPath("sqlite3"); err != nil {
