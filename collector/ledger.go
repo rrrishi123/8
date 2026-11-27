@@ -86,6 +86,16 @@ type workItem struct {
 	// completion notice to that pane on done (sendToPane is idle-guarded — a busy
 	// dispatcher is never interrupted). Blank = current behavior (no poke).
 	Notify string `json:"notify,omitempty"`
+	// Deadline / BeatAt — WATCHER DELIVERABLE contract (#9922/#9923, from pmf %13
+	// #9920). A deliverable filed with a Deadline opts into the stale-sweep
+	// (redeliver.go): the owning mind HEARTBEATs it (POST {id,beat:true}) while
+	// alive, and the sweep re-queues one that goes silent (doing + no receipt + no
+	// touch within grace) so a drop becomes a re-routed, witnessed task instead of
+	// dying in one session. Blank Deadline = an ordinary item the sweep never
+	// touches. BeatAt is the last heartbeat; the sweep reads liveness from it, not
+	// from the wall clock, so a slow-but-alive run is never yanked (pmf %13 #9939).
+	Deadline string `json:"deadline,omitempty"`
+	BeatAt   string `json:"beat_at,omitempty"`
 	// CONSENSUS-ACK (#53 social-net receipt layer): closure is a relation, not a
 	// hand-flip. Need is the count of distinct AGREE acks required to close this
 	// item on its own (0 = a normal task, no ack-gate). Acks is the append-only
@@ -952,6 +962,8 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			Claimable  *bool   `json:"claimable"`   // #9728: the item-side opt-in the todo-router (slice-3) requires; set by make_tasks.py / an author who means it
 			VerifiedBy string  `json:"verified_by"` // #9795 WHO-gate: the distinct mind whose own agree ack anchors a SELF-close
 			Receipt    string  `json:"receipt"`     // #9795 WHAT-gate: against-what (verdict/artifact/commit); falls back to posted text
+			Beat       bool    `json:"beat"`        // #9923: heartbeat touch — a live owner marks a watched deliverable still-alive (no status/receipt change)
+			Deadline   string  `json:"deadline"`    // #9923: watcher-deliverable opt-in; presence enrolls the item in the stale-sweep (redeliver.go)
 		}
 		json.NewDecoder(r.Body).Decode(&p)
 		now := time.Now().UTC().Format(time.RFC3339)
@@ -983,6 +995,9 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 				p.By = "operator"
 			}
 			ni := workItem{ID: max + 1, Text: p.Text, Status: "todo", By: p.By, TS: now, Deps: p.Deps, Assignee: p.Assignee, Kind: p.Kind, Notify: p.Notify, Epoch: currentEpoch()}
+			if p.Deadline != "" { // #9923: a Deadline enrolls the item in the watcher stale-sweep (redeliver.go)
+				ni.Deadline = p.Deadline
+			}
 			if p.Claimable != nil && *p.Claimable { // #9728: the author marks the item routable by the todo-router (fail-closed: default false)
 				ni.Claimable, ni.ClaimableBy = true, p.By
 			}
@@ -1008,6 +1023,14 @@ func (c *collector) handleWork(w http.ResponseWriter, r *http.Request) {
 			items = append(items, ni)
 			ackID = ni.ID
 			c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"work.add","params":{"id":%d,"text":%q,"by":%q,"deps":%v}}}`, ni.ID, p.Text, p.By, p.Deps))
+		} else if p.ID > 0 && p.Beat { // #9923: HEARTBEAT — a live owner touches a watched deliverable so the stale-sweep reads it as alive, not dropped. No status/receipt change.
+			for i := range items {
+				if items[i].ID == p.ID {
+					items[i].BeatAt = now
+					ackID = items[i].ID
+					break
+				}
+			}
 		} else if p.ID > 0 && p.Ack != "" { // #53 CONSENSUS-ACK: record a receipt; self-close on agreement, hold on disagree
 			verdict := "agree"
 			if strings.HasPrefix(strings.ToLower(p.Ack), "dis") {

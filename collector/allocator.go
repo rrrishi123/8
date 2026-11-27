@@ -312,6 +312,7 @@ type beatState struct {
 	lastRouted          map[int64]time.Time // verify id -> last re-route (slice-1 suppression); also claimable-item suppression (slice-3)
 	lastAlloc, lastWait time.Time
 	lastRoute           time.Time // slice-3 (#9728): last todo-router pass
+	lastRedeliver       time.Time // slice-4 (#9923): last watcher stale-sweep pass
 	held                bool      // gate was closed on the previous beat (publish on transition only)
 }
 
@@ -355,12 +356,12 @@ func allocatorBeat(st *beatState, now time.Time, tick, allocEvery, waitsEvery ti
 // slice-2 (declared waits) every waitsEvery. Separate switches so slice-1 can
 // run alone on the first bounce and slice-2 flips on later without a code
 // change (49fe2c0b #9626, %6 #9631: one change per bounce).
-func (c *collector) allocatorLoop(allocEvery, stale, waitsEvery, routeEvery time.Duration) {
-	if allocEvery <= 0 && waitsEvery <= 0 && routeEvery <= 0 {
+func (c *collector) allocatorLoop(allocEvery, stale, waitsEvery, routeEvery, redeliverEvery, redeliverStale time.Duration) {
+	if allocEvery <= 0 && waitsEvery <= 0 && routeEvery <= 0 && redeliverEvery <= 0 {
 		return
 	}
 	tick := allocEvery
-	for _, e := range []time.Duration{waitsEvery, routeEvery} { // tick = finest enabled period
+	for _, e := range []time.Duration{waitsEvery, routeEvery, redeliverEvery} { // tick = finest enabled period
 		if e > 0 && (tick <= 0 || e < tick) {
 			tick = e
 		}
@@ -392,6 +393,13 @@ func (c *collector) allocatorLoop(allocEvery, stale, waitsEvery, routeEvery time
 		if gateOpen && due(st.lastRoute, routeEvery) {
 			st.lastRoute = now
 			c.routePass(st.lastRouted)
+		}
+		// slice-4 (#9923): the watcher stale-sweep — re-queues a silent deliverable
+		// (claimable, has a deadline, doing, no receipt, no heartbeat within grace)
+		// so a dropped watcher item becomes a re-routed task. Same budget gate.
+		if gateOpen && due(st.lastRedeliver, redeliverEvery) {
+			st.lastRedeliver = now
+			c.redeliverPass(redeliverStale)
 		}
 	}
 }
