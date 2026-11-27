@@ -32,8 +32,10 @@ class EightCollector < Formula
   test do
     # The collector has no `version` subcommand yet, so prove the binary built and
     # its flags are wired: an unknown flag prints the usage banner and exits 2.
+    # Assert -listen, present on EVERY version: head builds branch main, where
+    # -allocator does not exist pre-cut (#9839 — the conditional #35 merged past).
     output = shell_output("#{bin}/eight-collector --badflag 2>&1", 2)
     assert_match "Usage of", output
-    assert_match "-allocator", output
+    assert_match "-listen", output
   end
 end
