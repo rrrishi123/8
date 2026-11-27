@@ -12,11 +12,11 @@ type Seeing = 'pixels' | 'channel' | 'request';
 // live stream stops being a mirror and becomes hands: a click on the <img> maps
 // to the target's pixels and fires /act (tap), keystrokes fire /act (type). Same
 // surface drives a Firefox tab (BiDi) OR a real device (Appium) — one wire.
-export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAspect, hud, visible, live, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle, hiRes, parked, youHere, controller, dup, base }:
+export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAspect, hud, visible, live, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle, hiRes, parked, youHere, controller, dup, base, actor }:
   { session: string | null; title?: string; url?: string; context?: string;
     onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; live?: boolean; fps?: number; act?: boolean; pinned?: boolean; onPin?: () => void; lodW?: number; fx?: boolean; fxNeedle?: string; hiRes?: boolean; parked?: boolean;
     youHere?: boolean; controller?: string; dup?: boolean;
-    base?: string }) { // base: a PEER's collector (/peers addr) — the same /shot + /act, on that host
+    base?: string; actor?: string }) { // base: a PEER's collector (/peers addr) — the same /shot + /act, on that host
   const BASE = base || LOCAL_BASE;
   // MANIFEST: the card's identity — who opened it, why, when — matched by URL
   // (manifest keys by chrome bcid, cards by BiDi ctx, so URL is the join key).
@@ -36,8 +36,8 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
   // back / reload / stop fired straight down the wire onto THIS card's context
   const wire = (method: string, params: object) =>
     fetch(`${BASE}/run?session=${encodeURIComponent(session || '')}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ method, params }),
+      method: 'POST', headers: { 'content-type': 'application/json', ...(actor ? { 'X-8-Actor': actor } : {}) },
+      body: JSON.stringify({ method, params, ...(actor ? { actor } : {}) }),
     }).catch(() => {});
   const agent = man?.opened_by && man.opened_by !== 'human' && man.opened_by !== 'unknown' && man.opened_by !== 'system' ? man.opened_by : '';
   // AGE HUD (work #1, 2026-08-07): every card KNOWS its own staleness, always.
@@ -289,9 +289,11 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
   const act = async (body: Record<string, unknown>) => {
     if (!session) return;
     try {
+      // actor: who is driving, declared — a peer host's canvas names itself, so the
+      // host whose tab it is witnesses cross-host input as such (not as local ai).
       await fetch(`${BASE}/act?session=${encodeURIComponent(session)}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...(ctx ? { context: ctx } : {}), seat: 'ai', ...body }),
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...(actor ? { 'X-8-Actor': actor } : {}) },
+        body: JSON.stringify({ ...(ctx ? { context: ctx } : {}), seat: 'ai', ...(actor ? { actor } : {}), ...body }),
       });
       setErr(false);
     } catch { setErr(true); }
@@ -458,7 +460,7 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
               </div>
             : <div className="vp-tmux-wrap" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
                 <pre className="vp-text vp-tmux" style={{ overflow: 'auto', flex: 1, minHeight: 0, margin: 0 }}>{tmuxText || 'reading…'}</pre>
-                {isTmux && fixedCtx && <PaneSendBar pane={fixedCtx} />}
+                {isTmux && fixedCtx && !base && <PaneSendBar pane={fixedCtx} /> /* PaneSendBar posts to the LOCAL collector: never on a peer's pane */}
               </div>)
         : seeing === 'pixels'
         ? ((frameSrc || useFx)

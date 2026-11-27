@@ -174,6 +174,9 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   // every host's browser — the mesh — and can drive it through the pull-relay. Without
   // this, a peer is invisible and uncontrollable; with it, every 8 shows every 8.
   const [peerList, setPeerList] = useState<Peer[]>([]);
+  // this host's name, so input we send to a PEER's tab is witnessed there as ours
+  const [selfHost, setSelfHost] = useState('');
+  useEffect(() => { fetch(`${BASE}/hostres`).then((r) => r.json()).then((j) => setSelfHost(j.host || '')).catch(() => {}); }, []);
   useEffect(() => {
     let alive = true;
     const pull = () => peers().then((d) => { if (alive) setPeerList(d.peers || []); }).catch(() => {});
@@ -391,9 +394,11 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
           // addr) and the tab is a CDP/BiDi browser tab: the SAME Viewport, pointed at
           // that host's :7070 — its /shot pixels and /act input, like a local tab.
           // A NAT'd peer (no addr) or a stale one stays a metadata card + pull-relay.
-          node: pr.addr && !pr.stale && t.ctx && t.session && t.session !== 'tmux'
-            ? <Viewport base={pr.addr} session={t.session} context={t.ctx} url={t.url} title={hostOf(t.url || '')} visible live fps={0.5} act />
-            : <RemoteTab host={pr.host} url={t.url || ''} stale={pr.stale} />,
+          // (rendered in the card loop below, so it gets the same cull / LOD / fps
+          // gating as a local tab: off-screen, tiny or covered peer cards don't poll).
+          peer: pr.addr && !pr.stale && t.ctx && t.session && t.session !== 'tmux'
+            ? { base: pr.addr, host: pr.host, session: t.session, ctx: t.ctx, url: t.url } : undefined,
+          node: <RemoteTab host={pr.host} url={t.url || ''} stale={pr.stale} />,
         }))
       : [{
           key: laneKey + ':host', lane: laneKey, kind: 'profile' as const,
@@ -706,7 +711,14 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
           // thumbnail of the real desktop reads; a 40px label of it does not
           const lod = !isVp && !c.aspect && p.w * cam.z < 150;
           let body = c.node;
-          if (isVp) {
+          if (c.peer) { // #9970: a tab on another host, live through that host's collector
+            const big = p.w * cam.z >= 150;
+            const on = vis && p.top && big;
+            body = <Viewport base={c.peer.base} actor={`cockpit@${selfHost || 'peer'}`} session={c.peer.session} context={c.peer.ctx}
+              url={c.peer.url} title={c.title} visible={on} live={on} act
+              fps={c.key === heroKey ? 2 : (on ? 0.5 : 0)} pinned={c.key === heroKey} lodW={lodBucket(p.w * cam.z)}
+              onPin={() => setPinnedKey(c.key)} />;
+          } else if (isVp) {
             const seatId = c.kind === 'seat' ? c.key : c.lane;
             const seat = seatOfLane(c.lane);
             const s = seat?.id || seatId;
