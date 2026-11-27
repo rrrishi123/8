@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { panesSend } from '../lib/api';
 import { onSeatChange } from '../lib/feed';
 
-const BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
+const LOCAL_BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
 
 interface Tab { context: string; url: string; }
 type Seeing = 'pixels' | 'channel' | 'request';
@@ -12,10 +12,12 @@ type Seeing = 'pixels' | 'channel' | 'request';
 // live stream stops being a mirror and becomes hands: a click on the <img> maps
 // to the target's pixels and fires /act (tap), keystrokes fire /act (type). Same
 // surface drives a Firefox tab (BiDi) OR a real device (Appium) — one wire.
-export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAspect, hud, visible, live, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle, hiRes, parked, youHere, controller, dup }:
+export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAspect, hud, visible, live, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle, hiRes, parked, youHere, controller, dup, base }:
   { session: string | null; title?: string; url?: string; context?: string;
     onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; live?: boolean; fps?: number; act?: boolean; pinned?: boolean; onPin?: () => void; lodW?: number; fx?: boolean; fxNeedle?: string; hiRes?: boolean; parked?: boolean;
-    youHere?: boolean; controller?: string; dup?: boolean }) {
+    youHere?: boolean; controller?: string; dup?: boolean;
+    base?: string }) { // base: a PEER's collector (/peers addr) — the same /shot + /act, on that host
+  const BASE = base || LOCAL_BASE;
   // MANIFEST: the card's identity — who opened it, why, when — matched by URL
   // (manifest keys by chrome bcid, cards by BiDi ctx, so URL is the join key).
   const [man, setMan] = useState<{ opened_by?: string; why?: string; first_seen?: string } | null>(null);

@@ -181,7 +181,7 @@ export async function innerHost(): Promise<InnerHost> {
 
 
 // ── PEERS / PORTAL superposition (#888): the registered federation nodes ─────
-export interface Peer { host: string; at: string; actor?: string; hostres?: unknown; manifest?: unknown; thumbnail?: string; age_s: number; stale: boolean }
+export interface Peer { host: string; at: string; actor?: string; hostres?: unknown; manifest?: unknown; thumbnail?: string; addr?: string; age_s: number; stale: boolean }
 export async function peers(): Promise<{ peers: Peer[]; n: number; stale_after_s: number }> {
   const r = await fetch(`${BASE}/peers`);
   return r.json();

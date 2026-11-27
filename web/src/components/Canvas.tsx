@@ -380,14 +380,20 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   // showing its browser tabs so you SEE and (via the pull-relay) can drive it. A peer's
   // tabs are REMOTE — rendered as metadata cards (no local stream); the ☍ marks the mesh.
   for (const pr of peerList) {
-    const m = (pr.manifest || {}) as { tabs?: { ctx?: string; url?: string; title?: string; status?: string }[] };
+    const m = (pr.manifest || {}) as { tabs?: { ctx?: string; url?: string; title?: string; status?: string; session?: string }[] };
     const ptabs = (m.tabs || []).filter((t) => t.status === 'live' && t.url);
     const laneKey = 'peer:' + pr.host;
     const cards: Card[] = ptabs.length
       ? ptabs.map((t, i) => ({
           key: laneKey + ':' + (t.ctx || i), lane: laneKey, kind: 'profile' as const,
           title: hostOf(t.url || ''), meta: `☍ ${pr.host} · ${t.url}`, measure: 'dom' as const,
-          node: <RemoteTab host={pr.host} url={t.url || ''} stale={pr.stale} />,
+          // LIVE when the peer's own collector is addressable (a tailnet peer: /peers
+          // addr) and the tab is a CDP/BiDi browser tab: the SAME Viewport, pointed at
+          // that host's :7070 — its /shot pixels and /act input, like a local tab.
+          // A NAT'd peer (no addr) or a stale one stays a metadata card + pull-relay.
+          node: pr.addr && !pr.stale && t.ctx && t.session && t.session !== 'tmux'
+            ? <Viewport base={pr.addr} session={t.session} context={t.ctx} url={t.url} title={hostOf(t.url || '')} visible live fps={0.5} act />
+            : <RemoteTab host={pr.host} url={t.url || ''} stale={pr.stale} />,
         }))
       : [{
           key: laneKey + ':host', lane: laneKey, kind: 'profile' as const,
