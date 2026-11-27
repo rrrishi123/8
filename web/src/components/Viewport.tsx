@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { panesSend } from '../lib/api';
 import { onSeatChange } from '../lib/feed';
 
-const BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
+const LOCAL_BASE = import.meta.env.VITE_COLLECTOR_URL || 'http://127.0.0.1:7070';
 
 interface Tab { context: string; url: string; }
 type Seeing = 'pixels' | 'channel' | 'request';
@@ -12,17 +12,32 @@ type Seeing = 'pixels' | 'channel' | 'request';
 // live stream stops being a mirror and becomes hands: a click on the <img> maps
 // to the target's pixels and fires /act (tap), keystrokes fire /act (type). Same
 // surface drives a Firefox tab (BiDi) OR a real device (Appium) — one wire.
-export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAspect, hud, visible, live, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle, hiRes, parked, youHere, controller, dup }:
+export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAspect, hud, visible, live, fps: fpsProp, act: actMode, pinned, onPin, lodW, fx, fxNeedle, hiRes, parked, youHere, controller, dup, peer, actor }:
   { session: string | null; title?: string; url?: string; context?: string;
     onAspect?: (ratio: number) => void; hud?: { mem?: number; cpu?: number | null }; visible?: boolean; live?: boolean; fps?: number; act?: boolean; pinned?: boolean; onPin?: () => void; lodW?: number; fx?: boolean; fxNeedle?: string; hiRes?: boolean; parked?: boolean;
-    youHere?: boolean; controller?: string; dup?: boolean }) {
+    youHere?: boolean; controller?: string; dup?: boolean;
+    peer?: string; actor?: string }) { // peer: another host — reached through the LOCAL collector's /via bridge
+  const BASE = LOCAL_BASE;
+  // LIVE CROSS-HOST BRIDGE (#9970, synthesis of PR #50): a peer's surfaces are
+  // driven by the SAME path name, but routed through THIS host's collector /via
+  // (not the peer's :7070 directly) so every cross-host read/drive is witnessed
+  // HERE as well as on the peer, and no peer need keep CORS open. `ep(path, params)`
+  // yields the local URL, or the /via form when `peer` is set. The relation the
+  // logic describes for our own host holds for every peer — one path, parameterized.
+  const ep = (path: string, params: Record<string, string | number | undefined> = {}) => {
+    const u = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') u.set(k, String(v));
+    const qs = u.toString();
+    if (peer) return `${BASE}/via?peer=${encodeURIComponent(peer)}&to=${encodeURIComponent(path)}${qs ? '&' + qs : ''}`;
+    return `${BASE}${path}${qs ? '?' + qs : ''}`;
+  };
   // MANIFEST: the card's identity — who opened it, why, when — matched by URL
   // (manifest keys by chrome bcid, cards by BiDi ctx, so URL is the join key).
   const [man, setMan] = useState<{ opened_by?: string; why?: string; first_seen?: string } | null>(null);
   useEffect(() => {
     if (!cardUrl) return;
     let alive = true;
-    const pull = () => fetch(`${BASE}/manifest`).then((r) => r.json()).then((j) => {
+    const pull = () => fetch(ep('/manifest')).then((r) => r.json()).then((j) => {
       if (!alive) return;
       const rec = (j.tabs || []).find((t: { url: string; status: string }) => t.url === cardUrl && t.status === 'live');
       setMan(rec || null);
@@ -30,12 +45,12 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
     pull();
     const iv = setInterval(pull, 5000);
     return () => { alive = false; clearInterval(iv); };
-  }, [cardUrl]);
+  }, [cardUrl, peer]); // eslint-disable-line react-hooks/exhaustive-deps
   // back / reload / stop fired straight down the wire onto THIS card's context
   const wire = (method: string, params: object) =>
-    fetch(`${BASE}/run?session=${encodeURIComponent(session || '')}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ method, params }),
+    fetch(ep('/run', { session: session || '' }), {
+      method: 'POST', headers: { 'content-type': 'application/json', ...(actor ? { 'X-8-Actor': actor } : {}) },
+      body: JSON.stringify({ method, params, ...(actor ? { actor } : {}) }),
     }).catch(() => {});
   const agent = man?.opened_by && man.opened_by !== 'human' && man.opened_by !== 'unknown' && man.opened_by !== 'system' ? man.opened_by : '';
   // AGE HUD (work #1, 2026-08-07): every card KNOWS its own staleness, always.
@@ -67,12 +82,12 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
   useEffect(() => {
     if (!isText || !fixedCtx || !(visible ?? true)) return;
     let alive = true;
-    const ep = isTmux
-      ? `${BASE}/tmuxpane?pane=${encodeURIComponent(fixedCtx)}`
+    const textEp = isTmux
+      ? ep('/tmuxpane', { pane: fixedCtx })
       : session === 'nvim'
-      ? `${BASE}/nvimbuf?buf=${encodeURIComponent(fixedCtx.replace(/^nvim-/, ''))}`
-      : `${BASE}/daemonframe?d=${encodeURIComponent(fixedCtx.replace(/^d-/, ''))}`;
-    const pull = () => fetch(ep)
+      ? ep('/nvimbuf', { buf: fixedCtx.replace(/^nvim-/, '') })
+      : ep('/daemonframe', { d: fixedCtx.replace(/^d-/, '') });
+    const pull = () => fetch(textEp)
       .then((r) => r.text()).then((t) => {
         if (!alive) return;
         setTmuxText(t);
@@ -163,15 +178,14 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
   useEffect(() => {
     if (!session || seeing === 'pixels') return;
     let alive = true;
-    const cq = ctx ? `&context=${encodeURIComponent(ctx)}` : '';
     async function look() {
       try {
         if (seeing === 'channel') {
-          const j = await (await fetch(`${BASE}/source?session=${encodeURIComponent(session!)}${cq}`)).json();
+          const j = await (await fetch(ep('/source', { session: session!, context: ctx || undefined }))).json();
           if (alive) { const n = ((j.value || '').match(/<node/g) || []).length; setText(`channel · BiDi DOM — ${n} nodes\n\n` + String(j.value || '').replace(/></g, '>\n<').slice(0, 6000)); setErr(false); }
         } else {
           if (!reqSeat) { setText('request seat not available'); return; }
-          const j = await (await fetch(`${BASE}/source?session=${encodeURIComponent(reqSeat)}`)).json();
+          const j = await (await fetch(ep('/source', { session: reqSeat }))).json();
           if (alive) { setText(`request · classic source — ${String(j.value || '').length} b\n\n` + String(j.value || '').slice(0, 6000)); setErr(false); }
         }
       } catch { if (alive) setErr(true); }
@@ -183,7 +197,7 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
     document.addEventListener('visibilitychange', onVis);
     if (!document.hidden) start();
     return () => { alive = false; stop(); document.removeEventListener('visibilitychange', onVis); };
-  }, [session, ctx, seeing, reqSeat]);
+  }, [session, ctx, seeing, reqSeat, peer]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const label = (t: Tab) => { try { return new URL(t.url).host || t.context; } catch { return t.url || t.context; } };
   const effFps = fpsProp ?? fps; // canvas (foveated) drives fps in the seer; selector elsewhere
@@ -205,7 +219,6 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
   useEffect(() => {
     if (!session || isText) return; // text seats (tmux/daemons/nvim) render via /text, never /shot
     let alive = true;
-    const cq = ctx ? `&context=${encodeURIComponent(ctx)}` : '';
     // FIREFOX stills go through /drawshot (drawSnapshot->JPEG), NOT /shot. BiDi
     // captureScreenshot holds each frame's base64 in Firefox's parent process and
     // never frees it -> the parent climbs ~100MB/min and the watchdog FLOW-10
@@ -247,8 +260,8 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
     const tick = async () => {
       const q = persistent ? 0.85 : 0.62; // crisp hero, cheap periphery
       const shotUrl = fx
-        ? `${BASE}/drawshot?session=${encodeURIComponent(session)}&needle=${encodeURIComponent(fxNeedle || '')}&s=${computeFxScale()}&q=${q}`
-        : `${BASE}/shot?session=${encodeURIComponent(session)}${cq}${lodq}`;
+        ? ep('/drawshot', { session, needle: fxNeedle || '', s: computeFxScale(), q })
+        : ep('/shot', { session, context: ctx || undefined, w: lodW || undefined });
       try { const j = await (await fetch(shotUrl)).json(); if (alive && j.data) { setShot(j.data); if (!persistent) setErr(false); } } catch { if (alive && !persistent) setErr(true); }
     };
     // SEED one still ALWAYS — even off-screen — so zooming out / bird's-eye shows
@@ -273,7 +286,7 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
       : (persistent ? 5000 : Math.max(600, Math.round(1000 / rate)));
     const id = window.setInterval(tick, period);
     return () => { alive = false; clearInterval(id); };
-  }, [session, isText, ctx, streaming, persistent, effFps, lodW, fx, fxNeedle, live]);
+  }, [session, isText, ctx, streaming, persistent, effFps, lodW, fx, fxNeedle, live, peer]); // eslint-disable-line react-hooks/exhaustive-deps
   // FIGMA/FIGJAM behaviour: when a seat is off-screen we stop FETCHING (the poll
   // effect gates on `streaming`, the live stream unmounts) — but we keep showing
   // its LAST frame frozen, so panning the board shows what's there, not blanks.
@@ -287,9 +300,11 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
   const act = async (body: Record<string, unknown>) => {
     if (!session) return;
     try {
-      await fetch(`${BASE}/act?session=${encodeURIComponent(session)}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...(ctx ? { context: ctx } : {}), seat: 'ai', ...body }),
+      // actor: who is driving, declared — a peer host's canvas names itself, so the
+      // host whose tab it is witnesses cross-host input as such (not as local ai).
+      await fetch(ep('/act', { session }), {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...(actor ? { 'X-8-Actor': actor } : {}) },
+        body: JSON.stringify({ ...(ctx ? { context: ctx } : {}), seat: 'ai', ...body, ...(actor ? { actor } : {}) }), // the declared actor wins over any body field
       });
       setErr(false);
     } catch { setErr(true); }
@@ -456,7 +471,7 @@ export function Viewport({ session, title, url: cardUrl, context: fixedCtx, onAs
               </div>
             : <div className="vp-tmux-wrap" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
                 <pre className="vp-text vp-tmux" style={{ overflow: 'auto', flex: 1, minHeight: 0, margin: 0 }}>{tmuxText || 'reading…'}</pre>
-                {isTmux && fixedCtx && <PaneSendBar pane={fixedCtx} />}
+                {isTmux && fixedCtx && !peer && <PaneSendBar pane={fixedCtx} /> /* PaneSendBar posts to the LOCAL collector: never on a peer's pane (cross-host send would need /via too) */}
               </div>)
         : seeing === 'pixels'
         ? ((frameSrc || useFx)

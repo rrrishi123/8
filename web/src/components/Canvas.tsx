@@ -174,6 +174,9 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   // every host's browser — the mesh — and can drive it through the pull-relay. Without
   // this, a peer is invisible and uncontrollable; with it, every 8 shows every 8.
   const [peerList, setPeerList] = useState<Peer[]>([]);
+  // this host's name, so input we send to a PEER's tab is witnessed there as ours
+  const [selfHost, setSelfHost] = useState('');
+  useEffect(() => { fetch(`${BASE}/hostres`).then((r) => r.json()).then((j) => setSelfHost(j.host || '')).catch(() => {}); }, []);
   useEffect(() => {
     let alive = true;
     const pull = () => peers().then((d) => { if (alive) setPeerList(d.peers || []); }).catch(() => {});
@@ -380,13 +383,24 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
   // showing its browser tabs so you SEE and (via the pull-relay) can drive it. A peer's
   // tabs are REMOTE — rendered as metadata cards (no local stream); the ☍ marks the mesh.
   for (const pr of peerList) {
-    const m = (pr.manifest || {}) as { tabs?: { ctx?: string; url?: string; title?: string; status?: string }[] };
+    const m = (pr.manifest || {}) as { tabs?: { ctx?: string; url?: string; title?: string; status?: string; session?: string }[] };
     const ptabs = (m.tabs || []).filter((t) => t.status === 'live' && t.url);
     const laneKey = 'peer:' + pr.host;
     const cards: Card[] = ptabs.length
       ? ptabs.map((t, i) => ({
           key: laneKey + ':' + (t.ctx || i), lane: laneKey, kind: 'profile' as const,
           title: hostOf(t.url || ''), meta: `☍ ${pr.host} · ${t.url}`, measure: 'dom' as const,
+          // LIVE when the peer's own collector is addressable (a tailnet peer: /peers
+          // addr) and the tab is any live surface: the SAME Viewport, routed through
+          // THIS host's /via bridge to that peer — its /shot pixels + /act input for a
+          // browser tab, its /tmuxpane text for a tmux pane — like a local card, and
+          // witnessed here. A NAT'd peer (no addr) or a stale one stays a metadata
+          // card + pull-relay. (rendered in the card loop below, so it gets the same
+          // cull / LOD / fps gating as a local tab: off-screen/tiny/covered → no poll.)
+          // tmux panes are keyed "tmux-%N" in the manifest but /tmuxpane wants the
+          // raw "%N"; strip the prefix so the peer's live pane text resolves.
+          peer: pr.addr && !pr.stale && t.ctx && t.session
+            ? { host: pr.host, session: t.session, ctx: t.session === 'tmux' ? String(t.ctx).replace(/^tmux-/, '') : t.ctx, url: t.url } : undefined,
           node: <RemoteTab host={pr.host} url={t.url || ''} stale={pr.stale} />,
         }))
       : [{
@@ -700,7 +714,14 @@ export function Canvas({ session, focusKey }: { session: string | null; focusKey
           // thumbnail of the real desktop reads; a 40px label of it does not
           const lod = !isVp && !c.aspect && p.w * cam.z < 150;
           let body = c.node;
-          if (isVp) {
+          if (c.peer) { // #9970: a surface on another host, live through the LOCAL /via bridge
+            const big = p.w * cam.z >= 150;
+            const on = vis && p.top && big;
+            body = <Viewport peer={c.peer.host} actor={`cockpit@${selfHost || 'peer'}`} session={c.peer.session} context={c.peer.ctx}
+              url={c.peer.url} title={c.title} visible={on} live={on} act
+              fps={c.key === heroKey ? 2 : (on ? 0.5 : 0)} pinned={c.key === heroKey} lodW={lodBucket(p.w * cam.z)}
+              onPin={() => setPinnedKey(c.key)} />;
+          } else if (isVp) {
             const seatId = c.kind === 'seat' ? c.key : c.lane;
             const seat = seatOfLane(c.lane);
             const s = seat?.id || seatId;
