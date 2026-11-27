@@ -311,8 +311,10 @@ func budgetAllowsAllocator(b *budget, now time.Time) (bool, string) {
 type beatState struct {
 	lastRouted          map[int64]time.Time // verify id -> last re-route (slice-1 suppression); also claimable-item suppression (slice-3)
 	lastAlloc, lastWait time.Time
-	lastRoute           time.Time // slice-3 (#9728): last todo-router pass
-	held                bool      // gate was closed on the previous beat (publish on transition only)
+	lastRoute           time.Time           // slice-3 (#9728): last todo-router pass
+	routeFails          map[int64]int       // slice-3: consecutive undelivered offers per claimable item (%8 #9940)
+	routeRetry          map[int64]time.Time // slice-3: when an undelivered offer may be retried
+	held                bool                // gate was closed on the previous beat (publish on transition only)
 }
 
 // allocatorBeat — PURE orchestration of one beat, so the gate/switch logic is
@@ -391,7 +393,7 @@ func (c *collector) allocatorLoop(allocEvery, stale, waitsEvery, routeEvery time
 		// inherits the same discipline as slice-1/2 without touching allocatorBeat).
 		if gateOpen && due(st.lastRoute, routeEvery) {
 			st.lastRoute = now
-			c.routePass(st.lastRouted)
+			c.routePass(st)
 		}
 	}
 }
@@ -445,17 +447,84 @@ func (c *collector) allocatorPass(stale time.Duration, last map[int64]time.Time)
 	return len(moves)
 }
 
+// routeRetryBase / routeDeadLetterAfter — an UNDELIVERED claimable offer retries
+// with doubling backoff from the router period (5m, 10m, 20m, 40m, 1h cap) and is
+// dead-lettered after this many misses: one honest record, then silence until the
+// item is touched (its TS changes). Before this the router re-tried every tick and
+// wrote an "offered" record each time — #9550 produced 14 identical records in 70
+// minutes while no inbox ever held the offer (%8 #9940).
+const (
+	routeRetryBase       = 5 * time.Minute
+	routeRetryCap        = time.Hour
+	routeDeadLetterAfter = 5
+)
+
+// routeBackoff — PURE: wait before the n-th retry (n>=1) of an undelivered offer.
+func routeBackoff(fails int) time.Duration {
+	d := routeRetryBase
+	for i := 1; i < fails && d < routeRetryCap; i++ {
+		d *= 2
+	}
+	if d > routeRetryCap {
+		d = routeRetryCap
+	}
+	return d
+}
+
+// routeRetryRelease — PURE: an item whose retry moment has passed leaves the
+// suppression map so pickClaimable may offer it again; one not yet due stays
+// suppressed. Returns the ids released.
+func routeRetryRelease(last map[int64]time.Time, retry map[int64]time.Time, now time.Time) []int64 {
+	var out []int64
+	for id, at := range retry {
+		if now.Before(at) {
+			continue
+		}
+		delete(last, id)
+		delete(retry, id)
+		out = append(out, id)
+	}
+	return out
+}
+
+// routeOffers — PURE: the copies handed to offer(). Each carries its RECEIVER as
+// Assignee — inboxKeys resolves the inbox from it — while the ledger item itself
+// stays unassigned (claimable means nobody holds it until a take). The missing
+// receiver was the bug: offer(it) with Assignee=="" resolved to no mind, returned
+// false, and the D3 retry re-picked the item every tick.
+func routeOffers(items []workItem, moves []reroute) []workItem {
+	out := make([]workItem, 0, len(moves))
+	for _, m := range moves {
+		it := items[m.Idx]
+		it.Assignee = m.To
+		out = append(out, it)
+	}
+	return out
+}
+
 // routePass — slice-3 (#9728, the pack-reworked widening). OFFERS author-opted-in,
 // outward-safe todos to idle opted-in minds — one per mind per pass, via the inbox
 // (never typed), same allowlist + budget gate as the other organs. It does NOT
 // reassign the item: it stays todo+claimable until a mind TAKES the offer, so a
 // decline leaves it routable to someone else (minus the decliner). The item-side
 // consent (claimable) + the outward floor are in pickClaimable; this just delivers.
-func (c *collector) routePass(last map[int64]time.Time) int {
+//
+// One evaluation. Offers go out FIRST; the ledger
+// records only what was DELIVERED (record truth, not intent). Undelivered offers
+// back off (routeBackoff) and dead-letter after routeDeadLetterAfter misses.
+func (c *collector) routePass(st *beatState) int {
+	if st.routeFails == nil {
+		st.routeFails = map[int64]int{}
+	}
+	if st.routeRetry == nil {
+		st.routeRetry = map[int64]time.Time{}
+	}
+	last := st.lastRouted
 	minds := filterAllowed(c.resolveMinds(false), loadAllowlist())
 	p2u := paneUUIDMap()
 	pending := func(pane string) int { return inboxPendingForPane(pane, p2u) }
 	now := time.Now()
+	routeRetryRelease(last, st.routeRetry, now)
 
 	c.tmu.Lock()
 	var items []workItem
@@ -465,9 +534,48 @@ func (c *collector) routePass(last map[int64]time.Time) int {
 		return 0
 	}
 	moves := pickClaimable(items, minds, now, last, pending)
+	c.tmu.Unlock()
 	if len(moves) == 0 {
-		c.tmu.Unlock()
 		return 0
+	}
+	offers := routeOffers(items, moves)
+	for _, it := range offers {
+		last[it.ID] = now
+	}
+
+	type outcome struct {
+		it   workItem
+		to   string
+		ok   bool
+		dead bool
+	}
+	var outs []outcome
+	for i, it := range offers {
+		ok := c.offer(it, fmt.Sprintf("allocator: claimable #%d in the pool — yours if you take it", it.ID))
+		o := outcome{it: it, to: moves[i].To, ok: ok}
+		if ok {
+			delete(st.routeFails, it.ID)
+			delete(st.routeRetry, it.ID)
+		} else { // %8 #9759 D3 kept — an undelivered offer must not suppress the item for good — but with backoff and a cap (%8 #9940)
+			st.routeFails[it.ID]++
+			if st.routeFails[it.ID] >= routeDeadLetterAfter {
+				o.dead = true
+				delete(st.routeRetry, it.ID) // stays suppressed until the item's TS changes
+			} else {
+				st.routeRetry[it.ID] = now.Add(routeBackoff(st.routeFails[it.ID]))
+			}
+		}
+		outs = append(outs, o)
+		c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"allocator.routed","params":{"id":%d,"to":%q,"delivered":%v,"fails":%d}}}`, it.ID, moves[i].To, ok, st.routeFails[it.ID]))
+	}
+
+	// Record AFTER delivery, on a fresh read — only delivered offers and dead-letters.
+	c.tmu.Lock()
+	defer c.tmu.Unlock()
+	items = nil
+	b, err = os.ReadFile(workFile())
+	if err != nil || json.Unmarshal(b, &items) != nil {
+		return len(moves)
 	}
 	var max int64
 	for _, it := range items {
@@ -476,25 +584,23 @@ func (c *collector) routePass(last map[int64]time.Time) int {
 		}
 	}
 	ts := now.UTC().Format(time.RFC3339)
-	var offers, records []workItem
-	for _, m := range moves {
-		it := items[m.Idx]
-		last[it.ID] = now
-		offers = append(offers, it)
-		max++
-		records = append(records, workItem{ID: max, Kind: "record", Status: "done", By: "allocator", TS: ts, Epoch: currentEpoch(),
-			Text: fmt.Sprintf("[allocator] offered claimable #%d -> %s (author-opted-in, outward-safe; receiver idle, named, not the author)", it.ID, m.To)})
-	}
-	items = append(items, records...)
-	writeWork(items)
-	c.tmu.Unlock()
-
-	for i, it := range offers {
-		ok := c.offer(it, fmt.Sprintf("allocator: claimable #%d in the pool — yours if you take it", it.ID))
-		if !ok { // %8 #9759 D3: an undelivered offer must not suppress the item until its TS changes — retry next beat
-			delete(last, it.ID)
+	var records []workItem
+	for _, o := range outs {
+		var text string
+		switch {
+		case o.ok:
+			text = fmt.Sprintf("[allocator] offered claimable #%d -> %s (author-opted-in, outward-safe; receiver idle, named, not the author)", o.it.ID, o.to)
+		case o.dead:
+			text = fmt.Sprintf("[allocator] DEAD-LETTER claimable #%d: offer to %s undelivered %d times (resolved to no live mind or pane) — parked until the item is touched", o.it.ID, o.to, st.routeFails[o.it.ID])
+		default:
+			continue
 		}
-		c.publish(fmt.Sprintf(`{"session":"work","origin":"COLLECTOR","frame":{"method":"allocator.routed","params":{"id":%d,"to":%q,"delivered":%v}}}`, it.ID, moves[i].To, ok))
+		max++
+		records = append(records, workItem{ID: max, Kind: "record", Status: "done", By: "allocator", TS: ts, Epoch: currentEpoch(), Text: text})
+	}
+	if len(records) > 0 {
+		items = append(items, records...)
+		writeWork(items)
 	}
 	return len(moves)
 }

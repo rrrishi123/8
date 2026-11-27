@@ -184,3 +184,43 @@ func TestBudgetAllowsAllocator(t *testing.T) {
 		}
 	}
 }
+
+// %8 #9940: the todo-router offered #9550 fourteen times in 70 minutes and no
+// inbox ever held it — the offered copy carried no receiver, so offer() resolved
+// no mind, returned false, and the D3 retry re-picked it every tick.
+func TestRouteOffersCarryReceiverWithoutAssigningTheItem(t *testing.T) {
+	items := []workItem{{ID: 9550, Kind: "task", Status: "todo", By: "conductor %6", Claimable: true, TS: "2026-11-24T14:05:51Z"}}
+	moves := []reroute{{Idx: 0, From: "pool", To: "%13"}}
+	offers := routeOffers(items, moves)
+	if len(offers) != 1 || offers[0].Assignee != "%13" {
+		t.Fatalf("offer copy must carry the receiver: %+v", offers)
+	}
+	if items[0].Assignee != "" {
+		t.Fatalf("ledger item must stay unassigned (claimable): %+v", items[0])
+	}
+}
+
+func TestRouteBackoffDoublesAndCaps(t *testing.T) {
+	want := []time.Duration{5 * time.Minute, 10 * time.Minute, 20 * time.Minute, 40 * time.Minute, time.Hour, time.Hour}
+	for i, w := range want {
+		if got := routeBackoff(i + 1); got != w {
+			t.Fatalf("fails=%d: got %s want %s", i+1, got, w)
+		}
+	}
+}
+
+func TestRouteRetryReleaseOnlyWhenDue(t *testing.T) {
+	now := time.Date(2026, 11, 27, 5, 0, 0, 0, time.UTC)
+	last := map[int64]time.Time{1: now.Add(-time.Hour), 2: now.Add(-time.Hour)}
+	retry := map[int64]time.Time{1: now.Add(-time.Second), 2: now.Add(time.Minute)}
+	got := routeRetryRelease(last, retry, now)
+	if len(got) != 1 || got[0] != 1 {
+		t.Fatalf("only the due item releases: %v", got)
+	}
+	if _, still := last[1]; still {
+		t.Fatalf("released item must leave the suppression map")
+	}
+	if _, kept := last[2]; !kept {
+		t.Fatalf("not-yet-due item must stay suppressed")
+	}
+}
